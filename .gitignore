@@ -1,0 +1,35 @@
+# Python cache and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+
+# Test and tooling cache
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Runtime state belongs to the consuming repository, never to this source tree.
+.ai-memory/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+
+# LLM credentials (must NOT be committed). Keep llm_config.example.json as the template.
+llm_config.local.json
+user_config.local.json
+*.api_key
+*.apikey
+
+# Vendored embedding model binaries — too large for plain Git.
+# Either pre-stage them locally for `deploy.bat -DownloadModel -ModelOffline`,
+# or opt-in via Git LFS (`git lfs track "vendor/models/**"`).
+vendor/models/*/*
+!vendor/models/README.md
+!vendor/models/.gitkeep

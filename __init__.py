@@ -1,0 +1,1 @@
+# Memory MCP package root.

@@ -1,0 +1,5 @@
+# MCP Memory Server runtime dependencies
+# Target: MCP/Memory/.venv/ (virtual environment)
+# MCP 2.x is a breaking rewrite. Stay on the maintained v1 line until the
+# server has completed an explicit v2 migration.
+mcp>=1.29,<2

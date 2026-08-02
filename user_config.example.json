@@ -1,0 +1,4 @@
+{
+  "_comment": "Copy this file to user_config.local.json and set a stable per-person id for this project's Memory MCP. The .local.json file is gitignored. Env override: MEMORY_MCP_USER.",
+  "user_name": "your-name"
+}

@@ -1,0 +1,5 @@
+{"query": "material pipeline pbr roughness metallic", "expected_record_ids": ["material"], "tag": "material"}
+{"query": "audio bus submix master music", "expected_record_ids": ["audio"], "tag": "audio"}
+{"query": "input mapping enhanced keyboard gamepad", "expected_record_ids": ["input"], "tag": "input"}
+{"query": "PBR roughness", "expected_record_ids": ["material"], "tag": "material-short"}
+{"query": "submix routing master", "expected_record_ids": ["audio"], "tag": "audio-short"}

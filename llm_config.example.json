@@ -1,0 +1,27 @@
+{
+  "_comment": "Copy this file to llm_config.local.json and fill in your API key. The .local.json file is gitignored. Env overrides: MEMORY_LLM_API_KEY / MEMORY_LLM_BASE_URL / MEMORY_LLM_MODEL / MEMORY_LLM_MAX_OUTPUT_TOKENS / MEMORY_LLM_MAX_TOTAL_OUTPUT_TOKENS / MEMORY_LLM_MAX_INPUT_TOKENS / MEMORY_LLM_INPUT_CNY_PER_MTOK / MEMORY_LLM_OUTPUT_CNY_PER_MTOK / MEMORY_LLM_MAX_TOTAL_COST_CNY / MEMORY_LLM_DEFAULT_THINKING / MEMORY_LLM_DEFAULT_REASONING_EFFORT.",
+  "api_key": "sk-REPLACE_ME",
+  "base_url": "https://api.deepseek.com",
+  "model": "deepseek-v4-flash",
+  "timeout": 60,
+  "extra_headers": {},
+
+  "_cost_controls": "Per-call output cap (clamps max_tokens). Reference: deepseek-v4-flash output ~2 yuan/1M tokens, so 1024 tokens ~= 0.002 yuan/call.",
+  "max_output_tokens_per_call": 1024,
+  "_total_budget": "Soft per-process cumulative completion-tokens budget. Set 0 to disable. 200000 tokens ~= 0.4 yuan on flash, ~5 yuan on pro.",
+  "max_total_output_tokens": 200000,
+
+  "_input_cap": "Per-call input cap (estimated tokens). Bounds prompt size for input-side billing. Set 0 to disable.",
+  "max_input_tokens_per_call": 32000,
+
+  "_pricing": "CNY per 1M tokens. deepseek-v4-flash: 1 input / 2 output. deepseek-v4-pro: 12 input / 24 output. Used for usage_snapshot cost estimate and max_total_cost_cny budget.",
+  "input_cny_per_mtok": 1.0,
+  "output_cny_per_mtok": 2.0,
+  "_total_cost_budget": "Soft per-process cumulative cost cap in CNY. 0 disables.",
+  "max_total_cost_cny": 0.0,
+
+  "_thinking": "Default reasoning mode. Off saves cost. When enabled, choose effort: low / medium / high.",
+  "default_thinking": false,
+  "default_reasoning_effort": null
+}
+
