@@ -12,6 +12,7 @@ from servers.memory_server.memory_record_io import iter_parsed_records
 from servers.memory_server.memory_records import memory_write_record
 from servers.memory_server.memory_reflection import (
     _run_two_pass,
+    collect_reflection_targets,
     collect_task_evidence,
     publish_reflection_proposal,
     proposal_fingerprint,
@@ -75,6 +76,28 @@ def test_evidence_collection_excludes_secrets_and_reflection_outputs(repo: Path)
     assert secret["id"] not in ids
     assert derived["id"] not in ids
     assert {item["reason"] for item in result["excluded"]} == {"secret_signal", "derived_or_snapshot"}
+
+
+def test_reflection_targets_derive_title_from_parsed_record_body(repo: Path) -> None:
+    config = _reflection_config(repo)
+    existing = memory_write_record(
+        config,
+        content_markdown="# Existing reflection\n\nA replaceable project-level conclusion.",
+        record_kind="decision",
+        scope="project_shared",
+        status="distilled",
+        author="memory-reflector",
+        task_id="task-existing",
+        system_area="memory-mcp",
+        provenance="background_reflection",
+        replaceable=True,
+        authoritative=False,
+    )
+
+    assert existing["ok"] is True
+    targets = collect_reflection_targets(config, evidence=[{"system_area": "memory-mcp"}])
+    target = next(item for item in targets if item["id"] == existing["id"])
+    assert target["title"] == "Existing reflection"
 
 
 def test_reflection_validator_rejects_unsupported_and_secret_bearing_proposals() -> None:

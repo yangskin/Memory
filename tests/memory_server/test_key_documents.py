@@ -766,6 +766,7 @@ def test_auto_rebuild_after_successful_record_writes(tmp_path: Path) -> None:
                         "enabled": True,
                         "after_successful_writes": 2,
                         "renderer": "deterministic",
+                        "llm_gate": "off",
                         "targets": ["progress"],
                         "count_operations": ["record"],
                         "async": False,

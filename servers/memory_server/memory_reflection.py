@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from .memory_config import MemoryConfig
+from .memory_corpus import first_heading
 from .memory_llm_runner import run_llm_capability
 from .memory_locks import file_lock
 from .memory_record_io import iter_parsed_records
@@ -166,7 +167,7 @@ def collect_reflection_targets(
         candidates.append(
             {
                 "id": str(metadata.get("id") or ""),
-                "title": record.title[:160],
+                "title": first_heading(record.body)[:160],
                 "record_kind": str(metadata.get("record_kind") or ""),
                 "scope": str(metadata.get("scope") or ""),
                 "status": str(metadata.get("status") or ""),
