@@ -1592,6 +1592,9 @@ def build_task_brief(
         for item in [*stable_abstracts, *episodic_abstracts, *leads]
         if str(item.get("id") or "")
     }
+    # 历史验证会注入 LLM 的 authority_index；它们因去重而不会再出现在
+    # memory_abstracts / memory_leads 中，因此必须单独加入可引用集合。
+    allowed_ids.update(validation_ids)
     llm_evidence = {
         "prompt_version": PROMPT_VERSION,
         "current_task": {"task_id": task_id, "goal": goal, "active_files": files},

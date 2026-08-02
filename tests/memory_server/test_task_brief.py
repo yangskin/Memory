@@ -250,6 +250,47 @@ SOURCES: {record['id']}"""
     assert brief["map"]["memory"]["llm_summary"][0]["record_ids"] == [record["id"]]
 
 
+def test_llm_can_cite_validation_authority_excluded_from_memory_slots(repo: Path) -> None:
+    config, source = _begin(
+        repo,
+        goal="Validate Memory MCP restart behavior",
+        session="brief-validation-source",
+        include_task_brief=False,
+    )
+    validation = _write(
+        config,
+        source["context_token"],
+        "# Restart validation\n\nMemory MCP restart behavior passed end-to-end validation.",
+        kind="validation_result",
+        scope="project_shared",
+    )
+    _config2, current = _begin(
+        repo,
+        goal="Validate Memory MCP restart behavior",
+        session="brief-validation-reader",
+        include_task_brief=False,
+    )
+    config = replace(config, llm_defaults={"capabilities": {"generate_task_brief": {"enabled": True}}})
+    payload = _intent_payload("复核重启后的 Memory MCP。", sources=[validation["id"]])
+
+    brief = build_task_brief(
+        config,
+        task_context=current,
+        current_task=current["current_task"],
+        user_goal="Validate Memory MCP restart behavior",
+        client_factory=lambda _profile: _FakeClient(json.dumps(payload, ensure_ascii=False)),
+        refresh=True,
+    )
+
+    assert validation["id"] in {item.get("record_id") for item in brief["map"]["authority"]["validation"]}
+    assert validation["id"] not in {
+        item.get("id")
+        for item in [*brief["map"]["memory"]["stable"], *brief["map"]["memory"]["episodic"]]
+    }
+    assert brief["generation"]["mode"] == "llm"
+    assert brief["map"]["intent"]["used_record_ids"] == [validation["id"]]
+
+
 def test_default_mode_budgets_bound_deterministic_output(repo: Path) -> None:
     config, task = _begin(
         repo,
