@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .memory_locks import file_lock
+
 DEFAULT_ALLOWED_ROOTS = [".ai-context", "memory-bank"]
 DEFAULT_EXCLUDED_DIRS = ["Binaries", "Intermediate", "DerivedDataCache", "Saved/Cooked"]
 
@@ -745,7 +747,14 @@ def _ensure_config_file(config_path: Path) -> None:
         # 冷启动时多个进程可能同时到达这里。只有完整临时文件才参与替换，
         # 因此其他进程永远不会观察到已创建但仍为空的 config.json。
         if not config_path.exists():
-            os.replace(temp_path, config_path)
+            try:
+                os.replace(temp_path, config_path)
+            except PermissionError:
+                # Windows 不允许替换正被另一进程打开的目标文件。若竞争者已
+                # 完成原子创建，当前进程直接复用该完整文件；目标仍不存在时
+                # 则保留原始异常，避免掩盖真实权限错误。
+                if not config_path.exists():
+                    raise
     finally:
         try:
             temp_path.unlink(missing_ok=True)
@@ -758,18 +767,22 @@ def load_config(repo_root: str | Path, config_path: str | Path | None = None) ->
     _ensure_layout(root)
 
     resolved_config_path = (Path(config_path).resolve() if config_path else (root / ".ai-memory/config.json").resolve())
-    _ensure_config_file(resolved_config_path)
-
-    loaded: dict[str, Any] = {}
-    try:
-        config_bytes = resolved_config_path.read_bytes()
-        loaded = json.loads(config_bytes.decode("utf-8", errors="strict"))
-    except FileNotFoundError as exc:
-        raise MemoryConfigError(f"config file disappeared during load: {resolved_config_path}") from exc
-    except UnicodeDecodeError as exc:
-        raise MemoryConfigError(f"config file is not valid UTF-8: {resolved_config_path}: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise MemoryConfigError(f"config file is not valid JSON: {resolved_config_path}: {exc}") from exc
+    # 冷启动创建与首次读取必须是同一个跨进程事务。Windows 在另一进程
+    # replace/open 配置文件的极短窗口内可能返回 PermissionError；复用通用
+    # 文件锁后，调用方只会看到完整配置或明确的持久错误。
+    with file_lock(root, resolved_config_path):
+        _ensure_config_file(resolved_config_path)
+        loaded: dict[str, Any] = {}
+        try:
+            config_bytes = resolved_config_path.read_bytes()
+            loaded = json.loads(config_bytes.decode("utf-8", errors="strict"))
+        except FileNotFoundError as exc:
+            raise MemoryConfigError(f"config file disappeared during load: {resolved_config_path}") from exc
+        except UnicodeDecodeError as exc:
+            raise MemoryConfigError(f"config file is not valid UTF-8: {resolved_config_path}: {exc}") from exc
+        except json.JSONDecodeError as exc:
+            raise MemoryConfigError(f"config file is not valid JSON: {resolved_config_path}: {exc}") from exc
+        config_stat = resolved_config_path.stat()
     if not isinstance(loaded, dict):
         raise MemoryConfigError(f"config root must be a JSON object: {resolved_config_path}")
 
@@ -779,7 +792,6 @@ def load_config(repo_root: str | Path, config_path: str | Path | None = None) ->
         json.dumps(merged, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
     config_source_hash = hashlib.sha256(config_bytes).hexdigest()
-    config_stat = resolved_config_path.stat()
     guard = merged.get("guard", {}) if isinstance(merged.get("guard"), dict) else {}
 
     allowed_roots_raw = merged.get("allowed_roots", DEFAULT_ALLOWED_ROOTS)
