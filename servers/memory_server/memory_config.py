@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import hashlib
 import math
+import os
+import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -728,7 +730,27 @@ def _ensure_config_file(config_path: Path) -> None:
     if config_path.exists():
         return
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(json.dumps(DEFAULT_CONFIG_CONTENT, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload = json.dumps(DEFAULT_CONFIG_CONTENT, ensure_ascii=False, indent=2)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{config_path.name}.",
+        suffix=".tmp",
+        dir=str(config_path.parent),
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # 冷启动时多个进程可能同时到达这里。只有完整临时文件才参与替换，
+        # 因此其他进程永远不会观察到已创建但仍为空的 config.json。
+        if not config_path.exists():
+            os.replace(temp_path, config_path)
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def load_config(repo_root: str | Path, config_path: str | Path | None = None) -> MemoryConfig:
