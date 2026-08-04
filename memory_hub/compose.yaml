@@ -21,6 +21,7 @@ services:
       MEMORY_HUB_DATABASE_URL: postgresql+psycopg://memory_hub:${POSTGRES_PASSWORD}@postgres/memory_hub
       MEMORY_HUB_DISABLE_DOCS: "true"
       MEMORY_HUB_PUBLIC_BASE_URL: https://${MEMORY_HUB_PUBLIC_HOST:?set MEMORY_HUB_PUBLIC_HOST}
+      MEMORY_HUB_WEB_DIR: /app
       MEMORY_HUB_ENV: production
     command: sh -c "alembic upgrade head && memory-hub-api"
     depends_on:

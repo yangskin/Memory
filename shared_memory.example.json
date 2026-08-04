@@ -1,8 +1,7 @@
 {
-  "_comment": "Copy this file to shared_memory.local.json. It is gitignored and is the single local configuration file for the remote Memory Hub connection. Leave enabled=false to keep the local MCP fully offline.",
+  "_comment": "Copy this file to shared_memory.local.json. It is gitignored and is the single local configuration file for the remote Memory Hub connection. Leave enabled=false to keep the local MCP fully offline. The Hub user_id is NOT configured here: it is always reused from the local identity in user_config.local.json (user_name).",
   "enabled": false,
   "server_url": "https://memory.example.com",
   "project_id": "your-project-id",
-  "user_id": "your-stable-user-id",
   "token": "mem_v1.<token-id>.<secret>"
 }

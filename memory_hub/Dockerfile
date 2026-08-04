@@ -7,6 +7,7 @@ WORKDIR /app
 RUN useradd --create-home --uid 10001 memoryhub
 COPY pyproject.toml README.md ./
 COPY src ./src
+COPY web ./web
 COPY alembic.ini ./
 COPY migrations ./migrations
 RUN pip install --no-cache-dir .

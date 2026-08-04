@@ -38,6 +38,29 @@ Bootstrap 会生成受限权限的 `.env`、组装 Caddy 证书链、启动并�
 Token）。两者不能提交、复制到日志或发送到聊天中。再次运行不会覆盖现有本机配置，
 也不会新增活动 Token。
 
+## 只读共享记忆 Web 面板
+
+API 内置一个只读面板，实时展示 **LLM 整理的共同记忆**（项目级简报）与最近
+共同可见事件（`shared` / `project_shared` / `org_shared`），**永不展示任何
+用户的个人 scope 内容**：
+
+- 页面：`https://<host>/shared`（纯静态单文件，无外部 CDN 依赖）
+- 数据端点：`POST /v1/shared-feed`（需要 `context:read` scope）
+- 项目范围来自 Token，请求体不参与身份判定；请求体含多余字段会被拒绝（422）
+
+页面把只读 Token 保存在 `sessionStorage`，通过 `Authorization: Bearer …`
+请求数据，Token 不会出现在 URL 或访问日志。页面每 30 秒自动轮询。
+
+为面板创建一个只读 Token（最小权限）：
+
+```bash
+docker compose -p <project-id> exec api \
+	memory-hub token create --project <project-id> --user dashboard --scope context:read
+```
+
+> 提示：该 Token 只能读取项目共同内容，不能写入任何事件。请仅分发给可信团队，
+> 且不要提交、打印或发送到聊天中。
+
 ## 验证与运维
 
 ```bash
@@ -68,8 +91,8 @@ docker compose -p <project-id> down -v
 ## Token 与团队身份
 
 受信任的内部团队可以为同一项目使用一个带 `events:write` 和 `context:read` 权限的
-共享 Token。客户端在 `shared_memory.local.json` 配置的 `user_id`（缺省回退到
-`user_config.local.json` 的 `user_name`）会作为请求中的 `user_id`，Hub 用它归属事件、
+共享 Token。客户端**始终**将 `user_config.local.json` 的顶层 `user_name` 作为请求中的
+`user_id`（`shared_memory.local.json` 不配置 `user_id`），Hub 用它归属事件、
 过滤个人事件并维护个人 Brief。该模式降低接入成本，但不验证 `user_id` 的真实性，
 不适用于不互相信任的成员。
 

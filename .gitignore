@@ -29,6 +29,8 @@ shared_memory.local.json
 *.api_key
 *.apikey
 memory_hub/.env
+# Read-only dashboard bearer token (must NOT be committed).
+memory_hub/.dashboard_token
 memory_hub/certs/*
 !memory_hub/certs/
 !memory_hub/certs/README.md

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import uvicorn
 from fastapi import FastAPI, HTTPException, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import text
 
 from memory_hub.config import load_settings
@@ -12,6 +15,17 @@ from memory_hub.auth.rate_limit import TokenRateLimiter
 from memory_hub.db.session import create_session_factory
 from memory_hub.api.routes_context import router as context_router
 from memory_hub.api.routes_events import router as events_router
+
+# Directory that contains the shared dashboard page (web/shared.html).
+# The package is installed via `pip install .` into site-packages, so __file__
+# based lookup cannot locate the repo root; production sets MEMORY_HUB_WEB_DIR
+# explicitly (Dockerfile COPYs web/ to /app/web). Local source runs fall back
+# to the repository layout (src/memory_hub/api/main.py -> parents[3]).
+_WEB_SHARED_PAGE = (
+    Path(os.environ["MEMORY_HUB_WEB_DIR"]) / "web" / "shared.html"
+    if os.environ.get("MEMORY_HUB_WEB_DIR")
+    else Path(__file__).resolve().parents[3] / "web" / "shared.html"
+)
 
 
 def create_app() -> FastAPI:
@@ -33,6 +47,12 @@ def create_app() -> FastAPI:
         app.state.session_factory = create_session_factory(settings.database_url)
         app.include_router(events_router)
         app.include_router(context_router)
+
+    @app.get("/shared", include_in_schema=False)
+    def shared_page() -> FileResponse:
+        if not _WEB_SHARED_PAGE.is_file():
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "shared page not found")
+        return FileResponse(_WEB_SHARED_PAGE, media_type="text/html")
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:

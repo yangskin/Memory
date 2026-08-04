@@ -9,6 +9,7 @@ from memory_hub.api.dependencies import effective_user_id, require_principal
 from memory_hub.auth.permissions import Principal
 from memory_hub.db.models import BriefHead, BriefSnapshot, MemoryEvent
 from memory_hub.domain.shared_context import SharedContextRequest
+from memory_hub.domain.shared_feed import SharedFeedRequest
 
 router = APIRouter()
 
@@ -33,6 +34,19 @@ def _item(event: MemoryEvent) -> dict[str, object]:
         if key in _SAFE_METADATA_KEYS
     }
     return {"event_id": str(event.event_id), "user_id": event.user_id, "agent_id": event.agent_id, "agent_instance_id": event.agent_instance_id, "task_id": event.task_id, "task_run_id": event.task_run_id, "record_kind": event.record_kind, "task_phase": event.task_phase, "occurred_at": event.occurred_at.isoformat(), "last_reported_at": event.occurred_at.isoformat(), "metadata": metadata}
+
+
+def _shared_item(event: MemoryEvent) -> dict[str, object]:
+    """Event projection safe for the shared dashboard.
+
+    Only called for events whose ``scope`` is project-visible, so including
+    ``content_markdown`` here cannot leak a user's personal notes.
+    """
+    item = _item(event)
+    item["scope"] = event.scope
+    item["operation"] = event.operation
+    item["content_markdown"] = event.content_markdown
+    return item
 
 
 def _latest_per_workstream(events: list[MemoryEvent], limit: int, *, per_user_limit: int | None = None, task_grouped: bool = False) -> list[MemoryEvent]:
@@ -96,3 +110,50 @@ def shared_context(project_id: str, payload: SharedContextRequest, request: Requ
         if "project_activity" in payload.include:
             result["project_activity"] = [_item(event) for event in _latest_per_workstream([event for event in events if event.agent_instance_id != current], payload.max_items, per_user_limit=3)]
         return result
+
+
+@router.post("/v1/shared-feed")
+def shared_feed(payload: SharedFeedRequest, request: Request, principal: Principal = Depends(require_principal("context:read"))) -> dict[str, object]:
+    """Read-only dashboard feed of project-visible shared memory only.
+
+    The project is taken from the token's principal, never from the request
+    body. The query is scoped strictly to shared/project-visible scopes and
+    the LLM project brief; a user's personal-scope events are never selected,
+    so the response cannot leak private content to a browser.
+    """
+    if not request.app.state.rate_limiter.allow(principal.token_id, "shared_feed", 120):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "rate limit exceeded")
+    project_id = principal.project_id
+    since = datetime.now(UTC) - timedelta(minutes=payload.max_age_minutes)
+    factory = request.app.state.session_factory
+    with factory() as session:
+        visible = MemoryEvent.scope.in_(_PROJECT_VISIBLE_SCOPES)
+        events = list(session.scalars(select(MemoryEvent).where(MemoryEvent.project_id == project_id, MemoryEvent.occurred_at >= since, visible).order_by(desc(MemoryEvent.occurred_at)).limit(payload.max_items)))
+        latest_seq = max((event.server_seq for event in events), default=0)
+        project_latest_seq = int(session.scalar(select(func.coalesce(func.max(MemoryEvent.server_seq), 0)).where(MemoryEvent.project_id == project_id, MemoryEvent.occurred_at >= since, visible)) or 0)
+
+        head = session.get(BriefHead, (project_id, "project_recent", ""))
+        brief: dict[str, object] | None = None
+        watermark = 0
+        if head is not None:
+            snapshot = session.get(BriefSnapshot, head.current_brief_id)
+            if snapshot is not None:
+                brief = {
+                    "generated_at": snapshot.generated_at.isoformat(),
+                    "covers_through_seq": snapshot.input_seq_to,
+                    "markdown": snapshot.rendered_markdown,
+                    "structured": snapshot.structured_brief,
+                }
+                watermark = snapshot.input_seq_to
+        return {
+            "project_id": project_id,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "freshness": {
+                "latest_shared_seq": latest_seq,
+                "project_brief_generated_at": brief["generated_at"] if brief else None,
+                "project_brief_covers_through_seq": watermark,
+                "project_brief_lag_events": max(0, project_latest_seq - watermark),
+            },
+            "brief": brief,
+            "events": [_shared_item(event) for event in events],
+        }

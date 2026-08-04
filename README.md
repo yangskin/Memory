@@ -124,10 +124,12 @@ $env:PYTHONPATH = '<MemoryRoot>'
   "enabled": true,
   "server_url": "https://memory.example.com",
   "project_id": "your-project-id",
-  "user_id": "your-stable-user-id",
   "token": "mem_v1.<token-id>.<secret>"
 }
 ```
+
+Hub `user_id` **不需要**（也不应）在 `shared_memory.local.json` 中配置：客户端始终
+复用 `user_config.local.json` 中的顶层 `user_name` 作为 Hub `user_id`。
 
 `user_config.local.json` 与 `shared_memory.local.json` 均已被 Git 忽略，Token 不得
 写入 `.ai-memory/config.json`、MCP 配置或版本控制。重启 MCP 客户端后生效。环境变量
@@ -135,10 +137,10 @@ $env:PYTHONPATH = '<MemoryRoot>'
 不会等待网络；缺少 URL、项目 ID 或 Token 时自动保持禁用；认证失败时停止重试，直到
 Token 更换。旧版 `user_config.local.json["shared_memory"]` 仍会被读取，用于平滑迁移。
 
-团队可共用一个仅限该项目的 Hub Token；客户端会将顶层 `user_name` 作为 Hub
-`user_id`，用于隔离个人事件和个人 Brief。该模式适用于受信任的内部团队，服务端
-不验证该用户 ID 的真实性；未来需要更强身份保证时，可改为为每位成员签发独立 Token，
-无需迁移既有事件格式。
+团队可共用一个仅限该项目的 Hub Token；客户端始终将 `user_config.local.json` 的顶层
+`user_name` 作为 Hub `user_id`，用于隔离个人事件和个人 Brief。该模式适用于受信任的
+内部团队，服务端不验证该用户 ID 的真实性；未来需要更强身份保证时，可改为为每位成员
+签发独立 Token，无需迁移既有事件格式。
 
 Hub 管理员的服务器部署、运维、备份和 Token 签发方式见
 [`memory_hub/README.md`](memory_hub/README.md)；中文的架构、部署与当前进展说明见

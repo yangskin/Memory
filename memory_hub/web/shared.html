@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>共享记忆 · Memory Hub</title>
+<style>
+  :root {
+    --bg: #f4f6fb;
+    --card: #ffffff;
+    --line: #e3e8f2;
+    --ink: #1c2333;
+    --muted: #6b7590;
+    --brand: #4f6ef7;
+    --brand-soft: #eef1ff;
+    --ok: #17a05e;
+    --warn: #d9822b;
+    --err: #d64545;
+    --shared: #4f6ef7;
+    --proj: #7a5af5;
+    --org: #0e9f9f;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+  }
+  header.topbar {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 14px 22px; background: var(--card); border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; z-index: 10;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 17px; }
+  .brand .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--brand); }
+  .project-id { color: var(--muted); font-family: var(--mono); font-size: 13px; }
+  .status { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .status .pill {
+    padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    background: #eef0f5; color: var(--muted);
+  }
+  .status .pill.ok { background: #e5f7ee; color: var(--ok); }
+  .status .pill.err { background: #fdeaea; color: var(--err); }
+  .status .pill.busy { background: #fdf3e4; color: var(--warn); }
+  .tokenbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 10px 22px; background: var(--card); border-bottom: 1px solid var(--line);
+  }
+  .tokenbar label { font-size: 13px; color: var(--muted); }
+  .tokenbar input {
+    flex: 1; min-width: 260px; padding: 8px 12px; border: 1px solid var(--line);
+    border-radius: 8px; font-family: var(--mono); font-size: 13px; background: #fbfcff;
+  }
+  button {
+    border: 0; border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 600;
+    background: var(--brand); color: #fff; cursor: pointer;
+  }
+  button:hover { filter: brightness(1.05); }
+  button.ghost { background: #eef0f5; color: var(--ink); }
+  button:disabled { opacity: .55; cursor: default; }
+  main { max-width: 1200px; margin: 0 auto; padding: 22px; display: grid; grid-template-columns: 1.25fr 1fr; gap: 18px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; }
+  .card h2 { margin: 0 0 12px; font-size: 15px; color: var(--muted); font-weight: 600; letter-spacing: .3px; }
+  .empty { color: var(--muted); text-align: center; padding: 26px 0; font-size: 13px; }
+  .brief-summary {
+    background: var(--brand-soft); border: 1px solid #dde3ff; border-radius: 10px;
+    padding: 12px 14px; margin-bottom: 14px;
+  }
+  .brief-summary p { margin: 0; }
+  .brief-section { margin: 14px 0; }
+  .brief-section h3 {
+    margin: 0 0 8px; font-size: 13px; font-weight: 700; color: var(--ink);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .brief-section h3 .count {
+    font-size: 11px; color: var(--muted); background: #eef0f5; border-radius: 999px; padding: 1px 8px;
+  }
+  .conclusion {
+    border: 1px solid var(--line); border-left: 3px solid var(--brand);
+    border-radius: 8px; padding: 9px 12px; margin: 6px 0; background: #fbfcff;
+  }
+  .conclusion .conclusion-title { margin: 0; font-weight: 600; }
+  .conclusion .conclusion-desc { margin: 4px 0 0; color: #3a4360; }
+  .source-badge { font-size: 11px; color: var(--muted); background: #eef0f5; padding: 1px 8px; border-radius: 999px; }
+  .event {
+    border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 10px 0;
+  }
+  .event .meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .scope-tag { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; color: #fff; }
+  .scope-tag.shared { background: var(--shared); }
+  .scope-tag.project_shared { background: var(--proj); }
+  .scope-tag.org_shared { background: var(--org); }
+  .event .who { font-family: var(--mono); font-size: 12px; }
+  .event .when { margin-left: auto; white-space: nowrap; }
+  .event .body { margin-top: 7px; font-size: 14px; }
+  .event .body p { margin: 4px 0; }
+  .event .body pre { background: #f1f3f9; border-radius: 6px; padding: 8px; overflow-x: auto; font-size: 12px; }
+  .event .body code { background: #f1f3f9; border-radius: 4px; padding: 1px 4px; font-family: var(--mono); font-size: 12px; }
+  .freshness { font-size: 12px; color: var(--muted); border-top: 1px dashed var(--line); margin-top: 14px; padding-top: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; }
+  .freshness b { color: var(--ink); font-family: var(--mono); }
+  .errorbox {
+    background: #fdeaea; color: var(--err); border: 1px solid #f5c6c6;
+    border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px;
+  }
+  a { color: var(--brand); }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand"><span class="dot"></span>共享记忆面板 <span class="project-id" id="projectId">—</span></div>
+  <div class="status">
+    <span class="pill" id="statusPill">未连接</span>
+    <span id="lastUpdated">—</span>
+  </div>
+</header>
+
+<div class="tokenbar">
+  <label for="token">只读 Token（<code>context:read</code>，仅存本浏览器会话）</label>
+  <input id="token" type="password" autocomplete="off" placeholder="mem_v1.tok_….…" spellcheck="false">
+  <button id="connectBtn">连接</button>
+  <button class="ghost" id="refreshBtn" disabled>立即刷新</button>
+  <button class="ghost" id="clearBtn">清空</button>
+</div>
+
+<main>
+  <section class="card" id="briefCard">
+    <h2>LLM 整理的共同记忆简报</h2>
+    <div id="briefArea"><div class="empty">尚未连接 · 输入只读 Token 后点击「连接」。</div></div>
+  </section>
+
+  <section class="card" id="feedCard">
+    <h2>最近共同事件</h2>
+    <div id="feedArea"><div class="empty">连接后每 30 秒自动刷新。</div></div>
+    <div class="freshness" id="freshness" style="display:none"></div>
+  </section>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  var STORE_KEY = "memory_hub_shared_token";
+  var POLL_MS = 30000;
+  var timer = null;
+  var tokenEl = document.getElementById("token");
+  var connectBtn = document.getElementById("connectBtn");
+  var refreshBtn = document.getElementById("refreshBtn");
+  var clearBtn = document.getElementById("clearBtn");
+  var pill = document.getElementById("statusPill");
+  var lastUpdated = document.getElementById("lastUpdated");
+  var projectId = document.getElementById("projectId");
+
+  function setPill(state, text) {
+    pill.className = "pill";
+    if (state) pill.classList.add(state);
+    pill.textContent = text;
+  }
+  function fmtTime(iso) {
+    if (!iso) return "—";
+    var d = new Date(iso);
+    return d.toLocaleString("zh-CN", { hour12: false });
+  }
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+  function inlineFormat(text) {
+    return esc(text)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  }
+  function renderMarkdown(src) {
+    var parts = esc(src).split(/```/);
+    var out = "";
+    for (var i = 0; i < parts.length; i++) {
+      if (i % 2 === 1) { out += "<pre><code>" + parts[i].trim() + "</code></pre>"; continue; }
+      var inList = false;
+      var lines = parts[i].split("\n");
+      for (var j = 0; j < lines.length; j++) {
+        var line = lines[j];
+        var m = line.match(/^(#{1,6})\s+(.*)$/);
+        if (m) { var h = Math.min(m[1].length, 4); out += "<h" + h + ">" + inlineFormat(m[2]) + "</h" + h + ">"; continue; }
+        m = line.match(/^\s*[-*]\s+(.*)$/);
+        if (m) { if (!inList) { out += "<ul>"; inList = true; } out += "<li>" + inlineFormat(m[1]) + "</li>"; continue; }
+        if (inList) { out += "</ul>"; inList = false; }
+        if (!line.trim()) continue;
+        out += "<p>" + inlineFormat(line) + "</p>";
+      }
+      if (inList) out += "</ul>";
+    }
+    return out;
+  }
+  function pickText(item, keys) {
+    for (var i = 0; i < keys.length; i++) {
+      var v = item[keys[i]];
+      if (typeof v === "string" && v.trim()) return v;
+    }
+    return "";
+  }
+  function renderConclusion(item) {
+    if (typeof item === "string") {
+      return '<div class="conclusion"><p>' + inlineFormat(item) + "</p></div>";
+    }
+    var title = pickText(item, ["title", "summary", "conclusion", "blocker", "status"]);
+    var desc = pickText(item, ["description", "details", "note"]);
+    var n = Array.isArray(item.source_event_ids) ? item.source_event_ids.length : 0;
+    var html = '<div class="conclusion">';
+    if (title) html += '<p class="conclusion-title">' + inlineFormat(title) + "</p>";
+    if (desc) html += '<div class="conclusion-desc">' + renderMarkdown(desc) + "</div>";
+    if (n) html += '<span class="source-badge">' + n + " 条来源</span>";
+    html += "</div>";
+    return html;
+  }
+  var SECTION_LABELS = [
+    ["workstreams", "工作流进展"],
+    ["cross_cutting_changes", "跨领域变更"],
+    ["possible_overlaps", "可能重叠"],
+    ["project_blockers", "项目阻塞"],
+    ["build_and_test_status", "构建与测试状态"],
+    ["recent_decisions", "近期决策"]
+  ];
+  function renderBrief(structured, markdown) {
+    var area = document.getElementById("briefArea");
+    if (!structured) {
+      area.innerHTML = markdown
+        ? '<div class="brief-summary">' + renderMarkdown(markdown) + "</div>"
+        : '<div class="empty">暂无简报（尚未有共同事件或 Worker 未生成）。</div>';
+      return;
+    }
+    var html = "";
+    if (structured.summary) html += '<div class="brief-summary">' + renderMarkdown(String(structured.summary)) + "</div>";
+    SECTION_LABELS.forEach(function (pair) {
+      var key = pair[0], label = pair[1];
+      var items = Array.isArray(structured[key]) ? structured[key] : [];
+      if (!items.length) return;
+      html += '<section class="brief-section"><h3>' + label + ' <span class="count">' + items.length + "</span></h3>";
+      items.forEach(function (item) { html += renderConclusion(item); });
+      html += "</section>";
+    });
+    area.innerHTML = html || '<div class="empty">简报已生成，但暂无分区内容。</div>';
+  }
+  function scopeClass(s) {
+    if (s === "shared") return "shared";
+    if (s === "project_shared") return "project_shared";
+    return "org_shared";
+  }
+  function renderEvent(ev) {
+    var html = '<div class="event">';
+    html += '<div class="meta">';
+    html += '<span class="scope-tag ' + scopeClass(ev.scope) + '">' + esc(ev.scope) + "</span>";
+    html += '<span class="who">' + esc(ev.user_id) + "</span>";
+    if (ev.agent_id) html += '<span class="who">' + esc(ev.agent_id) + "</span>";
+    if (ev.task_id) html += '<span class="who">' + esc(ev.task_id) + "</span>";
+    if (ev.record_kind) html += '<span class="who">' + esc(ev.record_kind) + "</span>";
+    html += '<span class="when">' + fmtTime(ev.occurred_at) + "</span>";
+    html += "</div>";
+    if (ev.content_markdown) html += '<div class="body">' + renderMarkdown(ev.content_markdown) + "</div>";
+    html += "</div>";
+    return html;
+  }
+  function renderFeed(feed) {
+    projectId.textContent = feed.project_id ? "· " + feed.project_id : "—";
+    var f = feed.freshness || {};
+    var lag = f.project_brief_lag_events || 0;
+    var brief = feed.brief || null;
+    renderBrief(brief ? brief.structured : null, brief ? brief.markdown : null);
+    var feedArea = document.getElementById("feedArea");
+    if (feed.events && feed.events.length) {
+      feedArea.innerHTML = feed.events.map(renderEvent).join("");
+    } else {
+      feedArea.innerHTML = '<div class="empty">当前时间窗内暂无共同可见事件。</div>';
+    }
+    var freshnessEl = document.getElementById("freshness");
+    freshnessEl.style.display = "grid";
+    freshnessEl.innerHTML =
+      "<span>简报生成 <b>" + fmtTime(f.project_brief_generated_at) + "</b></span>" +
+      "<span>简报覆盖至 seq <b>" + (f.project_brief_covers_through_seq || 0) + "</b></span>" +
+      "<span>最新共同事件 seq <b>" + (f.latest_shared_seq || 0) + "</b></span>" +
+      "<span>简报待整理事件 <b>" + lag + "</b></span>";
+    setPill(lag > 0 ? "busy" : "ok", lag > 0 ? "整理中" : "已同步");
+    lastUpdated.textContent = "更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
+  }
+  function showError(message) {
+    var feedArea = document.getElementById("feedArea");
+    feedArea.innerHTML = '<div class="errorbox">' + esc(message) + "</div>";
+    setPill("err", "错误");
+  }
+  function fetchFeed() {
+    var token = tokenEl.value.trim();
+    if (!token) { showError("请先输入只读 Token。"); return; }
+    setPill("busy", "请求中");
+    fetch("/v1/shared-feed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+      body: JSON.stringify({ max_age_minutes: 720, max_items: 50 })
+    }).then(function (resp) {
+      if (resp.status === 200) return resp.json();
+      if (resp.status === 401) throw new Error("Token 无效或已过期（401）。");
+      if (resp.status === 403) throw new Error("Token 缺少 context:read 权限（403）。");
+      if (resp.status === 429) throw new Error("请求过于频繁（429）。");
+      throw new Error("服务错误（HTTP " + resp.status + "）。");
+    }).then(function (feed) {
+      renderFeed(feed);
+      schedule();
+    }).catch(function (err) {
+      showError(err && err.message ? err.message : String(err));
+    });
+  }
+  function schedule() {
+    if (timer) clearInterval(timer);
+    timer = setInterval(fetchFeed, POLL_MS);
+  }
+  function connect() {
+    var token = tokenEl.value.trim();
+    if (!token) { showError("请先输入只读 Token。"); return; }
+    try { sessionStorage.setItem(STORE_KEY, token); } catch (e) {}
+    refreshBtn.disabled = false;
+    fetchFeed();
+  }
+  function clearAll() {
+    try { sessionStorage.removeItem(STORE_KEY); } catch (e) {}
+    tokenEl.value = "";
+    if (timer) { clearInterval(timer); timer = null; }
+    refreshBtn.disabled = true;
+    projectId.textContent = "—";
+    lastUpdated.textContent = "—";
+    setPill("", "未连接");
+    document.getElementById("briefArea").innerHTML = '<div class="empty">尚未连接 · 输入只读 Token 后点击「连接」。</div>';
+    document.getElementById("feedArea").innerHTML = '<div class="empty">连接后每 30 秒自动刷新。</div>';
+    document.getElementById("freshness").style.display = "none";
+  }
+  connectBtn.addEventListener("click", connect);
+  refreshBtn.addEventListener("click", fetchFeed);
+  clearBtn.addEventListener("click", clearAll);
+  tokenEl.addEventListener("keydown", function (e) { if (e.key === "Enter") connect(); });
+
+  try {
+    var saved = sessionStorage.getItem(STORE_KEY);
+    if (saved) { tokenEl.value = saved; refreshBtn.disabled = false; fetchFeed(); }
+  } catch (e) {}
+})();
+</script>
+</body>
+</html>

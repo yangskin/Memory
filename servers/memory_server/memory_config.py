@@ -443,15 +443,17 @@ def _load_local_shared_memory(repo_root: Path) -> dict[str, Any]:
     if not result:
         return {}
 
-    # Backfill a missing user_id from the local identity when available.
-    if not str(result.get("user_id") or "").strip():
-        try:
-            data = json.loads(_local_user_config_path(repo_root).read_text(encoding="utf-8"))
-            user_id = (data.get("user_id") or data.get("user_name")) if isinstance(data, dict) else None
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-            user_id = None
-        if isinstance(user_id, str) and user_id.strip():
-            result["user_id"] = user_id.strip()
+    # user_id 始终复用 user 配置（user_config.local.json）中的本地身份，不应在
+    # 远端连接文件中重复配置。仅当 user 配置缺失（且连接文件显式提供了
+    # user_id）时才保留连接文件中的值，保持向后兼容。
+    try:
+        data = json.loads(_local_user_config_path(repo_root).read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            user_id = data.get("user_id") or data.get("user_name")
+            if isinstance(user_id, str) and user_id.strip():
+                result["user_id"] = user_id.strip()
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        pass
     return result
 
 

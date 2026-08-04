@@ -103,3 +103,54 @@ def test_dedicated_shared_memory_file_backfills_user_id_from_identity(repo, monk
 
     assert config.shared_memory.active
     assert config.shared_memory.user_id == "carol"
+
+
+def test_user_id_always_reused_from_local_identity(repo, monkeypatch, tmp_path) -> None:
+    """Hub user_id 始终复用 user 配置中的身份；连接文件中显式配置的 user_id 被覆盖。"""
+    local_config = tmp_path / "user_config.local.json"
+    local_config.write_text(json.dumps({"user_name": "dave"}), encoding="utf-8")
+    shared_config = tmp_path / "shared_memory.local.json"
+    shared_config.write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "server_url": "https://hub.example.com",
+                "project_id": "project-4",
+                "user_id": "stale-user-id",
+                "token": "dedicated-token",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(memory_config, "_local_user_config_path", lambda _root: local_config)
+    monkeypatch.setattr(memory_config, "_local_shared_memory_config_path", lambda _root: shared_config)
+
+    config = load_config(repo)
+
+    assert config.shared_memory.active
+    assert config.shared_memory.project_id == "project-4"
+    assert config.shared_memory.user_id == "dave"
+
+
+def test_shared_memory_user_id_kept_when_identity_missing(repo, monkeypatch, tmp_path) -> None:
+    """user 配置缺失时，回退保留连接文件中显式配置的 user_id（向后兼容）。"""
+    shared_config = tmp_path / "shared_memory.local.json"
+    shared_config.write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "server_url": "https://hub.example.com",
+                "project_id": "project-5",
+                "user_id": "legacy-user-id",
+                "token": "dedicated-token",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(memory_config, "_local_user_config_path", lambda _root: tmp_path / "missing_user_config.local.json")
+    monkeypatch.setattr(memory_config, "_local_shared_memory_config_path", lambda _root: shared_config)
+
+    config = load_config(repo)
+
+    assert config.shared_memory.active
+    assert config.shared_memory.user_id == "legacy-user-id"
