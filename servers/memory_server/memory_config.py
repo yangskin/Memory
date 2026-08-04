@@ -402,6 +402,21 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return merged
 
 
+def _local_user_config_path(repo_root: Path) -> Path:
+    plugin_root = Path(__file__).resolve().parents[2]
+    memory_root = plugin_root if repo_root == plugin_root else repo_root / "MCP" / "Memory"
+    return memory_root / "user_config.local.json"
+
+
+def _load_local_shared_memory(repo_root: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(_local_user_config_path(repo_root).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+    shared_memory = data.get("shared_memory") if isinstance(data, dict) else None
+    return dict(shared_memory) if isinstance(shared_memory, dict) else {}
+
+
 def _validate_runtime_blocks(config: dict[str, Any]) -> None:
     """拒绝会令常驻 worker 在运行期崩溃的语义错误配置。"""
 
@@ -809,6 +824,9 @@ def load_config(repo_root: str | Path, config_path: str | Path | None = None) ->
         raise MemoryConfigError(f"config root must be a JSON object: {resolved_config_path}")
 
     merged = _deep_merge(DEFAULT_CONFIG_CONTENT, loaded)
+    local_shared_memory = _load_local_shared_memory(root)
+    if local_shared_memory:
+        merged["shared_memory"] = _deep_merge(merged["shared_memory"], local_shared_memory)
     _validate_runtime_blocks(merged)
     config_hash = hashlib.sha256(
         json.dumps(merged, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")

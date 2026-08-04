@@ -111,29 +111,25 @@ $env:PYTHONPATH = '<MemoryRoot>'
 ### 2.3.1 可选连接 Memory Hub
 
 本地 MCP 默认完全离线运行，不配置 Hub 时不会发起任何网络请求，原有
-`memory_read` / `memory_write` 行为不变。要把本地 Outbox 与共享上下文连接到
-自行部署的 Hub，在目标项目的 `<RepoRoot>/.ai-memory/config.json` 中加入：
+`memory_read` / `memory_write` 行为不变。要连接自行部署的 Hub，只需复制
+`<MemoryRoot>/user_config.example.json` 为同目录的 `user_config.local.json`，并填写：
 
 ```json
 {
+  "user_name": "your-stable-user-id",
   "shared_memory": {
     "enabled": true,
     "server_url": "https://memory.example.com",
     "project_id": "your-project-id",
-    "token_env": "MEMORY_HUB_TOKEN"
+    "token": "mem_v1.<token-id>.<secret>"
   }
 }
 ```
 
-Token 不得写入 `config.json`、MCP 配置或版本控制。把服务端签发的 Bearer
-Token 仅设在运行 MCP 进程的环境中，例如 PowerShell：
-
-```powershell
-$env:MEMORY_HUB_TOKEN = "mem_v1.<token-id>.<secret>"
-```
-
-重启 MCP 客户端后生效。同步在后台进行：本地写入不会等待网络；缺少 URL、项目
-ID 或 Token 时自动保持禁用；认证失败时停止重试，直到 Token 更换。
+`user_config.local.json` 已被 Git 忽略，Token 不得写入 `.ai-memory/config.json`、
+MCP 配置或版本控制。重启 MCP 客户端后生效。环境变量 `MEMORY_HUB_TOKEN` 可在
+CI 或临时调试时覆盖文件中的 Token。同步在后台进行：本地写入不会等待网络；缺少
+URL、项目 ID 或 Token 时自动保持禁用；认证失败时停止重试，直到 Token 更换。
 
 Hub 管理员在部署主机上的签发方式见 [`memory_hub/README.md`](memory_hub/README.md)。
 

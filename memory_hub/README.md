@@ -111,6 +111,15 @@ Revoke a token by ID when a device or credential is no longer trusted:
 docker compose exec api memory-hub token revoke --token-id <token-id>
 ```
 
+Query token IDs, users, scopes, and revocation status for a project:
+
+```bash
+docker compose exec api memory-hub token list --project <project-id>
+```
+
+The raw token is intentionally never queryable because only its hash is stored.
+If the one-time value is lost, create a replacement token and revoke the old ID.
+
 Back up the database volume before upgrades or destructive operations:
 
 ```bash

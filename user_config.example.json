@@ -1,4 +1,10 @@
 {
-  "_comment": "Copy this file to user_config.local.json and set a stable per-person id for this project's Memory MCP. The .local.json file is gitignored. Env override: MEMORY_MCP_USER.",
-  "user_name": "your-name"
+  "_comment": "Copy this file to user_config.local.json. It is gitignored and is the single local configuration file for user identity and optional Memory Hub access.",
+  "user_name": "your-name",
+  "shared_memory": {
+    "enabled": false,
+    "server_url": "https://memory.example.com",
+    "project_id": "your-project-id",
+    "token": "mem_v1.<token-id>.<secret>"
+  }
 }
