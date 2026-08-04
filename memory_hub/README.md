@@ -33,9 +33,10 @@ cd memory_hub
 ```
 
 Bootstrap 会生成受限权限的 `.env`、组装 Caddy 证书链、启动并等待服务健康，
-然后在仓库根目录创建权限为 `0600` 的 `user_config.local.json`。该文件包含仅
-首次显示的最小权限 Token，不能提交、复制到日志或发送到聊天中。再次运行不会
-覆盖现有本机配置，也不会新增活动 Token。
+然后在仓库根目录创建权限为 `0600` 的两个本机文件：`user_config.local.json`
+（本地身份）与 `shared_memory.local.json`（远端连接，含仅首次显示的最小权限
+Token）。两者不能提交、复制到日志或发送到聊天中。再次运行不会覆盖现有本机配置，
+也不会新增活动 Token。
 
 ## 验证与运维
 
@@ -67,9 +68,10 @@ docker compose -p <project-id> down -v
 ## Token 与团队身份
 
 受信任的内部团队可以为同一项目使用一个带 `events:write` 和 `context:read` 权限的
-共享 Token。客户端在 `user_config.local.json` 顶层配置的 `user_name` 会作为请求中的
-`user_id`，Hub 用它归属事件、过滤个人事件并维护个人 Brief。该模式降低接入成本，但
-不验证 `user_id` 的真实性，不适用于不互相信任的成员。
+共享 Token。客户端在 `shared_memory.local.json` 配置的 `user_id`（缺省回退到
+`user_config.local.json` 的 `user_name`）会作为请求中的 `user_id`，Hub 用它归属事件、
+过滤个人事件并维护个人 Brief。该模式降低接入成本，但不验证 `user_id` 的真实性，
+不适用于不互相信任的成员。
 
 需要强身份边界时，仍可为每位成员签发独立 Token；事件和 Context API 保持兼容。
 
@@ -98,8 +100,8 @@ docker compose -p <project-id> exec api memory-hub token revoke --token-id <toke
 
 ## 安全要求
 
-`.env`、`user_config.local.json`、证书、私钥和 CSR 已被 Git 忽略。发布前应在
-仓库根目录执行：
+`.env`、`user_config.local.json`、`shared_memory.local.json`、证书、私钥和 CSR
+已被 Git 忽略。发布前应在仓库根目录执行：
 
 ```bash
 python scripts/check_public_tree.py

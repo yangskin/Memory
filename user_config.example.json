@@ -1,10 +1,4 @@
 {
-  "_comment": "Copy this file to user_config.local.json. It is gitignored. user_name is also sent to Memory Hub as user_id when a shared project token is used.",
-  "user_name": "your-name",
-  "shared_memory": {
-    "enabled": false,
-    "server_url": "https://memory.example.com",
-    "project_id": "your-project-id",
-    "token": "mem_v1.<token-id>.<secret>"
-  }
+  "_comment": "Copy this file to user_config.local.json. It is gitignored and holds only the local identity. The remote Memory Hub connection lives in the separate shared_memory.local.json file (see shared_memory.example.json).",
+  "user_name": "your-name"
 }

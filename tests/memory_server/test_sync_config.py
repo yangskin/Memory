@@ -44,9 +44,62 @@ def test_local_user_config_supplies_private_hub_connection(repo, monkeypatch, tm
         encoding="utf-8",
     )
     monkeypatch.setattr(memory_config, "_local_user_config_path", lambda _root: local_config)
+    monkeypatch.setattr(memory_config, "_local_shared_memory_config_path", lambda _root: tmp_path / "shared_memory.local.json")
 
     config = load_config(repo)
 
     assert config.shared_memory.active
     assert config.shared_memory.token == "local-test-token"
     assert config.shared_memory.user_id == "alice"
+
+
+def test_dedicated_shared_memory_file_takes_priority(repo, monkeypatch, tmp_path) -> None:
+    local_config = tmp_path / "user_config.local.json"
+    local_config.write_text(json.dumps({"user_name": "bob"}), encoding="utf-8")
+    shared_config = tmp_path / "shared_memory.local.json"
+    shared_config.write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "server_url": "https://hub.example.com",
+                "project_id": "project-2",
+                "user_id": "bob",
+                "token": "dedicated-token",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(memory_config, "_local_user_config_path", lambda _root: local_config)
+    monkeypatch.setattr(memory_config, "_local_shared_memory_config_path", lambda _root: shared_config)
+
+    config = load_config(repo)
+
+    assert config.shared_memory.active
+    assert config.shared_memory.server_url == "https://hub.example.com"
+    assert config.shared_memory.project_id == "project-2"
+    assert config.shared_memory.token == "dedicated-token"
+    assert config.shared_memory.user_id == "bob"
+
+
+def test_dedicated_shared_memory_file_backfills_user_id_from_identity(repo, monkeypatch, tmp_path) -> None:
+    local_config = tmp_path / "user_config.local.json"
+    local_config.write_text(json.dumps({"user_name": "carol"}), encoding="utf-8")
+    shared_config = tmp_path / "shared_memory.local.json"
+    shared_config.write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "server_url": "https://hub.example.com",
+                "project_id": "project-3",
+                "token": "dedicated-token",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(memory_config, "_local_user_config_path", lambda _root: local_config)
+    monkeypatch.setattr(memory_config, "_local_shared_memory_config_path", lambda _root: shared_config)
+
+    config = load_config(repo)
+
+    assert config.shared_memory.active
+    assert config.shared_memory.user_id == "carol"

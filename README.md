@@ -111,25 +111,29 @@ $env:PYTHONPATH = '<MemoryRoot>'
 ### 2.3.1 可选连接 Memory Hub
 
 本地 MCP 默认完全离线运行，不配置 Hub 时不会发起任何网络请求，原有
-`memory_read` / `memory_write` 行为不变。要连接自行部署的 Hub，只需复制
-`<MemoryRoot>/user_config.example.json` 为同目录的 `user_config.local.json`，并填写：
+`memory_read` / `memory_write` 行为不变。远端服务器连接使用独立配置文件，和本地
+身份分离：
+
+1. 本地身份：复制 `<MemoryRoot>/user_config.example.json` 为同目录的
+   `user_config.local.json`，填写 `user_name`。
+2. 远端服务器：复制 `<MemoryRoot>/shared_memory.example.json` 为同目录的
+   `shared_memory.local.json`，并填写：
 
 ```json
 {
-  "user_name": "your-stable-user-id",
-  "shared_memory": {
-    "enabled": true,
-    "server_url": "https://memory.example.com",
-    "project_id": "your-project-id",
-    "token": "mem_v1.<token-id>.<secret>"
-  }
+  "enabled": true,
+  "server_url": "https://memory.example.com",
+  "project_id": "your-project-id",
+  "user_id": "your-stable-user-id",
+  "token": "mem_v1.<token-id>.<secret>"
 }
 ```
 
-`user_config.local.json` 已被 Git 忽略，Token 不得写入 `.ai-memory/config.json`、
-MCP 配置或版本控制。重启 MCP 客户端后生效。环境变量 `MEMORY_HUB_TOKEN` 可在
-CI 或临时调试时覆盖文件中的 Token。同步在后台进行：本地写入不会等待网络；缺少
-URL、项目 ID 或 Token 时自动保持禁用；认证失败时停止重试，直到 Token 更换。
+`user_config.local.json` 与 `shared_memory.local.json` 均已被 Git 忽略，Token 不得
+写入 `.ai-memory/config.json`、MCP 配置或版本控制。重启 MCP 客户端后生效。环境变量
+`MEMORY_HUB_TOKEN` 可在 CI 或临时调试时覆盖文件中的 Token。同步在后台进行：本地写入
+不会等待网络；缺少 URL、项目 ID 或 Token 时自动保持禁用；认证失败时停止重试，直到
+Token 更换。旧版 `user_config.local.json["shared_memory"]` 仍会被读取，用于平滑迁移。
 
 团队可共用一个仅限该项目的 Hub Token；客户端会将顶层 `user_name` 作为 Hub
 `user_id`，用于隔离个人事件和个人 Brief。该模式适用于受信任的内部团队，服务端

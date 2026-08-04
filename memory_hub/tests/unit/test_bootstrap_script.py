@@ -8,6 +8,7 @@ def test_bootstrap_creates_protected_local_config_without_printing_token() -> No
     assert 'docker compose -p "$project_id" up -d --build --wait' in script
     assert 'token="$(docker compose -p "$project_id" exec -T api memory-hub token create' in script
     assert 'local_config="$(dirname "$hub_dir")/user_config.local.json"' in script
-    assert 'chmod 600 "$local_config"' in script
-    assert 'if [ -f "$local_config" ]; then' in script
+    assert 'shared_memory_config="$(dirname "$hub_dir")/shared_memory.local.json"' in script
+    assert 'chmod 600 "$local_config" "$shared_memory_config"' in script
+    assert 'if [ -f "$local_config" ] || [ -f "$shared_memory_config" ]; then' in script
     assert 'echo "$token"' not in script

@@ -16,7 +16,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-LOCAL_ONLY_NAMES = {"llm_config.local.json", "user_config.local.json"}
+LOCAL_ONLY_NAMES = {"llm_config.local.json", "user_config.local.json", "shared_memory.local.json"}
 IGNORED_DIRS = {
     ".git",
     ".venv",

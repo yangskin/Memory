@@ -408,17 +408,48 @@ def _local_user_config_path(repo_root: Path) -> Path:
     return memory_root / "user_config.local.json"
 
 
+def _local_shared_memory_config_path(repo_root: Path) -> Path:
+    """Path of the independent remote-server (Memory Hub) configuration file."""
+    plugin_root = Path(__file__).resolve().parents[2]
+    memory_root = plugin_root if repo_root == plugin_root else repo_root / "MCP" / "Memory"
+    return memory_root / "shared_memory.local.json"
+
+
 def _load_local_shared_memory(repo_root: Path) -> dict[str, Any]:
+    """Load remote-server configuration, preferring the dedicated file.
+
+    Priority:
+      1. ``shared_memory.local.json`` (independent, gitignored).
+      2. Legacy ``user_config.local.json["shared_memory"]``.
+    """
+    result: dict[str, Any] = {}
     try:
-        data = json.loads(_local_user_config_path(repo_root).read_text(encoding="utf-8"))
+        data = json.loads(_local_shared_memory_config_path(repo_root).read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            nested = data.get("shared_memory")
+            result = dict(nested) if isinstance(nested, dict) else dict(data)
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        pass
+
+    if not result:
+        try:
+            data = json.loads(_local_user_config_path(repo_root).read_text(encoding="utf-8"))
+            shared_memory = data.get("shared_memory") if isinstance(data, dict) else None
+            if isinstance(shared_memory, dict):
+                result = dict(shared_memory)
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            pass
+
+    if not result:
         return {}
-    shared_memory = data.get("shared_memory") if isinstance(data, dict) else None
-    if not isinstance(shared_memory, dict):
-        return {}
-    result = dict(shared_memory)
+
+    # Backfill a missing user_id from the local identity when available.
     if not str(result.get("user_id") or "").strip():
-        user_id = data.get("user_id") or data.get("user_name")
+        try:
+            data = json.loads(_local_user_config_path(repo_root).read_text(encoding="utf-8"))
+            user_id = (data.get("user_id") or data.get("user_name")) if isinstance(data, dict) else None
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            user_id = None
         if isinstance(user_id, str) and user_id.strip():
             result["user_id"] = user_id.strip()
     return result

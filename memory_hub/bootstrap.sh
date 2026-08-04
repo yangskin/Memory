@@ -8,6 +8,7 @@ hub_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 cert_dir="$hub_dir/certs"
 env_file="$hub_dir/.env"
 local_config="$(dirname "$hub_dir")/user_config.local.json"
+shared_memory_config="$(dirname "$hub_dir")/shared_memory.local.json"
 leaf="$cert_dir/$host.crt"
 key="$cert_dir/$host.key"
 intermediate_url="http://ica.wt.trustasia.com/TrustAsiaDVTLSRSACA2024.crt"
@@ -62,8 +63,8 @@ openssl verify -partial_chain -CAfile "$intermediate" "$leaf" >/dev/null
 
 docker compose -p "$project_id" up -d --build --wait
 
-if [ -f "$local_config" ]; then
-    echo "TLS chain prepared and $project_id is running. Kept existing $local_config."
+if [ -f "$local_config" ] || [ -f "$shared_memory_config" ]; then
+    echo "TLS chain prepared and $project_id is running. Kept existing local configuration."
     exit 0
 fi
 
@@ -74,7 +75,8 @@ token="$(docker compose -p "$project_id" exec -T api memory-hub token create \
     --scope events:write \
     --scope context:read)"
 
-printf '{\n  "user_name": "%s",\n  "shared_memory": {\n    "enabled": true,\n    "server_url": "https://%s",\n    "project_id": "%s",\n    "token": "%s"\n  }\n}\n' \
-    "$user_id" "$host" "$project_id" "$token" > "$local_config"
-chmod 600 "$local_config"
-echo "TLS chain prepared, $project_id is running, and local MCP configuration was created at $local_config."
+printf '{\n  "user_name": "%s"\n}\n' "$user_id" > "$local_config"
+printf '{\n  "enabled": true,\n  "server_url": "https://%s",\n  "project_id": "%s",\n  "user_id": "%s",\n  "token": "%s"\n}\n' \
+    "$host" "$project_id" "$user_id" "$token" > "$shared_memory_config"
+chmod 600 "$local_config" "$shared_memory_config"
+echo "TLS chain prepared, $project_id is running, and local MCP configuration was created at $local_config and $shared_memory_config."

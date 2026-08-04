@@ -24,6 +24,8 @@ Thumbs.db
 # LLM credentials (must NOT be committed). Keep llm_config.example.json as the template.
 llm_config.local.json
 user_config.local.json
+# Remote Memory Hub connection (must NOT be committed). Keep shared_memory.example.json as the template.
+shared_memory.local.json
 *.api_key
 *.apikey
 memory_hub/.env
