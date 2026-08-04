@@ -66,6 +66,7 @@ def test_dispatch_write_record_with_distill_persists_summary(repo: Path, monkeyp
     assert distilled["pipeline"]["chunks"] == 1
     assert distilled["pipeline"]["llm_calls"] == 1
     assert transport_calls["n"] == 1
+    json.dumps(result)
 
     # Persisted distilled record exists as a replaceable derived layer and links back to raw.
     persisted_path = Path(repo) / distilled["distilled_path"]

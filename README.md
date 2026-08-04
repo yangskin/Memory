@@ -17,7 +17,7 @@
 - **工具表面**：普通 agent 只使用 `memory_read` / `memory_write`。
 - **多人模式**：始终开启。`activeContext` 按用户分文件，`teamContext` / `progress` / `techContext` / `systemPatterns` 只沉淀共享或发布记录。
 - **维护策略**：guard 超限、总预算超限、索引过期、事件膨胀、冷数据 retention 都由 auto-maintenance 处理。
-- **测试状态**：`tests/memory_server` 当前通过 `703 passed`。
+- **测试状态**：`tests/memory_server` 当前通过 `862 passed, 5 skipped`。
 
 实现代码在 `servers/memory_server/`。
 
@@ -131,7 +131,9 @@ MCP 配置或版本控制。重启 MCP 客户端后生效。环境变量 `MEMORY
 CI 或临时调试时覆盖文件中的 Token。同步在后台进行：本地写入不会等待网络；缺少
 URL、项目 ID 或 Token 时自动保持禁用；认证失败时停止重试，直到 Token 更换。
 
-Hub 管理员在部署主机上的签发方式见 [`memory_hub/README.md`](memory_hub/README.md)。
+Hub 管理员的服务器部署、运维、备份和 Token 签发方式见
+[`memory_hub/README.md`](memory_hub/README.md)；中文的架构、部署与当前进展说明见
+[`memory_hub/DESIGN.md`](memory_hub/DESIGN.md)。
 
 ### 2.4 Agent 规则配置（团队接入必做）
 

@@ -1,0 +1,153 @@
+# Memory Hub 设计与部署说明
+
+> 状态：已实现并通过本地、容器与 HTTPS 健康检查。本文描述当前已交付的
+> `memory_hub`；实际域名、项目 ID、Token、证书和 LLM 凭证只保存在被 Git
+> 忽略的本机文件中，不应写入本文或提交到仓库。
+
+## 1. 定位
+
+Memory Hub 是本地 Memory MCP 的可选 HTTPS 共享事件服务。它不取代本地
+Markdown 真源、SQLite 索引或本地任务上下文：未配置 Hub 时，
+`memory_read` 和 `memory_write` 保持离线可用，也不会发起网络请求。
+
+启用 Hub 后，本地 MCP 将可同步的规范化事件写入本地 Outbox，并由后台线程
+异步上传。网络、远端鉴权或远端处理失败不会阻塞本地写入。
+
+## 2. 架构
+
+```mermaid
+flowchart LR
+    MCP[本地 Memory MCP]
+    Outbox[SQLite Outbox]
+    Hub[Memory Hub API]
+    DB[(PostgreSQL)]
+    Worker[Brief Worker]
+    LLM[OpenAI 兼容 LLM]
+
+    MCP -->|本地 raw 写入| Outbox
+    Outbox -->|HTTPS 事件批量上传| Hub
+    Hub --> DB
+    DB --> Worker
+    Worker -->|可选| LLM
+    Worker -->|Brief 快照| DB
+    MCP -->|HTTPS 上下文读取| Hub
+```
+
+生产 Compose 栈包含四个服务：
+
+| 服务 | 职责 | 网络边界 |
+|---|---|---|
+| `caddy` | TLS、HTTP 到 HTTPS 重定向、反向代理 | 唯一暴露 `80/443` 的服务 |
+| `api` | 鉴权、事件接收、上下文读取、迁移 | 仅 Compose 私有网络 |
+| `worker` | 异步生成用户与项目 Brief | 仅 Compose 私有网络 |
+| `postgres` | 事件、Token 哈希、Job、Brief 快照 | 仅 Compose 私有网络 |
+
+## 3. 数据与处理模型
+
+1. 本地客户端以版本化 JSON 合约调用 `POST /v1/projects/{project_id}/events/batch`。
+2. API 从 Bearer Token 推导 `user_id`、`project_id` 与权限；请求正文不能决定身份。
+3. 事件按 `(project_id, event_id)` 幂等。相同内容重复上传返回 duplicate，不同内容复用同一 ID 会被拒绝。
+4. 成功事件写入 append-only `memory_events`，并标记用户与项目 Brief Job 为 dirty。
+5. Worker 使用带租约的 Job 领取、退避重试和水位线处理，生成 `user_recent` 与 `project_recent` 快照。
+6. API 从当前 Brief Head 和可见事件提供 `POST /v1/projects/{project_id}/context`。
+
+Brief 是可重建的派生视图，不是事件真源。Worker 失败时保留旧 Head；项目 Brief 不向其他用户暴露个人范围的事件正文。
+
+## 4. 安全边界
+
+- Token 格式为 `mem_v1.<token-id>.<secret>`，服务端只保存 secret hash，明文只在创建时出现一次。
+- Token 仅授予所需 scope，通常为 `events:write` 与 `context:read`；丢失或泄露时创建替代 Token 并撤销旧 `token_id`。
+- 事件正文经过敏感信息检测；命中私钥、常见 API Key、Bearer Token、数据库 URL、AWS Key、Slack Token 或 JWT 特征时，正文不持久化。
+- 上下文 API 只返回白名单 metadata 字段；个人 scope 不会被用于他人的项目 Brief。
+- `.env`、`user_config.local.json`、证书、私钥、CSR 均必须被 Git 忽略。发布前运行根目录的 `scripts/check_public_tree.py`。
+- LLM Provider 只接收 Worker 允许的 Brief 输入，不能执行工具、命令、URL 或代码。未配置真实 LLM 时使用 `fake` Provider，基础同步仍可用。
+
+## 5. 中文部署步骤
+
+### 5.1 前置条件
+
+- Docker Compose 可用。
+- DNS 已将目标域名解析到服务器。
+- 防火墙或安全组已开放 TCP `80`、`443`。
+- 将签发的 `<public-hostname>.crt` 与 `<public-hostname>.key` 放进 `memory_hub/certs/`。
+
+### 5.2 初始化
+
+在 `memory_hub/` 目录执行，项目 ID 必须显式指定：
+
+```bash
+./bootstrap.sh memory.example.com <project-id> <user-id>
+```
+
+Bootstrap 会：
+
+1. 创建受限权限的 `.env`，其中包含随机 PostgreSQL 内部密码。
+2. 组装 `fullchain.pem` 与 `privkey.pem` 并验证证书链。
+3. 以 `<project-id>` 作为 Compose 项目名构建并等待服务健康。
+4. 在仓库根目录生成权限为 `0600` 的 `user_config.local.json`，其中包含一次性创建的最小权限 Token。
+
+重复运行不会覆盖已有的 `user_config.local.json`，也不会额外创建活动 Token。证书要求见 [`certs/README.md`](certs/README.md)。
+
+### 5.3 验证与日常运维
+
+```bash
+# 容器状态
+docker compose -p <project-id> ps
+
+# HTTPS 健康检查
+curl --fail https://memory.example.com/healthz
+
+# 关注服务日志
+docker compose -p <project-id> logs -f api worker caddy
+
+# 备份 PostgreSQL
+docker compose -p <project-id> exec -T postgres \
+  pg_dump -U memory_hub memory_hub > memory-hub-backup.sql
+```
+
+销毁所有服务数据是不可逆操作：
+
+```bash
+docker compose -p <project-id> down -v
+```
+
+## 6. 本地 MCP 接入
+
+复制根目录的 `user_config.example.json` 为被忽略的 `user_config.local.json`，填写 Hub 地址、项目 ID 和 Token。也可使用环境变量 `MEMORY_HUB_TOKEN` 临时覆盖文件 Token。
+
+完整配置必须同时满足 `enabled=true`、非空 URL、项目 ID 和有效 Token；任一项缺失时同步保持禁用。详细字段及本地离线行为见根目录 [`README.md`](../README.md)。
+
+## 7. 可选 LLM Brief
+
+Worker 默认使用 `LLM_PROVIDER=fake`，不会调用外部模型。要启用 OpenAI 兼容 API，仅在被忽略的 `.env` 中配置：
+
+```env
+LLM_PROVIDER=openai_compatible
+LLM_BASE_URL=https://provider.example.com/v1
+LLM_API_KEY=<secret>
+LLM_MODEL=<model-name>
+```
+
+更新后重建 Worker：
+
+```bash
+docker compose -p <project-id> up -d --force-recreate worker
+```
+
+不要将 `LLM_API_KEY` 放入 README、Git、MCP 配置或 `user_config.local.json`。
+
+## 8. 当前实现进展
+
+| 能力 | 状态 |
+|---|---|
+| HTTPS API、手工证书链、Caddy 反向代理 | 已完成 |
+| PostgreSQL 事件持久化与幂等写入 | 已完成 |
+| Token 哈希、scope 鉴权、撤销与列表 CLI | 已完成 |
+| 本地 Outbox 异步上传、部分确认重试、认证失败停重试 | 已完成 |
+| 用户/项目 Brief Job、租约、重试、水位线与 Head upsert | 已完成 |
+| 事件正文脱敏、metadata 白名单、个人范围隔离 | 已完成 |
+| `fake` 与 OpenAI 兼容 Brief Provider | 已完成 |
+| Docker Compose、健康检查、备份命令与自动本机配置生成 | 已完成 |
+| 多节点高可用、跨区域复制、强一致任务编排 | 未实现，且不属于当前设计范围 |
+
+当前验证覆盖 Hub 单元/集成/Worker 测试、本地 MCP 同步测试、公开树审计、TLS 与 HTTPS 健康检查。真实部署的运行日志和数据库只应包含运行态信息，不应被复制进仓库文档。

@@ -243,7 +243,16 @@ def _run_distill_for_write(
             tags=args.get("distill_tags") or args.get("tags"),
             max_tokens=args.get("distill_max_tokens"),
         )
-        return {"distilled": distilled_payload, "client": client}
+        usage: dict[str, Any] = {}
+        snapshot = getattr(client, "usage_snapshot", None)
+        if callable(snapshot):
+            try:
+                usage_snapshot = snapshot()
+                if isinstance(usage_snapshot, dict):
+                    usage = usage_snapshot
+            except Exception:
+                pass
+        return {"distilled": distilled_payload, "usage": usage}
 
     def _client_factory(_profile):
         # Honour the legacy ``_build_llm_client`` seam so tests that
@@ -280,7 +289,6 @@ def _run_distill_for_write(
 
     payload = envelope.value if isinstance(envelope.value, dict) else {}
     distilled = payload.get("distilled") or {}
-    client = payload.get("client")
     summary_text = str(distilled.get("content") or "").strip()
     if not summary_text:
         out = error_result("distill_failed", "empty summary text")
@@ -304,15 +312,7 @@ def _run_distill_for_write(
         task_id=str(args["task_id"]) if args.get("task_id") is not None else None,
         branch=str(args["branch"]) if args.get("branch") is not None else None,
     )
-    usage = {}
-    snap = getattr(client, "usage_snapshot", None)
-    if callable(snap):
-        try:
-            usage_snap = snap()
-            if isinstance(usage_snap, dict):
-                usage = usage_snap
-        except Exception:
-            usage = {}
+    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
     return {
         "ok": bool(persist.get("ok")),
         "status": envelope.status,
