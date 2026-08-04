@@ -91,7 +91,10 @@ async def _run(config: MemoryConfig | ReloadableMemoryConfig) -> None:
     provider = config if isinstance(config, ReloadableMemoryConfig) else ReloadableMemoryConfig(config)
     server = create_server(provider)
     worker = MemoryBackgroundWorker(provider.get)
+    from .memory_sync_worker import MemorySyncWorker
+    sync_worker = MemorySyncWorker(provider.get)
     worker.start()
+    sync_worker.start()
     try:
         async with stdio_server() as (read_stream, write_stream):
             await server.run(
@@ -101,6 +104,7 @@ async def _run(config: MemoryConfig | ReloadableMemoryConfig) -> None:
             )
     finally:
         worker.stop(timeout=1.0)
+        sync_worker.stop(timeout=1.0)
 
 
 def main() -> int:

@@ -1,0 +1,18 @@
+https://{$MEMORY_HUB_PUBLIC_IP} {
+	# Public CA services do not issue trusted certificates for bare IP
+	# addresses. This private CA keeps transport encrypted; install the
+	# generated root certificate in every local MCP client trust store.
+	tls internal
+	request_body {
+		max_size 1MB
+	}
+	reverse_proxy api:8000 {
+		transport http {
+			read_timeout 65s
+			write_timeout 65s
+		}
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+	}
+}

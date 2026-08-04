@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "memory-hub"
+version = "0.1.0"
+description = "Public shared-event service for Memory MCP"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "alembic>=1.14,<2",
+    "fastapi>=0.115,<1",
+    "httpx>=0.28,<1",
+    "psycopg[binary]>=3.2,<4",
+    "pydantic>=2.10,<3",
+    "sqlalchemy>=2.0,<3",
+    "uvicorn[standard]>=0.32,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+]
+
+[project.scripts]
+memory-hub-api = "memory_hub.api.main:main"
+memory-hub-worker = "memory_hub.worker.main:main"
+memory-hub = "memory_hub.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/memory_hub"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

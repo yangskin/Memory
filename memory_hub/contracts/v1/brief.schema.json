@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Brief v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["generated_at", "covers_through_seq", "markdown"],
+  "properties": {
+    "generated_at": {"type": "string", "format": "date-time"},
+    "covers_through_seq": {"type": "integer", "minimum": 0},
+    "markdown": {"type": "string"}
+  }
+}

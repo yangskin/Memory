@@ -1,0 +1,33 @@
+"""Small HTTPS JSON client; failures are values, never write-path exceptions."""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+from .memory_sync_config import SharedMemoryConfig
+
+
+class MemoryHubClient:
+    def __init__(self, config: SharedMemoryConfig) -> None:
+        self.config = config
+
+    def post(self, path: str, payload: dict[str, Any], timeout_seconds: float) -> tuple[int, dict[str, Any]]:
+        if not self.config.active:
+            return 0, {"error": "shared_memory_disabled"}
+        request = Request(f"{self.config.server_url}{path}", data=json.dumps(payload).encode("utf-8"), headers={"Authorization": f"Bearer {self.config.token}", "Content-Type": "application/json"}, method="POST")
+        try:
+            with urlopen(request, timeout=timeout_seconds) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            return exc.code, {"error": f"http_{exc.code}"}
+        except (URLError, TimeoutError, ValueError):
+            return 0, {"error": "remote_unavailable"}
+
+    def upload(self, events: list[dict[str, Any]]) -> tuple[int, dict[str, Any]]:
+        return self.post(f"/v1/projects/{self.config.project_id}/events/batch", {"events": events}, self.config.upload_timeout_seconds)
+
+    def context(self, request: dict[str, Any], timeout_seconds: float) -> tuple[int, dict[str, Any]]:
+        return self.post(f"/v1/projects/{self.config.project_id}/context", request, timeout_seconds)

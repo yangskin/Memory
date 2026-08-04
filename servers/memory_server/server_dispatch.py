@@ -735,6 +735,9 @@ def _compact_read_response(operation: str, result: dict[str, Any], *, include_di
             )
         if "suggested_metadata" in result:
             compact["suggested_metadata"] = result["suggested_metadata"]
+        for key in ("shared_context", "shared_sync"):
+            if key in result:
+                compact[key] = result[key]
         return _prune_heavy_payload(compact)
 
     if operation == "task_brief":
@@ -930,7 +933,22 @@ def _dispatch_memory_read(config: MemoryConfig, args: dict[str, Any]) -> dict[st
                 requested_tags=None,
                 plugin_root=getattr(config, "plugin_root", None),
             )
+        try:
+            from .memory_shared_context import get_shared_context
+            from .memory_sync_store import SyncStore
+            result["shared_context"] = get_shared_context(SyncStore(config.repo_root / ".ai-memory" / "shared-sync.db"), config.shared_memory, {**args, "task_id": task.get("task_id")})
+        except Exception:
+            result["shared_context"] = None
         return _compact_read_response(operation, result, include_diagnostics=include_diagnostics)
+
+    if operation == "shared_context":
+        try:
+            from .memory_shared_context import get_shared_context
+            from .memory_sync_store import SyncStore
+            payload = get_shared_context(SyncStore(config.repo_root / ".ai-memory" / "shared-sync.db"), config.shared_memory, args, force_refresh=bool(args.get("force_refresh")), active=True)
+            return ok_result("shared context read", operation="shared_context", shared_context=payload)
+        except Exception as exc:
+            return error_result("shared_context_unavailable", type(exc).__name__)
 
     if operation == "get_task_context":
         return get_task_context(config, str(args.get("context_token") or ""))
@@ -984,6 +1002,13 @@ def _dispatch_memory_read(config: MemoryConfig, args: dict[str, Any]) -> dict[st
 
     if operation in {"retrieve_context", "important_memories", "latest_memories"}:
         result = _dispatch_memory_context(config, {**args, "operation": operation})
+        if operation == "retrieve_context" and bool(args.get("include_shared_context")) and isinstance(result, dict):
+            try:
+                from .memory_shared_context import get_shared_context
+                from .memory_sync_store import SyncStore
+                result["shared_context"] = get_shared_context(SyncStore(config.repo_root / ".ai-memory" / "shared-sync.db"), config.shared_memory, args, active=True)
+            except Exception:
+                result["shared_context"] = None
         return _compact_read_response(operation, result, include_diagnostics=include_diagnostics)
 
     args, context_error = apply_task_context(config, args)
@@ -1038,8 +1063,25 @@ def _dispatch_memory_read(config: MemoryConfig, args: dict[str, Any]) -> dict[st
         ), args)
     return error_result(
         "invalid_input",
-        "operation must be one of: task_context, task_brief, get_task_context, get, search, search_records, runtime_digest, retrieve_context, important_memories, latest_memories",
+        "operation must be one of: task_context, task_brief, get_task_context, get, search, search_records, runtime_digest, retrieve_context, important_memories, latest_memories, shared_context",
     )
+
+
+def _enqueue_shared_event(config: MemoryConfig, args: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    if not result.get("ok") or not config.shared_memory.enabled:
+        return result
+    try:
+        from .memory_sync_protocol import build_memory_event
+        from .memory_sync_store import SyncStore
+        event = build_memory_event(args, result)
+        if event["scope"] not in config.shared_memory.sync_scopes:
+            return result
+        queued = SyncStore(config.repo_root / ".ai-memory" / "shared-sync.db").enqueue(event["event_id"], event, event["content_hash"])
+        result["shared_sync"] = {"enabled": True, "queued": queued}
+    except Exception as exc:  # synchronization must never change local write success
+        logger.warning("shared event enqueue failed: %s", type(exc).__name__)
+        result["shared_sync"] = {"enabled": True, "queued": False}
+    return result
 
 
 def _dispatch_memory_write(config: MemoryConfig, args: dict[str, Any]) -> dict[str, Any]:
@@ -1198,6 +1240,8 @@ def _dispatch_memory_write(config: MemoryConfig, args: dict[str, Any]) -> dict[s
                     "error": "background_queue_unavailable",
                     "message": f"{type(exc).__name__}: {exc}",
                 }
+        if checkpoint_record is not None:
+            result = _enqueue_shared_event(config, args, {**checkpoint_record, **result})
         return attach_task_context(_attach_key_document_autorun(config, operation="checkpoint", result=result, phase=phase), args)
     if operation == "record":
         if args.get("content_markdown") is None and args.get("content") is not None:
@@ -1334,12 +1378,12 @@ def _dispatch_memory_write(config: MemoryConfig, args: dict[str, Any]) -> dict[s
                     "message": "invalid context_token was recovered; inspect context_recovery before treating task attribution as authoritative.",
                 }
             )
-        return attach_task_context(_attach_key_document_autorun(
+        return _enqueue_shared_event(config, args, attach_task_context(_attach_key_document_autorun(
             config,
             operation="record",
             result=write_result,
             phase=str(args["task_phase"]) if args.get("task_phase") is not None else None,
-        ), args)
+        ), args))
     if operation == "observation":
         if args.get("content_markdown") is None and args.get("content") is not None:
             args = {**args, "content_markdown": args.get("content")}
@@ -1383,12 +1427,12 @@ def _dispatch_memory_write(config: MemoryConfig, args: dict[str, Any]) -> dict[s
                     "message": "invalid context_token was recovered; inspect context_recovery before treating task attribution as authoritative.",
                 }
             ]
-        return attach_task_context(_attach_key_document_autorun(
+        return _enqueue_shared_event(config, args, attach_task_context(_attach_key_document_autorun(
             config,
             operation="observation",
             result=result,
             phase=str(args["task_phase"]) if args.get("task_phase") is not None else None,
-        ), args)
+        ), args))
     if operation == "link_artifact":
         return error_result(
             "admin_cli_required",

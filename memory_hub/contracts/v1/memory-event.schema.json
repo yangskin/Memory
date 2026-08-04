@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Memory Hub Event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "event_id", "agent_id", "agent_instance_id", "operation", "scope", "occurred_at", "content_hash"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "event_id": {"type": "string", "minLength": 1},
+    "source_node_id": {"type": "string"},
+    "agent_id": {"type": "string", "minLength": 1},
+    "agent_instance_id": {"type": "string", "minLength": 1},
+    "task_id": {"type": "string"},
+    "task_run_id": {"type": "string"},
+    "operation": {"type": "string", "enum": ["record", "observation", "checkpoint"]},
+    "record_kind": {"type": "string"},
+    "scope": {"type": "string"},
+    "task_phase": {"type": "string"},
+    "content_markdown": {"type": "string"},
+    "metadata": {"type": "object"},
+    "source_record_id": {"type": "string"},
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "content_hash": {"type": "string", "pattern": "^sha256:"}
+  }
+}

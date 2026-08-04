@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Shared Context Response v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["pending_updates", "freshness"],
+  "properties": {
+    "user_brief": {"$ref": "brief.schema.json"},
+    "project_brief": {"$ref": "brief.schema.json"},
+    "same_task_agents": {"type": "array", "items": {"type": "object"}},
+    "my_other_agents": {"type": "array", "items": {"type": "object"}},
+    "other_tasks": {"type": "array", "items": {"type": "object"}},
+    "project_activity": {"type": "array", "items": {"type": "object"}},
+    "pending_updates": {"type": "array", "items": {"type": "object"}},
+    "freshness": {"type": "object"}
+  }
+}

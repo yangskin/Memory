@@ -1,0 +1,58 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: memory_hub
+      POSTGRES_USER: memory_hub
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memory_hub -d memory_hub"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+  api:
+    build: .
+    environment:
+      MEMORY_HUB_DATABASE_URL: postgresql+psycopg://memory_hub:${POSTGRES_PASSWORD}@postgres/memory_hub
+      MEMORY_HUB_DISABLE_DOCS: "true"
+      MEMORY_HUB_PUBLIC_BASE_URL: https://${MEMORY_HUB_PUBLIC_IP:?set MEMORY_HUB_PUBLIC_IP}
+      MEMORY_HUB_ENV: production
+    command: sh -c "alembic upgrade head && memory-hub-api"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+  caddy:
+    image: caddy:2.8-alpine
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      MEMORY_HUB_PUBLIC_IP: ${MEMORY_HUB_PUBLIC_IP:?set MEMORY_HUB_PUBLIC_IP}
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+  worker:
+    build: .
+    environment:
+      MEMORY_HUB_DATABASE_URL: postgresql+psycopg://memory_hub:${POSTGRES_PASSWORD}@postgres/memory_hub
+      LLM_PROVIDER: fake
+    command: memory-hub-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

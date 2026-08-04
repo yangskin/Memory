@@ -1,0 +1,44 @@
+name: memory-hub
+
+on:
+  push:
+    paths: ["memory_hub/**", ".github/workflows/memory-hub.yml"]
+  pull_request:
+    paths: ["memory_hub/**", ".github/workflows/memory-hub.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: memory_hub
+          POSTGRES_USER: memory_hub
+          POSTGRES_PASSWORD: memory_hub
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U memory_hub -d memory_hub"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      MEMORY_HUB_DATABASE_URL: postgresql+psycopg://memory_hub:memory_hub@localhost:5432/memory_hub
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Hub dependencies
+        working-directory: memory_hub
+        run: uv sync --all-extras --dev
+      - name: Upgrade empty database
+        working-directory: memory_hub
+        run: uv run alembic upgrade head
+      - name: Run Hub tests
+        working-directory: memory_hub
+        run: uv run pytest

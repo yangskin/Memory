@@ -69,6 +69,7 @@ def _build_facade_tools(
                             "retrieve_context",
                             "important_memories",
                             "latest_memories",
+                            "shared_context",
                         ],
                         "default": "task_context",
                         "description": "Read operation to perform.",
@@ -192,6 +193,17 @@ def _build_facade_tools(
                             "and other non-context debug fields. Default false keeps MCP responses compact."
                         ),
                     },
+                    "include_shared_context": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "operation=retrieve_context: include optional cached or remote shared Hub context.",
+                    },
+                    "include": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": ["user_brief", "project_brief", "same_task_agents", "my_other_agents", "other_tasks", "project_activity"]},
+                    },
+                    "max_age_minutes": {"type": "integer", "minimum": 1, "maximum": 10080},
+                    "force_refresh": {"type": "boolean", "default": False},
                     "llm_suggest_metadata": {
                         "type": "boolean",
                         "default": False,

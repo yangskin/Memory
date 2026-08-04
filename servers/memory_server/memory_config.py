@@ -205,6 +205,27 @@ DEFAULT_CONFIG_CONTENT: dict[str, Any] = {
             # "snapshot_narrative": {"enabled": True, "timeout": 60},
         },
     },
+    "shared_memory": {
+        "enabled": False,
+        "server_url": "",
+        "project_id": "",
+        "token_env": "MEMORY_HUB_TOKEN",
+        "upload_enabled": True,
+        "upload_interval_seconds": 30,
+        "upload_batch_size": 20,
+        "upload_timeout_seconds": 5,
+        "upload_retry_max_seconds": 300,
+        "read_enabled": True,
+        "background_refresh_seconds": 60,
+        "task_context_timeout_ms": 600,
+        "active_query_timeout_ms": 1200,
+        "fresh_cache_seconds": 90,
+        "usable_cache_seconds": 600,
+        "recent_window_hours": 24,
+        "max_items": 20,
+        "max_injected_tokens": 1000,
+        "sync_scopes": ["personal", "session", "user_private", "shared", "project_shared", "org_shared"],
+    },
 }
 
 
@@ -305,6 +326,7 @@ class MemoryConfig:
     # :mod:`memory_llm_runner`. Stored as a free-form dict so adding new
     # knobs does not churn the dataclass.
     llm_defaults: dict[str, Any] | None = None
+    shared_memory: Any = None
     record_packing_max_record_chars: int = 2_000
     record_packing_max_pack_chars: int = 64_000
     record_packing_archive_after_days: int = 90
@@ -888,6 +910,7 @@ def load_config(repo_root: str | Path, config_path: str | Path | None = None) ->
         key_documents_active_context_auto_archive=_parse_active_context_auto_archive(merged.get("key_documents")),
         **_parse_embeddings(root, merged.get("embeddings")),
         llm_defaults=_parse_llm_defaults(merged.get("llm_defaults")),
+        shared_memory=__import__("servers.memory_server.memory_sync_config", fromlist=["parse_shared_memory_config"]).parse_shared_memory_config(merged.get("shared_memory")),
         **_parse_record_packing(merged.get("record_packing")),
     )
 
