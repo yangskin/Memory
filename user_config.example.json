@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy this file to user_config.local.json. It is gitignored and is the single local configuration file for user identity and optional Memory Hub access.",
+  "_comment": "Copy this file to user_config.local.json. It is gitignored. user_name is also sent to Memory Hub as user_id when a shared project token is used.",
   "user_name": "your-name",
   "shared_memory": {
     "enabled": false,

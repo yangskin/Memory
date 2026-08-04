@@ -12,6 +12,16 @@ from memory_hub.auth.tokens import parse_token, verify_secret
 from memory_hub.db.repositories import active_token
 
 
+def effective_user_id(request: Request, principal: Principal) -> str:
+    """Return the client-selected user id for shared-token deployments."""
+    user_id = request.headers.get("X-Memory-User-ID", "").strip()
+    if not user_id:
+        return principal.user_id
+    if len(user_id) > 256 or any(ord(character) < 32 for character in user_id):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid user id")
+    return user_id
+
+
 def require_principal(required_scope: str) -> Callable:
     def dependency(request: Request) -> Principal:
         factory: sessionmaker[Session] | None = getattr(request.app.state, "session_factory", None)

@@ -64,7 +64,14 @@ docker compose -p <project-id> exec -T postgres \
 docker compose -p <project-id> down -v
 ```
 
-## Token 管理
+## Token 与团队身份
+
+受信任的内部团队可以为同一项目使用一个带 `events:write` 和 `context:read` 权限的
+共享 Token。客户端在 `user_config.local.json` 顶层配置的 `user_name` 会作为请求中的
+`user_id`，Hub 用它归属事件、过滤个人事件并维护个人 Brief。该模式降低接入成本，但
+不验证 `user_id` 的真实性，不适用于不互相信任的成员。
+
+需要强身份边界时，仍可为每位成员签发独立 Token；事件和 Context API 保持兼容。
 
 为一个本地 MCP 用户签发最小权限 Token：
 

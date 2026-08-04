@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
-from memory_hub.api.dependencies import require_principal
+from memory_hub.api.dependencies import effective_user_id, require_principal
 from memory_hub.auth.permissions import Principal
 from memory_hub.domain.events import EventBatchRequest, EventBatchResponse
 from memory_hub.services.event_ingest import ingest_events
@@ -19,4 +19,4 @@ def batch_events(project_id: str, payload: EventBatchRequest, request: Request, 
     factory = request.app.state.session_factory
     with factory() as session:
         settings = request.app.state.settings
-        return ingest_events(session, project_id, principal.user_id, payload.events, user_debounce_seconds=settings.brief_user_debounce_seconds, project_debounce_seconds=settings.brief_project_debounce_seconds)
+        return ingest_events(session, project_id, effective_user_id(request, principal), payload.events, user_debounce_seconds=settings.brief_user_debounce_seconds, project_debounce_seconds=settings.brief_project_debounce_seconds)

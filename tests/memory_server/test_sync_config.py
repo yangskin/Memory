@@ -49,3 +49,4 @@ def test_local_user_config_supplies_private_hub_connection(repo, monkeypatch, tm
 
     assert config.shared_memory.active
     assert config.shared_memory.token == "local-test-token"
+    assert config.shared_memory.user_id == "alice"

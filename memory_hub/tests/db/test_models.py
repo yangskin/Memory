@@ -14,6 +14,7 @@ def test_required_tables_and_event_idempotency_constraint_are_declared() -> None
     assert "uq_memory_events_project_event" in unique_constraints
     assert indexes == {
         "idx_events_project_seq",
+        "idx_events_project_time",
         "idx_events_project_user_time",
         "idx_events_project_task_time",
         "idx_events_project_agent_time",

@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, or_, select
 
-from memory_hub.api.dependencies import require_principal
+from memory_hub.api.dependencies import effective_user_id, require_principal
 from memory_hub.auth.permissions import Principal
 from memory_hub.db.models import BriefHead, BriefSnapshot, MemoryEvent
 from memory_hub.domain.shared_context import SharedContextRequest
@@ -70,16 +70,19 @@ def shared_context(project_id: str, payload: SharedContextRequest, request: Requ
     since = datetime.now(UTC) - timedelta(minutes=payload.max_age_minutes)
     factory = request.app.state.session_factory
     with factory() as session:
-        events = list(session.scalars(select(MemoryEvent).where(MemoryEvent.project_id == project_id, MemoryEvent.occurred_at >= since).order_by(desc(MemoryEvent.occurred_at)).limit(500)))
+        user_id = effective_user_id(request, principal)
+        visibility = or_(MemoryEvent.user_id == user_id, MemoryEvent.scope.in_(_PROJECT_VISIBLE_SCOPES))
+        events = list(session.scalars(select(MemoryEvent).where(MemoryEvent.project_id == project_id, MemoryEvent.occurred_at >= since, visibility).order_by(desc(MemoryEvent.occurred_at)).limit(500)))
         current = payload.agent_instance_id
         latest_seq = max((event.server_seq for event in events), default=0)
-        user_brief, user_watermark = _brief(session, project_id, "user_recent", principal.user_id)
+        project_latest_seq = int(session.scalar(select(func.coalesce(func.max(MemoryEvent.server_seq), 0)).where(MemoryEvent.project_id == project_id, MemoryEvent.occurred_at >= since, MemoryEvent.scope.in_(_PROJECT_VISIBLE_SCOPES))) or 0)
+        user_brief, user_watermark = _brief(session, project_id, "user_recent", user_id)
         project_brief, project_watermark = _brief(session, project_id, "project_recent", "")
         def is_pending(event: MemoryEvent) -> bool:
-            watermark = user_watermark if event.user_id == principal.user_id and event.scope not in _PROJECT_VISIBLE_SCOPES else project_watermark
+            watermark = user_watermark if event.user_id == user_id and event.scope not in _PROJECT_VISIBLE_SCOPES else project_watermark
             return event.server_seq > watermark
 
-        result: dict[str, object] = {"pending_updates": [_item(event) for event in events if is_pending(event)][:10], "freshness": {"latest_event_seq": latest_seq, "user_brief_lag_events": max(0, latest_seq - user_watermark), "project_brief_lag_events": max(0, latest_seq - project_watermark)}}
+        result: dict[str, object] = {"pending_updates": [_item(event) for event in events if is_pending(event)][:10], "freshness": {"latest_event_seq": latest_seq, "user_brief_lag_events": max(0, latest_seq - user_watermark), "project_brief_lag_events": max(0, project_latest_seq - project_watermark)}}
         if "user_brief" in payload.include and user_brief:
             result["user_brief"] = user_brief
         if "project_brief" in payload.include and project_brief:
@@ -87,7 +90,7 @@ def shared_context(project_id: str, payload: SharedContextRequest, request: Requ
         if "same_task_agents" in payload.include and payload.task_id:
             result["same_task_agents"] = [_item(event) for event in _latest_per_workstream([event for event in events if event.task_id == payload.task_id and event.agent_instance_id != current], payload.max_items)]
         if "my_other_agents" in payload.include:
-            result["my_other_agents"] = [_item(event) for event in _latest_per_workstream([event for event in events if event.user_id == principal.user_id and event.agent_instance_id != current], payload.max_items)]
+            result["my_other_agents"] = [_item(event) for event in _latest_per_workstream([event for event in events if event.user_id == user_id and event.agent_instance_id != current], payload.max_items)]
         if "other_tasks" in payload.include:
             result["other_tasks"] = [_item(event) for event in _latest_per_workstream([event for event in events if event.task_id != payload.task_id], payload.max_items, task_grouped=True)]
         if "project_activity" in payload.include:

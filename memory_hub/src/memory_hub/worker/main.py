@@ -34,9 +34,10 @@ def main() -> None:
     provider, model_name = _provider(settings)
     factory = create_session_factory(settings.database_url)
     worker_id = os.getenv("MEMORY_HUB_WORKER_ID", f"worker-{os.getpid()}")
+    lease_seconds = max(90, int(settings.llm_timeout_seconds) + 30)
     while True:
         with factory() as session:
-            processed = run_once(session, provider, worker_id=worker_id, model_name=model_name, rebase_interval_seconds=settings.brief_rebase_interval_seconds)
+            processed = run_once(session, provider, worker_id=worker_id, lease_seconds=lease_seconds, model_name=model_name, rebase_interval_seconds=settings.brief_rebase_interval_seconds)
         if processed:
             logger.info("memory-hub worker processed jobs=%s provider=%s", processed, settings.llm_provider)
         time.sleep(1)

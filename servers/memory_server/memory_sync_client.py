@@ -17,7 +17,10 @@ class MemoryHubClient:
     def post(self, path: str, payload: dict[str, Any], timeout_seconds: float) -> tuple[int, dict[str, Any]]:
         if not self.config.active:
             return 0, {"error": "shared_memory_disabled"}
-        request = Request(f"{self.config.server_url}{path}", data=json.dumps(payload).encode("utf-8"), headers={"Authorization": f"Bearer {self.config.token}", "Content-Type": "application/json"}, method="POST")
+        headers = {"Authorization": f"Bearer {self.config.token}", "Content-Type": "application/json"}
+        if self.config.user_id:
+            headers["X-Memory-User-ID"] = self.config.user_id
+        request = Request(f"{self.config.server_url}{path}", data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
         try:
             with urlopen(request, timeout=timeout_seconds) as response:
                 return response.status, json.loads(response.read().decode("utf-8"))

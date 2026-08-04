@@ -18,9 +18,9 @@ def _render(structured: dict[str, object]) -> str:
     return str(structured.get("summary") or "No recent reports.")
 
 
-def _visible_event(event: MemoryEvent, job: BriefJob) -> dict[str, object]:
+def _visible_event(event: MemoryEvent, brief_type: str) -> dict[str, object]:
     body = event.content_markdown
-    if job.brief_type == "project_recent" and event.user_id != job.subject_user_id and event.scope not in {"shared", "project_shared", "org_shared"}:
+    if brief_type == "project_recent" and event.scope not in {"shared", "project_shared", "org_shared"}:
         body = None
     return {"event_id": str(event.event_id), "content_markdown": body, "scope": event.scope, "user_id": event.user_id, "task_id": event.task_id, "agent_instance_id": event.agent_instance_id, "occurred_at": event.occurred_at.isoformat()}
 
@@ -104,31 +104,37 @@ def run_once(session: Session, provider: BriefProvider | None = None, *, worker_
     _schedule_rebases(session, rebase_interval_seconds)
     jobs = _claim_jobs(session, max_jobs=max_jobs, worker_id=worker_id, lease_seconds=lease_seconds)
     for job in jobs:
+        job_key = job.job_key
         claimed_through_seq = job.requested_through_seq
+        brief_type = job.brief_type
+        project_id = job.project_id
+        subject_user_id = job.subject_user_id
         try:
             window_start = datetime.now(UTC) - timedelta(hours=24)
-            visibility = ()
-            if job.brief_type == "user_recent" and job.subject_user_id:
-                visibility = (or_(MemoryEvent.user_id == job.subject_user_id, MemoryEvent.scope.in_({"shared", "project_shared", "org_shared"})),)
-            records = list(session.scalars(select(MemoryEvent).where(MemoryEvent.project_id == job.project_id, MemoryEvent.occurred_at >= window_start, MemoryEvent.server_seq > job.processed_through_seq, MemoryEvent.server_seq <= claimed_through_seq, *visibility).order_by(MemoryEvent.server_seq).limit(500)))
-            if job.brief_type == "user_recent" and job.subject_user_id:
-                records = [event for event in records if event.user_id == job.subject_user_id or event.scope in {"shared", "project_shared", "org_shared"}]
-                structured = provider.generate_user_brief(UserBriefRequest(project_id=job.project_id, user_id=job.subject_user_id, events=[_visible_event(event, job) for event in records])).structured_brief
-                subject = job.subject_user_id
+            visibility = (MemoryEvent.scope.in_({"shared", "project_shared", "org_shared"}),)
+            if brief_type == "user_recent" and subject_user_id:
+                visibility = (or_(MemoryEvent.user_id == subject_user_id, MemoryEvent.scope.in_({"shared", "project_shared", "org_shared"})),)
+            records = list(session.scalars(select(MemoryEvent).where(MemoryEvent.project_id == project_id, MemoryEvent.occurred_at >= window_start, MemoryEvent.server_seq <= claimed_through_seq, *visibility).order_by(MemoryEvent.occurred_at.desc(), MemoryEvent.server_seq.desc()).limit(500)))
+            records.sort(key=lambda event: event.server_seq)
+            event_payloads = [_visible_event(event, brief_type) for event in records]
+            source_ids = {str(event.event_id) for event in records}
+            input_seq_from = min((event.server_seq for event in records), default=None)
+            session.rollback()
+            if brief_type == "user_recent" and subject_user_id:
+                structured = provider.generate_user_brief(UserBriefRequest(project_id=project_id, user_id=subject_user_id, events=event_payloads)).structured_brief
+                subject = subject_user_id
             else:
-                structured = provider.generate_project_brief(ProjectBriefRequest(project_id=job.project_id, events=[_visible_event(event, job) for event in records])).structured_brief
+                structured = provider.generate_project_brief(ProjectBriefRequest(project_id=project_id, events=event_payloads)).structured_brief
                 subject = ""
-            validated = _validate_structured(job, structured, {str(event.event_id) for event in records})
-            actual_through_seq = max((event.server_seq for event in records), default=0)
-            has_more = actual_through_seq > 0 and session.scalar(select(MemoryEvent.server_seq).where(MemoryEvent.project_id == job.project_id, MemoryEvent.occurred_at >= window_start, MemoryEvent.server_seq > actual_through_seq, MemoryEvent.server_seq <= claimed_through_seq, *visibility).limit(1)) is not None
-            covered_through_seq = actual_through_seq if has_more else claimed_through_seq
+            validated = _validate_structured(job, structured, source_ids)
+            covered_through_seq = claimed_through_seq
             brief_id = uuid4()
-            snapshot = BriefSnapshot(brief_id=brief_id, project_id=job.project_id, brief_type=job.brief_type, subject_user_id=subject, input_seq_from=job.processed_through_seq or None, input_seq_to=covered_through_seq, window_start=window_start, window_end=datetime.now(UTC), structured_brief=validated, rendered_markdown=_render(validated), model=model_name, prompt_version="v1", generated_at=datetime.now(UTC), source_event_ids=validated["source_event_ids"], status="completed")
+            snapshot = BriefSnapshot(brief_id=brief_id, project_id=project_id, brief_type=brief_type, subject_user_id=subject, input_seq_from=input_seq_from, input_seq_to=covered_through_seq, window_start=window_start, window_end=datetime.now(UTC), structured_brief=validated, rendered_markdown=_render(validated), model=model_name, prompt_version="v1", generated_at=datetime.now(UTC), source_event_ids=validated["source_event_ids"], status="completed")
             session.add(snapshot)
             session.flush()
             live_job = session.scalar(
                 select(BriefJob)
-                .where(BriefJob.job_key == job.job_key)
+                .where(BriefJob.job_key == job_key)
                 .with_for_update()
                 .execution_options(populate_existing=True)
             )
@@ -136,7 +142,7 @@ def run_once(session: Session, provider: BriefProvider | None = None, *, worker_
                 raise RuntimeError("brief job disappeared")
             session.execute(insert(BriefHead).values(project_id=job.project_id, brief_type=job.brief_type, subject_user_id=subject, current_brief_id=brief_id).on_conflict_do_update(index_elements=["project_id", "brief_type", "subject_user_id"], set_={"current_brief_id": brief_id}))
             live_job.processed_through_seq = max(live_job.processed_through_seq, covered_through_seq)
-            if has_more or live_job.requested_through_seq > claimed_through_seq or live_job.status != "running" or live_job.worker_id != worker_id:
+            if live_job.requested_through_seq > claimed_through_seq or live_job.status != "running" or live_job.worker_id != worker_id:
                 live_job.status = "pending"
                 live_job.not_before = datetime.now(UTC)
             else:
@@ -146,8 +152,8 @@ def run_once(session: Session, provider: BriefProvider | None = None, *, worker_
             session.commit()
         except Exception as exc:
             session.rollback()
-            job = session.get(BriefJob, job.job_key)
-            if job is not None:
-                _retry(job, exc)
+            live_job = session.get(BriefJob, job_key)
+            if live_job is not None:
+                _retry(live_job, exc)
                 session.commit()
     return len(jobs)

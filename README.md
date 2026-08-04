@@ -131,6 +131,11 @@ MCP 配置或版本控制。重启 MCP 客户端后生效。环境变量 `MEMORY
 CI 或临时调试时覆盖文件中的 Token。同步在后台进行：本地写入不会等待网络；缺少
 URL、项目 ID 或 Token 时自动保持禁用；认证失败时停止重试，直到 Token 更换。
 
+团队可共用一个仅限该项目的 Hub Token；客户端会将顶层 `user_name` 作为 Hub
+`user_id`，用于隔离个人事件和个人 Brief。该模式适用于受信任的内部团队，服务端
+不验证该用户 ID 的真实性；未来需要更强身份保证时，可改为为每位成员签发独立 Token，
+无需迁移既有事件格式。
+
 Hub 管理员的服务器部署、运维、备份和 Token 签发方式见
 [`memory_hub/README.md`](memory_hub/README.md)；中文的架构、部署与当前进展说明见
 [`memory_hub/DESIGN.md`](memory_hub/DESIGN.md)。

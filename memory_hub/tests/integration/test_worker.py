@@ -63,7 +63,25 @@ def test_worker_keeps_dirty_job_when_event_arrives_during_generation() -> None:
         assert job.requested_through_seq > job.processed_through_seq
 
 
-def test_worker_consumes_large_event_sets_without_skipping_watermarks() -> None:
+def test_worker_releases_database_transaction_before_generation() -> None:
+    factory = create_session_factory(load_settings().database_url or "")
+    project_id = f"worker-transaction-{uuid4().hex}"
+    with factory() as session:
+        event = MemoryEvent(event_id=uuid4(), project_id=project_id, user_id="transaction-user", agent_id="pytest", agent_instance_id="pytest", operation="record", scope="personal", content_markdown="event", metadata_json={}, occurred_at=datetime.now(UTC), content_hash="sha256:" + "7" * 64)
+        session.add(event)
+        session.flush()
+        session.add(BriefJob(job_key=f"user_recent:{project_id}:transaction-user", project_id=project_id, brief_type="user_recent", subject_user_id="transaction-user", requested_through_seq=event.server_seq, not_before=datetime.now(UTC) - timedelta(seconds=1), status="pending"))
+        session.commit()
+
+        class TransactionCheckingProvider(FakeBriefProvider):
+            def generate_user_brief(self, request):
+                assert not session.in_transaction()
+                return super().generate_user_brief(request)
+
+        assert run_once(session, TransactionCheckingProvider(), worker_id="transaction-worker") >= 1
+
+
+def test_worker_bounds_large_briefs_to_the_latest_window_events() -> None:
     factory = create_session_factory(load_settings().database_url or "")
     project_id = f"worker-batch-{uuid4().hex}"
     with factory() as session:
@@ -76,12 +94,37 @@ def test_worker_consumes_large_event_sets_without_skipping_watermarks() -> None:
         run_once(session, worker_id="batch-worker")
         job = session.get(BriefJob, f"user_recent:{project_id}:batch-user")
         assert job is not None
-        assert job.status == "pending"
-        assert job.processed_through_seq < job.requested_through_seq
-        run_once(session, worker_id="batch-worker")
-        session.refresh(job)
         assert job.status == "completed"
         assert job.processed_through_seq == job.requested_through_seq
+        head = session.get(BriefHead, (project_id, "user_recent", "batch-user"))
+        assert head is not None
+        snapshot = session.get(BriefSnapshot, head.current_brief_id)
+        assert snapshot is not None
+        assert len(snapshot.source_event_ids) == 500
+
+
+def test_worker_rebuilds_brief_from_full_recent_window_after_incremental_write() -> None:
+    factory = create_session_factory(load_settings().database_url or "")
+    project_id = f"worker-window-{uuid4().hex}"
+    with factory() as session:
+        first = MemoryEvent(event_id=uuid4(), project_id=project_id, user_id="window-user", agent_id="pytest", agent_instance_id="pytest", operation="record", scope="personal", content_markdown="first", metadata_json={}, occurred_at=datetime.now(UTC), content_hash="sha256:" + "1" * 64)
+        session.add(first)
+        session.flush()
+        session.add(BriefJob(job_key=f"user_recent:{project_id}:window-user", project_id=project_id, brief_type="user_recent", subject_user_id="window-user", requested_through_seq=first.server_seq, not_before=datetime.now(UTC) - timedelta(seconds=1), status="pending"))
+        session.commit()
+        run_once(session, worker_id="window-worker")
+        second = MemoryEvent(event_id=uuid4(), project_id=project_id, user_id="window-user", agent_id="pytest", agent_instance_id="pytest", operation="record", scope="personal", content_markdown="second", metadata_json={}, occurred_at=datetime.now(UTC), content_hash="sha256:" + "2" * 64)
+        session.add(second)
+        session.flush()
+        mark_brief_jobs_dirty(session, project_id, "window-user", second.server_seq, user_debounce_seconds=1, project_debounce_seconds=1)
+        session.execute(__import__("sqlalchemy").update(BriefJob).where(BriefJob.job_key == f"user_recent:{project_id}:window-user").values(not_before=datetime.now(UTC) - timedelta(seconds=1)))
+        session.commit()
+        run_once(session, worker_id="window-worker")
+        head = session.get(BriefHead, (project_id, "user_recent", "window-user"))
+        assert head is not None
+        snapshot = session.get(BriefSnapshot, head.current_brief_id)
+        assert snapshot is not None
+        assert set(snapshot.source_event_ids) == {str(first.event_id), str(second.event_id)}
 
 
 def test_worker_failure_keeps_existing_brief_head() -> None:

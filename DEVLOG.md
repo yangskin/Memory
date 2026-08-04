@@ -1,5 +1,20 @@
 # DEVLOG - MCP Memory
 
+## 2026-08-04 (Memory Hub 团队接入与近期 Brief 修正)
+
+> **状态：受信任团队可用项目共享 Token 加稳定 `user_name` 接入 Hub；近期 Brief 不再被最后一个增量批次覆盖。** 共享 Token 仅限制项目和 scope，客户端在 `X-Memory-User-ID` 传递顶层 `user_name`；缺省时兼容旧 Token 绑定用户。该身份模式不防止成员伪造其他成员名称，未来可无协议迁移到个人 Token。
+
+### 范围
+
+- 本机 `user_config.local.json` 的顶层 `user_name` 自动映射到 Hub `user_id`，上传与 Context 查询使用同一身份。
+- Context 只加载请求用户的私有事件和项目共享事件；项目 Brief 只向 LLM 传递共享事件。
+- Worker 每次从完整最近 24 小时窗口重建 Brief，最多选择最新 500 条输入，避免最后一个增量批次替换掉先前完整 Head。
+- Worker 在调用外部 LLM 前结束数据库读事务；生产租约至少为 90 秒且比 LLM 超时多 30 秒，避免慢模型耗尽连接或重复领取 Job。
+- Context 的项目 Brief lag 只基于项目共享事件；新增 `(project_id, occurred_at)` 索引支持时间窗口查询。
+- 定向验证：客户端配置/HTTP 头 6 项通过；Hub 事件、Context 与 Worker 集成测试 8 项通过。
+
+---
+
 ## 2026-05-10 (two-tool MCP surface)
 
 > **状态：普通 agent 默认 MCP 表面收敛为两个工具。** `memory_read` 负责任务上下文、读取、搜索、召回；`memory_write` 只负责结构化 raw record / observation / checkpoint。`memory_context` / `memory_enhance` / legacy/admin MCP 工具不再出现在 `list_tools`；高级/同步/维护能力走 CLI。随后已移除 admin MCP 扩展开关配置项；全量测试：690 passed。

@@ -33,6 +33,7 @@ def test_configured_client_uses_https_url_and_environment_token(monkeypatch) -> 
     def fake_urlopen(request, *, timeout):
         captured["url"] = request.full_url
         captured["authorization"] = request.get_header("Authorization")
+        captured["x-memory-user-id"] = request.get_header("X-memory-user-id")
         captured["payload"] = json.loads(request.data.decode("utf-8"))
         captured["timeout"] = timeout
         return Response()
@@ -43,6 +44,7 @@ def test_configured_client_uses_https_url_and_environment_token(monkeypatch) -> 
             enabled=True,
             server_url="https://memory.example.com",
             project_id="project-1",
+            user_id="alice",
             token_env="TEST_MEMORY_HUB_TOKEN",
         )
     )
@@ -52,6 +54,7 @@ def test_configured_client_uses_https_url_and_environment_token(monkeypatch) -> 
     assert captured == {
         "url": "https://memory.example.com/v1/projects/project-1/events/batch",
         "authorization": "Bearer mem_v1.test.secret",
+        "x-memory-user-id": "alice",
         "payload": {"events": []},
         "timeout": 5.0,
     }

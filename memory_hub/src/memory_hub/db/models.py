@@ -35,6 +35,7 @@ class MemoryEvent(Base):
     __table_args__ = (
         UniqueConstraint("project_id", "event_id", name="uq_memory_events_project_event"),
         Index("idx_events_project_seq", "project_id", "server_seq"),
+        Index("idx_events_project_time", "project_id", "occurred_at"),
         Index("idx_events_project_user_time", "project_id", "user_id", "occurred_at"),
         Index("idx_events_project_task_time", "project_id", "task_id", "occurred_at"),
         Index("idx_events_project_agent_time", "project_id", "agent_instance_id", "occurred_at"),

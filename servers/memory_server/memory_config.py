@@ -414,7 +414,14 @@ def _load_local_shared_memory(repo_root: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return {}
     shared_memory = data.get("shared_memory") if isinstance(data, dict) else None
-    return dict(shared_memory) if isinstance(shared_memory, dict) else {}
+    if not isinstance(shared_memory, dict):
+        return {}
+    result = dict(shared_memory)
+    if not str(result.get("user_id") or "").strip():
+        user_id = data.get("user_id") or data.get("user_name")
+        if isinstance(user_id, str) and user_id.strip():
+            result["user_id"] = user_id.strip()
+    return result
 
 
 def _validate_runtime_blocks(config: dict[str, Any]) -> None:

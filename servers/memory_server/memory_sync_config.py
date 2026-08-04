@@ -12,6 +12,7 @@ class SharedMemoryConfig:
     enabled: bool = False
     server_url: str = ""
     project_id: str = ""
+    user_id: str = ""
     token_env: str = "MEMORY_HUB_TOKEN"
     local_token: str = ""
     upload_enabled: bool = True
@@ -54,6 +55,7 @@ def parse_shared_memory_config(raw: Any) -> SharedMemoryConfig:
         enabled=bool(raw.get("enabled", False)),
         server_url=str(raw.get("server_url") or "").rstrip("/"),
         project_id=str(raw.get("project_id") or ""),
+        user_id=str(raw.get("user_id") or "").strip(),
         token_env=str(raw.get("token_env") or "MEMORY_HUB_TOKEN"),
         local_token=str(raw.get("token") or ""),
         upload_enabled=bool(raw.get("upload_enabled", True)),
