@@ -26,6 +26,7 @@ llm_config.local.json
 user_config.local.json
 *.api_key
 *.apikey
+memory_hub/.env
 
 # Vendored embedding model binaries — too large for plain Git.
 # Either pre-stage them locally for `deploy.bat -DownloadModel -ModelOffline`,
