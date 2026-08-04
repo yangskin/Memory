@@ -8,9 +8,10 @@ memory_hub/certs/<public-hostname>.crt
 memory_hub/certs/<public-hostname>.key
 ```
 
-Then run `../bootstrap.sh <public-hostname>`. It downloads the public
-intermediate certificate when no `root_bundle.crt` is supplied and generates
-the Caddy inputs below:
+Then run `../bootstrap.sh <public-hostname> [project-id] [user-id]`. It
+downloads the public intermediate certificate when no `root_bundle.crt` is
+supplied, generates the Caddy inputs below, starts the Compose project, and
+creates the ignored `user_config.local.json` deployment configuration.
 
 ```text
 memory_hub/certs/fullchain.pem

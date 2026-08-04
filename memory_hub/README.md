@@ -27,19 +27,27 @@ publish ports and remain on the private Compose network.
 
 ### Configure
 
-`.env` is ignored by Git. With the issued `<public-hostname>.crt` and
-`<public-hostname>.key` already in `certs/`, initialize the host with:
+`.env` and `user_config.local.json` are ignored by Git. With the issued
+`<public-hostname>.crt` and `<public-hostname>.key` already in `certs/`,
+initialize the host with:
 
 ```bash
 cd memory_hub
-./bootstrap.sh memory.example.com
+./bootstrap.sh memory.example.com <project-id> deployment
 ```
 
 The script uses the uploaded `certs/root_bundle.crt` intermediate certificate
 (or downloads the public TrustAsia intermediate if it is absent), creates
 `certs/fullchain.pem`, copies the private key as `certs/privkey.pem`, and
-creates `.env` with a locally generated PostgreSQL password. It never prints
-the password.
+creates `.env` with a locally generated PostgreSQL password. It starts the
+Compose project, waits for it to become healthy, then writes a one-time,
+least-privilege Token to `../user_config.local.json` with mode `0600`. It never
+prints the password or Token. Supply a stable project ID explicitly; the user
+argument defaults to `deployment`.
+
+The local configuration is intentionally not overwritten on a subsequent
+Bootstrap run. To rotate a credential, create a new Token, update the ignored
+file, and revoke the former Token ID.
 
 ### Install The Issued Certificate
 
@@ -53,13 +61,12 @@ memory_hub/certs/privkey.pem
 The files are mounted read-only into Caddy and are ignored by Git. See
 [`certs/README.md`](certs/README.md) for required PEM contents and permissions.
 
-### Start And Verify
+### Verify
 
 ```bash
 cd memory_hub
-docker compose up -d --build
-docker compose ps
-docker compose logs --tail=100 api worker caddy
+docker compose -p <project-id> ps
+docker compose -p <project-id> logs --tail=100 api worker caddy
 ```
 
 The API container runs `alembic upgrade head` before it starts. A healthy
@@ -79,16 +86,16 @@ network if the host does not support NAT hairpin routing.
 
 ```bash
 # Follow service logs
-docker compose logs -f api worker caddy
+docker compose -p <project-id> logs -f api worker caddy
 
 # Apply image/code updates
-docker compose up -d --build
+docker compose -p <project-id> up -d --build
 
 # Stop services without deleting the PostgreSQL volume
-docker compose down
+docker compose -p <project-id> down
 
 # Remove all service data. This cannot be undone.
-docker compose down -v
+docker compose -p <project-id> down -v
 ```
 
 ### Provision A Local MCP Token
@@ -98,7 +105,7 @@ prints the secret once; set it only in that MCP process environment, never in a
 repository file or shell history.
 
 ```bash
-docker compose exec api memory-hub token create \
+docker compose -p <project-id> exec api memory-hub token create \
 	--project <project-id> \
 	--user <user-id> \
 	--scope events:write \
@@ -108,13 +115,13 @@ docker compose exec api memory-hub token create \
 Revoke a token by ID when a device or credential is no longer trusted:
 
 ```bash
-docker compose exec api memory-hub token revoke --token-id <token-id>
+docker compose -p <project-id> exec api memory-hub token revoke --token-id <token-id>
 ```
 
 Query token IDs, users, scopes, and revocation status for a project:
 
 ```bash
-docker compose exec api memory-hub token list --project <project-id>
+docker compose -p <project-id> exec api memory-hub token list --project <project-id>
 ```
 
 The raw token is intentionally never queryable because only its hash is stored.
@@ -123,7 +130,7 @@ If the one-time value is lost, create a replacement token and revoke the old ID.
 Back up the database volume before upgrades or destructive operations:
 
 ```bash
-docker compose exec -T postgres pg_dump -U memory_hub memory_hub > memory-hub-backup.sql
+docker compose -p <project-id> exec -T postgres pg_dump -U memory_hub memory_hub > memory-hub-backup.sql
 ```
 
 ## Package Installation
