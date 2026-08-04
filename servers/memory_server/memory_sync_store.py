@@ -38,6 +38,7 @@ class SyncStore:
                 CREATE TABLE IF NOT EXISTS sync_state (
                     key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL);
             """)
+            conn.execute("UPDATE outbox_events SET state='pending' WHERE state='uploading'")
 
     def enqueue(self, event_id: str, payload: dict[str, Any], content_hash: str) -> bool:
         now = _now()
@@ -53,6 +54,13 @@ class SyncStore:
             rows = conn.execute("SELECT * FROM outbox_events WHERE state='pending' AND next_retry_at<=? ORDER BY local_seq LIMIT ?", (_now(), limit)).fetchall()
         return [dict(row) for row in rows]
 
+    def claim_due_events(self, limit: int) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM outbox_events WHERE state='pending' AND next_retry_at<=? ORDER BY local_seq LIMIT ?", (_now(), limit)).fetchall()
+            event_ids = [str(row["event_id"]) for row in rows]
+            conn.executemany("UPDATE outbox_events SET state='uploading' WHERE event_id=? AND state='pending'", [(event_id,) for event_id in event_ids])
+        return [dict(row) for row in rows]
+
     def acknowledge(self, event_ids: list[str]) -> None:
         if not event_ids:
             return
@@ -65,7 +73,26 @@ class SyncStore:
 
     def retry(self, event_id: str, error: str, retry_at: str) -> None:
         with self._connect() as conn:
-            conn.execute("UPDATE outbox_events SET attempts=attempts+1,last_error=?,next_retry_at=? WHERE event_id=?", (error[:300], retry_at, event_id))
+            conn.execute("UPDATE outbox_events SET state='pending',attempts=attempts+1,last_error=?,next_retry_at=? WHERE event_id=?", (error[:300], retry_at, event_id))
+
+    def put_state(self, key: str, value: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            conn.execute("INSERT OR REPLACE INTO sync_state(key,value_json,updated_at) VALUES(?,?,?)", (key, json.dumps(value, ensure_ascii=False), _now()))
+
+    def get_state(self, key: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT value_json FROM sync_state WHERE key=?", (key,)).fetchone()
+        if row is None:
+            return None
+        try:
+            value = json.loads(str(row["value_json"]))
+        except json.JSONDecodeError:
+            return None
+        return value if isinstance(value, dict) else None
+
+    def delete_state(self, key: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM sync_state WHERE key=?", (key,))
 
     def put_cache(self, key: str, payload: dict[str, Any], expires_at: str | None, server_seq: int | None = None) -> None:
         with self._connect() as conn:

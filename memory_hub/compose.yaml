@@ -13,11 +13,14 @@ services:
       retries: 5
     restart: unless-stopped
   api:
-    build: .
+    build:
+      context: .
+      args:
+        PIP_INDEX_URL: https://mirrors.cloud.tencent.com/pypi/simple
     environment:
       MEMORY_HUB_DATABASE_URL: postgresql+psycopg://memory_hub:${POSTGRES_PASSWORD}@postgres/memory_hub
       MEMORY_HUB_DISABLE_DOCS: "true"
-      MEMORY_HUB_PUBLIC_BASE_URL: https://${MEMORY_HUB_PUBLIC_IP:?set MEMORY_HUB_PUBLIC_IP}
+      MEMORY_HUB_PUBLIC_BASE_URL: https://${MEMORY_HUB_PUBLIC_HOST:?set MEMORY_HUB_PUBLIC_HOST}
       MEMORY_HUB_ENV: production
     command: sh -c "alembic upgrade head && memory-hub-api"
     depends_on:
@@ -34,22 +37,33 @@ services:
     ports: ["80:80", "443:443"]
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./certs:/etc/caddy/certs:ro
       - caddy_data:/data
       - caddy_config:/config
     environment:
-      MEMORY_HUB_PUBLIC_IP: ${MEMORY_HUB_PUBLIC_IP:?set MEMORY_HUB_PUBLIC_IP}
+      MEMORY_HUB_PUBLIC_HOST: ${MEMORY_HUB_PUBLIC_HOST:?set MEMORY_HUB_PUBLIC_HOST}
     depends_on:
       api:
         condition: service_healthy
     restart: unless-stopped
   worker:
-    build: .
+    build:
+      context: .
+      args:
+        PIP_INDEX_URL: https://mirrors.cloud.tencent.com/pypi/simple
     environment:
       MEMORY_HUB_DATABASE_URL: postgresql+psycopg://memory_hub:${POSTGRES_PASSWORD}@postgres/memory_hub
-      LLM_PROVIDER: fake
+      LLM_PROVIDER: ${LLM_PROVIDER:-fake}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-60}
+      BRIEF_USER_DEBOUNCE_SECONDS: ${BRIEF_USER_DEBOUNCE_SECONDS:-20}
+      BRIEF_PROJECT_DEBOUNCE_SECONDS: ${BRIEF_PROJECT_DEBOUNCE_SECONDS:-45}
+      BRIEF_REBASE_INTERVAL_SECONDS: ${BRIEF_REBASE_INTERVAL_SECONDS:-3600}
     command: memory-hub-worker
     depends_on:
-      postgres:
+      api:
         condition: service_healthy
     restart: unless-stopped
 volumes:

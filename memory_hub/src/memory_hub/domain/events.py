@@ -17,12 +17,12 @@ class EventPayload(BaseModel):
     agent_instance_id: str
     task_id: str | None = None
     task_run_id: str | None = None
-    operation: str
+    operation: str = Field(pattern=r"^(record|observation|checkpoint)$")
     record_kind: str | None = None
-    scope: str
+    scope: str = Field(pattern=r"^(personal|session|user_private|shared|project_shared|org_shared)$")
     task_phase: str | None = None
     content_markdown: str | None = Field(default=None, max_length=65536)
-    metadata: dict[str, object] = Field(default_factory=dict)
+    metadata: dict[str, object] = Field(default_factory=dict, max_length=64)
     source_record_id: str | None = None
     occurred_at: datetime
     content_hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")

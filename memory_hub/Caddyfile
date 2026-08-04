@@ -1,8 +1,6 @@
-https://{$MEMORY_HUB_PUBLIC_IP} {
-	# Public CA services do not issue trusted certificates for bare IP
-	# addresses. This private CA keeps transport encrypted; install the
-	# generated root certificate in every local MCP client trust store.
-	tls internal
+https://{$MEMORY_HUB_PUBLIC_HOST} {
+	# Certificate and private key are mounted read-only from ./certs.
+	tls /etc/caddy/certs/fullchain.pem /etc/caddy/certs/privkey.pem
 	request_body {
 		max_size 1MB
 	}

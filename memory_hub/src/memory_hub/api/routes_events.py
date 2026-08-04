@@ -14,8 +14,9 @@ router = APIRouter()
 def batch_events(project_id: str, payload: EventBatchRequest, request: Request, principal: Principal = Depends(require_principal("events:write"))) -> EventBatchResponse:
     if principal.project_id != project_id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "project access denied")
-    if len(request.scope.get("body", b"")) > 1_048_576:
-        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "payload too large")
+    if not request.app.state.rate_limiter.allow(principal.token_id, "events", 60):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "rate limit exceeded")
     factory = request.app.state.session_factory
     with factory() as session:
-        return ingest_events(session, project_id, principal.user_id, payload.events)
+        settings = request.app.state.settings
+        return ingest_events(session, project_id, principal.user_id, payload.events, user_debounce_seconds=settings.brief_user_debounce_seconds, project_debounce_seconds=settings.brief_project_debounce_seconds)

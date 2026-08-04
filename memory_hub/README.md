@@ -15,11 +15,11 @@ uv run memory-hub-worker
 
 The default brief provider is fake and never contacts an LLM.
 
-## Production By IP
+## Production With A Domain Certificate
 
 Docker publishes Caddy on all host interfaces, so no application-level port
-forwarding or public-IP bind is required. Set `MEMORY_HUB_PUBLIC_IP` to the
-externally routable address assigned to the host.
+forwarding or public-IP bind is required. Configure the DNS `A` and/or `AAAA`
+record for your public host to the server's public address.
 
 This still requires the cloud security group/firewall to permit inbound TCP
 `80` and `443` to this instance. PostgreSQL, the API, and the worker do not
@@ -27,26 +27,31 @@ publish ports and remain on the private Compose network.
 
 ### Configure
 
-`.env` is ignored by Git. Create it with restrictive permissions:
+`.env` is ignored by Git. With the issued `<public-hostname>.crt` and
+`<public-hostname>.key` already in `certs/`, initialize the host with:
 
 ```bash
 cd memory_hub
-umask 077
-cp .env.example .env
+./bootstrap.sh memory.example.com
 ```
 
-Set these values in `.env`:
+The script uses the uploaded `certs/root_bundle.crt` intermediate certificate
+(or downloads the public TrustAsia intermediate if it is absent), creates
+`certs/fullchain.pem`, copies the private key as `certs/privkey.pem`, and
+creates `.env` with a locally generated PostgreSQL password. It never prints
+the password.
 
-```dotenv
-MEMORY_HUB_PUBLIC_IP=<externally-routable-ip>
-POSTGRES_PASSWORD=<a long random value>
+### Install The Issued Certificate
+
+The bootstrap script produces these Caddy inputs:
+
+```text
+memory_hub/certs/fullchain.pem
+memory_hub/certs/privkey.pem
 ```
 
-Generate a password locally without printing it:
-
-```bash
-openssl rand -hex 32
-```
+The files are mounted read-only into Caddy and are ignored by Git. See
+[`certs/README.md`](certs/README.md) for required PEM contents and permissions.
 
 ### Start And Verify
 
@@ -61,32 +66,14 @@ The API container runs `alembic upgrade head` before it starts. A healthy
 stack has `postgres`, `api`, `worker`, and `caddy` running; only Caddy listens
 on host ports.
 
-### Trust The IP Certificate
-
-Public certificate authorities do not issue browser-trusted certificates for
-bare IP addresses. Caddy therefore uses an internal CA. Export its root
-certificate after startup and install it in each MCP client's OS trust store:
+Verify the trusted certificate and API after startup:
 
 ```bash
-docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt /tmp/memory-hub-root.crt
+curl --fail https://memory.example.com/healthz
 ```
 
-Run these checks from the host after exporting the certificate:
-
-```bash
-# Reliable local TLS/routing test; preserves the public IP as the TLS host.
-curl --fail --cacert /tmp/memory-hub-root.crt \
-	--connect-to <externally-routable-ip>:443:127.0.0.1:443 \
-	https://<externally-routable-ip>/healthz
-
-# Tests the actual external route. It can fail on hosts without NAT hairpin;
-# in that case run the same command from a separate Internet-connected host.
-curl --fail --cacert /tmp/memory-hub-root.crt \
-	https://<externally-routable-ip>/healthz
-```
-
-Expected response is a JSON health object. Test endpoint accessibility from a
-different network before configuring local MCP clients.
+The expected response is a JSON health object. Run this from a different
+network if the host does not support NAT hairpin routing.
 
 ### Operate
 
@@ -104,14 +91,31 @@ docker compose down
 docker compose down -v
 ```
 
+### Provision A Local MCP Token
+
+Issue a least-privilege token for one local MCP user and project. The command
+prints the secret once; set it only in that MCP process environment, never in a
+repository file or shell history.
+
+```bash
+docker compose exec api memory-hub token create \
+	--project <project-id> \
+	--user <user-id> \
+	--scope events:write \
+	--scope context:read
+```
+
+Revoke a token by ID when a device or credential is no longer trusted:
+
+```bash
+docker compose exec api memory-hub token revoke --token-id <token-id>
+```
+
 Back up the database volume before upgrades or destructive operations:
 
 ```bash
 docker compose exec -T postgres pg_dump -U memory_hub memory_hub > memory-hub-backup.sql
 ```
-
-For publicly trusted TLS without installing a CA certificate, use a DNS name
-instead of an IP address.
 
 ## Package Installation
 

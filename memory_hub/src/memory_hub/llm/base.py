@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class UserBriefRequest(BaseModel):
@@ -24,6 +24,31 @@ class UserBriefResult(BaseModel):
 
 class ProjectBriefResult(BaseModel):
     structured_brief: dict[str, object]
+
+
+class UserBriefDocument(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schema_version: str = "1.0"
+    as_of: str
+    summary: str
+    workstreams: list[dict[str, object]] = Field(default_factory=list)
+    cross_agent_overlaps: list[object] = Field(default_factory=list)
+    stale_workstreams: list[object] = Field(default_factory=list)
+    source_event_ids: list[str]
+
+
+class ProjectBriefDocument(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schema_version: str = "1.0"
+    as_of: str
+    summary: str
+    workstreams: list[dict[str, object]] = Field(default_factory=list)
+    cross_cutting_changes: list[object] = Field(default_factory=list)
+    possible_overlaps: list[object] = Field(default_factory=list)
+    project_blockers: list[object] = Field(default_factory=list)
+    build_and_test_status: list[object] = Field(default_factory=list)
+    recent_decisions: list[object] = Field(default_factory=list)
+    source_event_ids: list[str]
 
 
 class BriefProvider(Protocol):

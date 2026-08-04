@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import os
+
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from memory_hub.db.models import Base
 
 config = context.config
+database_url = os.getenv("MEMORY_HUB_DATABASE_URL")
+if database_url:
+    config.set_main_option("sqlalchemy.url", database_url)
 
 
 def run_migrations_offline() -> None:

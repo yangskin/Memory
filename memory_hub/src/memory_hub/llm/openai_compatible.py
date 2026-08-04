@@ -7,6 +7,8 @@ from typing import Any
 
 import httpx
 
+from .base import ProjectBriefRequest, ProjectBriefResult, UserBriefRequest, UserBriefResult
+
 
 class OpenAICompatibleBriefProvider:
     def __init__(self, base_url: str, api_key: str, model: str, timeout_seconds: float = 60) -> None:
@@ -18,3 +20,9 @@ class OpenAICompatibleBriefProvider:
             response = client.post(f"{self._base_url}/chat/completions", headers={"Authorization": f"Bearer {self._api_key}"}, json=payload)
             response.raise_for_status()
         return json.loads(response.json()["choices"][0]["message"]["content"])
+
+    def generate_user_brief(self, request: UserBriefRequest) -> UserBriefResult:
+        return UserBriefResult(structured_brief=self._generate("user_recent", request.events))
+
+    def generate_project_brief(self, request: ProjectBriefRequest) -> ProjectBriefResult:
+        return ProjectBriefResult(structured_brief=self._generate("project_recent", request.events))

@@ -105,5 +105,5 @@ class BriefHead(Base):
 
     project_id: Mapped[str] = mapped_column(String(256), primary_key=True)
     brief_type: Mapped[str] = mapped_column(String(64), primary_key=True)
-    subject_user_id: Mapped[str | None] = mapped_column(String(256), primary_key=True)
+    subject_user_id: Mapped[str] = mapped_column(String(256), primary_key=True)
     current_brief_id: Mapped[UUID] = mapped_column(nullable=False)
