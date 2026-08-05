@@ -46,6 +46,7 @@ def project_events(session: Session, project_id: str, *, batch_size: int = 500) 
             else:
                 node.updated_at = datetime.now(UTC)
                 node.metadata_json = {**(node.metadata_json or {}), **fact.metadata}
+        session.flush()
         for edge in facts.edges:
             source_id = _node_id(project_id, *edge.source)
             target_id = _node_id(project_id, *edge.target)
