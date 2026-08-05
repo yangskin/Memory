@@ -8,6 +8,7 @@
   :root {
     --bg: #f4f6fb;
     --card: #ffffff;
+    --card-soft: #fbfcff;
     --line: #e3e8f2;
     --ink: #1c2333;
     --muted: #6b7590;
@@ -19,7 +20,20 @@
     --shared: #4f6ef7;
     --proj: #7a5af5;
     --org: #0e9f9f;
+    --graph-edge: #aeb8cc;
+    --graph-grid: #e8edf7;
     --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  }
+  [data-theme="dark"] {
+    --bg: #111827;
+    --card: #1b2435;
+    --card-soft: #202b3d;
+    --line: #334155;
+    --ink: #edf2fb;
+    --muted: #9aa8bd;
+    --brand-soft: #26345c;
+    --graph-edge: #65738c;
+    --graph-grid: #263247;
   }
   * { box-sizing: border-box; }
   body {
@@ -49,7 +63,7 @@
   .tokenbar label { font-size: 13px; color: var(--muted); }
   .tokenbar input {
     flex: 1; min-width: 260px; padding: 8px 12px; border: 1px solid var(--line);
-    border-radius: 8px; font-family: var(--mono); font-size: 13px; background: #fbfcff;
+    border-radius: 8px; font-family: var(--mono); font-size: 13px; background: var(--card-soft); color: var(--ink);
   }
   button {
     border: 0; border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 600;
@@ -57,10 +71,33 @@
   }
   button:hover { filter: brightness(1.05); }
   button.ghost { background: #eef0f5; color: var(--ink); }
+  [data-theme="dark"] button.ghost { background: #2b3850; }
   button:disabled { opacity: .55; cursor: default; }
   main { max-width: 1200px; margin: 0 auto; padding: 22px; display: grid; grid-template-columns: 1.25fr 1fr; gap: 18px; }
   @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; }
+  .tabs { max-width: 1200px; margin: 18px auto 0; padding: 0 22px; display: flex; gap: 6px; align-items: center; }
+  .tab { color: var(--muted); background: transparent; border: 1px solid transparent; border-radius: 9px 9px 0 0; padding: 10px 16px; }
+  .tab.active { color: var(--brand); background: var(--card); border-color: var(--line); border-bottom-color: var(--card); }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: contents; }
+  .theme-btn { margin-left: auto; min-width: 42px; padding: 8px 11px; }
+  [data-theme="dark"] .status .pill { background: #2b3850; }
+  [data-theme="dark"] .brief-summary { border-color: #354675; }
+  [data-theme="dark"] .conclusion, [data-theme="dark"] .board-thread { background: var(--card-soft); }
+  [data-theme="dark"] .board-thread .thread-head { background: #273348; }
+  [data-theme="dark"] .event .body pre, [data-theme="dark"] .event .body code,
+  [data-theme="dark"] .board-post .body pre, [data-theme="dark"] .board-post .body code { background: #111827; }
+  .graph-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; color: var(--muted); font-size: 13px; }
+  .graph-toolbar input { min-width: 240px; flex: 1; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--card-soft); color: var(--ink); }
+  .graph-canvas { min-height: 520px; border: 1px solid var(--line); border-radius: 10px; overflow: auto; background-color: var(--card-soft); background-image: radial-gradient(var(--graph-grid) 1px, transparent 1px); background-size: 18px 18px; }
+  .graph-canvas svg { display: block; min-width: 760px; width: 100%; height: 520px; }
+  .graph-edge { stroke: var(--graph-edge); stroke-width: 1.5; }
+  .graph-edge-label { fill: var(--muted); font-size: 10px; }
+  .graph-node circle { stroke: var(--card); stroke-width: 3; }
+  .graph-node text { fill: var(--ink); font-size: 11px; font-weight: 600; }
+  .graph-legend { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; color: var(--muted); font-size: 12px; }
+  .legend-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; }
   .card h2 { margin: 0 0 12px; font-size: 15px; color: var(--muted); font-weight: 600; letter-spacing: .3px; }
   .empty { color: var(--muted); text-align: center; padding: 26px 0; font-size: 13px; }
   .brief-summary {
@@ -156,6 +193,7 @@
 <header class="topbar">
   <div class="brand"><span class="dot"></span>共享记忆面板 <span class="project-id" id="projectId">—</span></div>
   <div class="status">
+    <button class="ghost theme-btn" id="themeBtn" title="切换深色模式" aria-label="切换深色模式">☾</button>
     <span class="pill" id="statusPill">未连接</span>
     <span id="lastUpdated">—</span>
   </div>
@@ -169,18 +207,14 @@
   <button class="ghost" id="clearBtn">清空</button>
 </div>
 
+<nav class="tabs" aria-label="主导航">
+  <button class="tab active" data-tab="boardPanel">留言板</button>
+  <button class="tab" data-tab="graphPanel">Graph</button>
+  <button class="tab" data-tab="sharedPanel">共享记忆</button>
+</nav>
+
 <main>
-  <section class="card" id="briefCard">
-    <h2>LLM 整理的共同记忆简报</h2>
-    <div id="briefArea"><div class="empty">尚未连接 · 输入只读 Token 后点击「连接」。</div></div>
-  </section>
-
-  <section class="card" id="feedCard">
-    <h2>最近共同事件</h2>
-    <div id="feedArea"><div class="empty">连接后每 30 秒自动刷新。</div></div>
-    <div class="freshness" id="freshness" style="display:none"></div>
-  </section>
-
+  <div class="tab-panel active" id="boardPanel">
   <section class="card" id="boardCard" style="grid-column:1 / -1">
     <h2>完整留言板 <span class="source-badge">实时</span></h2>
     <div class="board-toolbar">
@@ -199,6 +233,33 @@
     </div>
     <div id="boardArea"><div class="board-empty">连接后自动加载完整留言板。</div></div>
   </section>
+  </div>
+
+  <div class="tab-panel" id="graphPanel">
+  <section class="card" style="grid-column:1 / -1">
+    <h2>项目 Graph <span class="source-badge" id="graphFreshness">未连接</span></h2>
+    <div class="graph-toolbar">
+      <input id="graphSearch" type="search" placeholder="输入节点关键词，例如文件、类或模块" autocomplete="off">
+      <button id="graphRefreshBtn" disabled>刷新 Graph</button>
+      <span id="graphStats">—</span>
+    </div>
+    <div class="graph-canvas" id="graphArea"><div class="empty">连接后加载项目 Graph。</div></div>
+    <div class="graph-legend"><span><i class="legend-dot" style="background:#4f6ef7"></i>任务</span><span><i class="legend-dot" style="background:#0e9f9f"></i>文件</span><span><i class="legend-dot" style="background:#d9822b"></i>类 / 模块</span><span><i class="legend-dot" style="background:#b06ad4"></i>资源</span></div>
+  </section>
+  </div>
+
+  <div class="tab-panel" id="sharedPanel">
+  <section class="card" id="briefCard">
+    <h2>LLM 整理的共同记忆简报</h2>
+    <div id="briefArea"><div class="empty">尚未连接 · 输入只读 Token 后点击「连接」。</div></div>
+  </section>
+
+  <section class="card" id="feedCard">
+    <h2>最近共同事件</h2>
+    <div id="feedArea"><div class="empty">连接后每 30 秒自动刷新。</div></div>
+    <div class="freshness" id="freshness" style="display:none"></div>
+  </section>
+  </div>
 </main>
 
 <script>
@@ -347,6 +408,8 @@
       "<span>简报待整理事件 <b>" + lag + "</b></span>";
     setPill(lag > 0 ? "busy" : "ok", lag > 0 ? "整理中" : "已同步");
     lastUpdated.textContent = "更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
+    document.getElementById("graphRefreshBtn").disabled = false;
+    fetchGraph();
   }
   function typeClass(t) {
     var v = String(t || "").toLowerCase();
@@ -419,6 +482,53 @@
     });
     area.innerHTML = html;
   }
+  var GRAPH_COLORS = { task: "#4f6ef7", file: "#0e9f9f", "class": "#d9822b", module: "#d9822b", asset: "#b06ad4", blueprint: "#b06ad4", map: "#b06ad4", plugin: "#7a5af5", system: "#6b7590" };
+  function graphNodeLabel(node) {
+    var value = node.name || node.key || node.type;
+    value = String(value);
+    return value.length > 24 ? value.slice(0, 22) + "..." : value;
+  }
+  function renderGraph(data) {
+    var area = document.getElementById("graphArea");
+    var nodes = (data && data.nodes) || [];
+    var edges = (data && data.edges) || [];
+    var query = document.getElementById("graphSearch").value.trim().toLowerCase();
+    if (query) nodes = nodes.filter(function (node) { return [node.name, node.key, node.type].join(" ").toLowerCase().indexOf(query) >= 0; });
+    var visible = {};
+    nodes.forEach(function (node) { visible[node.id] = node; });
+    edges = edges.filter(function (edge) { return visible[edge.source] && visible[edge.target]; });
+    document.getElementById("graphStats").textContent = nodes.length + " 个节点 · " + edges.length + " 条关系";
+    var freshness = (data && data.freshness) || {};
+    var freshEl = document.getElementById("graphFreshness");
+    freshEl.textContent = freshness.stale ? "投影整理中" : "已同步";
+    if (!nodes.length) { area.innerHTML = '<div class="empty">当前查询没有匹配的节点。</div>'; return; }
+    var width = Math.max(760, area.clientWidth || 760), height = 520;
+    var columns = Math.max(1, Math.ceil(Math.sqrt(nodes.length * width / height)));
+    var positions = {};
+    nodes.forEach(function (node, index) {
+      var col = index % columns, row = Math.floor(index / columns);
+      positions[node.id] = { x: 70 + col * ((width - 140) / Math.max(1, columns - 1)), y: 60 + row * 92 };
+    });
+    var svg = '<svg viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="项目关系图">';
+    edges.forEach(function (edge) {
+      var from = positions[edge.source], to = positions[edge.target];
+      svg += '<line class="graph-edge" x1="' + from.x + '" y1="' + from.y + '" x2="' + to.x + '" y2="' + to.y + '"></line>';
+      svg += '<text class="graph-edge-label" x="' + ((from.x + to.x) / 2) + '" y="' + ((from.y + to.y) / 2 - 4) + '">' + esc(edge.relation_type) + '</text>';
+    });
+    nodes.forEach(function (node) {
+      var pos = positions[node.id], color = GRAPH_COLORS[node.type] || "#6b7590";
+      svg += '<g class="graph-node"><title>' + esc(node.type + " · " + node.key) + '</title><circle cx="' + pos.x + '" cy="' + pos.y + '" r="19" fill="' + color + '"></circle><text text-anchor="middle" x="' + pos.x + '" y="' + (pos.y + 37) + '">' + esc(graphNodeLabel(node)) + '</text></g>';
+    });
+    area.innerHTML = svg + "</svg>";
+  }
+  function fetchGraph() {
+    var token = tokenEl.value.trim(), currentProject = projectId.textContent.replace(/^·\s*/, "");
+    if (!token || !currentProject || currentProject === "—") return;
+    fetch("/v1/projects/" + encodeURIComponent(currentProject) + "/graph", { headers: { "Authorization": "Bearer " + token } })
+      .then(function (resp) { if (resp.status === 200) return resp.json(); throw new Error("Graph 请求失败（HTTP " + resp.status + "）。"); })
+      .then(renderGraph)
+      .catch(function (err) { document.getElementById("graphArea").innerHTML = '<div class="errorbox">Graph 加载失败：' + esc(err.message || err) + "</div>"; });
+  }
   function fetchBoard() {
     var token = tokenEl.value.trim();
     if (!token) return;
@@ -465,7 +575,7 @@
       showError(err && err.message ? err.message : String(err));
     });
   }
-  function refreshAll() { fetchFeed(); fetchBoard(); }
+  function refreshAll() { fetchFeed(); fetchBoard(); fetchGraph(); }
   function schedule() {
     if (timer) clearInterval(timer);
     timer = setInterval(refreshAll, POLL_MS);
@@ -475,6 +585,7 @@
     if (!token) { showError("请先输入只读 Token。"); return; }
     try { sessionStorage.setItem(STORE_KEY, token); } catch (e) {}
     refreshBtn.disabled = false;
+    document.getElementById("graphRefreshBtn").disabled = false;
     refreshAll();
   }
   function clearAll() {
@@ -492,10 +603,27 @@
     document.getElementById("boardTotal").textContent = "0";
     document.getElementById("boardOpen").textContent = "0";
     document.getElementById("boardResolved").textContent = "0";
+    document.getElementById("graphArea").innerHTML = '<div class="empty">连接后加载项目 Graph。</div>';
+    document.getElementById("graphStats").textContent = "—";
+    document.getElementById("graphFreshness").textContent = "未连接";
   }
   connectBtn.addEventListener("click", connect);
   refreshBtn.addEventListener("click", refreshAll);
   clearBtn.addEventListener("click", clearAll);
+  document.getElementById("graphRefreshBtn").addEventListener("click", fetchGraph);
+  document.getElementById("graphSearch").addEventListener("input", fetchGraph);
+  document.querySelectorAll(".tab").forEach(function (tab) {
+    tab.addEventListener("click", function () {
+      document.querySelectorAll(".tab").forEach(function (item) { item.classList.remove("active"); });
+      document.querySelectorAll(".tab-panel").forEach(function (panel) { panel.classList.remove("active"); });
+      tab.classList.add("active");
+      document.getElementById(tab.dataset.tab).classList.add("active");
+      if (tab.dataset.tab === "graphPanel") fetchGraph();
+    });
+  });
+  var themeBtn = document.getElementById("themeBtn");
+  function setTheme(theme) { document.documentElement.dataset.theme = theme; themeBtn.textContent = theme === "dark" ? "☀" : "☾"; try { localStorage.setItem("memory_hub_theme", theme); } catch (e) {} }
+  themeBtn.addEventListener("click", function () { setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"); });
   tokenEl.addEventListener("keydown", function (e) { if (e.key === "Enter") connect(); });
   document.getElementById("boardFilter").addEventListener("change", function () {
     var last = window.__boardCache;
@@ -507,8 +635,9 @@
   });
 
   try {
+    setTheme(localStorage.getItem("memory_hub_theme") || "light");
     var saved = sessionStorage.getItem(STORE_KEY);
-    if (saved) { tokenEl.value = saved; refreshBtn.disabled = false; refreshAll(); }
+    if (saved) { tokenEl.value = saved; refreshBtn.disabled = false; document.getElementById("graphRefreshBtn").disabled = false; refreshAll(); }
   } catch (e) {}
 })();
 </script>
