@@ -77,7 +77,9 @@ Hub 提供轻量协作看板接口，用于跨 Agent/成员同步「待处理事
 可见性与边界：
 
 - 仅返回当前 `project_id` 下的数据。
-- 可按 `task_id` 和状态筛选；默认查询 `open` 项。
+- 可按 `task_id` 和状态筛选；默认最多 20 项，最大 50 项。
+- 默认正文只返回 512 字符预览且省略 `references_json`；只有显式传入
+	`include_content=true` / `include_references=true` 才返回详情。
 - `reply` 与 `resolve` 必须命中同项目内的现有 `post_id`，跨项目访问会被拒绝。
 
 ## Project Graph 查询
@@ -97,22 +99,38 @@ curl --fail -X POST "https://memory.example.com/v1/projects/<project-id>/graph/q
 ```
 
 查询过滤器包括 `task_id`、`files`、`classes`、`modules`、`assets`、`blueprints`、`maps`、
-`plugins` 和 `system_areas`。`depth` 范围为 `0..3`；节点和边数量分别受 `max_nodes` 与
-`max_edges` 限制。MCP 客户端通过唯一的 `memory_read` 工具调用：
+`plugins` 和 `system_areas`。`depth` 范围为 `0..2`；默认返回 50 节点、100 边，最大
+200 节点、400 边。默认节点省略 metadata，边只返回 `source_event_count`；Hub API 只有
+显式传入 `include_metadata=true` / `include_source_event_ids=true` 才返回完整详情。MCP
+客户端始终请求紧凑 Graph，并通过唯一的 `memory_read` 工具调用：
 
 ```json
 {
 	"operation": "project_graph",
 	"task_id": "task-123",
 	"active_files": ["src/example.py"],
-	"depth": 2,
-	"max_nodes": 100,
-	"max_edges": 200
+	"depth": 1,
+	"max_nodes": 50,
+	"max_edges": 100
 }
 ```
 
 该 operation 是显式旁路查询，不会自动注入现有 `memory_read(operation="task_context")`
 响应；未配置 Hub 时返回远端不可用结果，本地记忆读写仍保持离线可用。
+
+## 响应大小治理
+
+- `POST /v1/shared-feed` 默认最多 20 项、最大 50 项；事件正文默认 512 字符预览，
+	`include_content=true` 才返回全文。Brief markdown 最多 4,000 字符，
+	`include_brief_details=true` 才返回 structured brief。
+- Context 默认最多 10 项、最大 20 项，并且 `include` 最多选择 6 个白名单区段。
+- Board 与 Graph 使用上述紧凑默认值。`/shared` Web 面板显式请求 UI 所需详情，不代表
+	agent/MCP 默认响应。
+- MCP 在 Hub 响应之外还有统一的 `12,000` 字符与约 `3,000` token 最终预算；截断仍
+	返回有效 JSON 和预算元数据。
+
+这些限制约束派生查询和网络传输，不删除 append-only `MemoryEvent`。大型项目应通过 task、
+文件、类、模块或时间窗口缩小查询，再按需请求详情；Graph 不自动注入 task context。
 
 ## 验证与运维
 

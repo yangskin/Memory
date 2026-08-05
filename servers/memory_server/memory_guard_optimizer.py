@@ -325,18 +325,16 @@ def optimize_text_for_guard(
             policy=budget.policy,
         )
     before = {"chars": len(text), "tokens_est": estimate_tokens(text)}
-    normalized = _canonicalize_generated_header(text)
-    header_normalized = normalized != text
-    text = normalized
     if not force and _within_budget(text, budget):
         return text, {
-            "optimized": header_normalized,
-            "reason": "header_normalized" if header_normalized else "within_budget",
-            "method": "header_normalization" if header_normalized else "none",
+            "optimized": False,
+            "reason": "within_budget",
+            "method": "none",
             "before": before,
             "after": {"chars": len(text), "tokens_est": estimate_tokens(text)},
         }
 
+    text = _canonicalize_generated_header(text)
     llm_meta: dict[str, Any] | None = None
     method = "deterministic"
     optimized: str | None = None

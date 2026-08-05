@@ -139,7 +139,15 @@ def test_shared_feed_includes_project_brief() -> None:
     _seed_brief(app, project_id=project_id)
     client = TestClient(app)
 
-    response = client.post("/v1/shared-feed", headers={"Authorization": f"Bearer {raw_token}"}, json={})
+    compact_response = client.post("/v1/shared-feed", headers={"Authorization": f"Bearer {raw_token}"}, json={})
+    assert compact_response.status_code == 200
+    assert "structured" not in compact_response.json()["brief"]
+
+    response = client.post(
+        "/v1/shared-feed",
+        headers={"Authorization": f"Bearer {raw_token}"},
+        json={"include_brief_details": True},
+    )
     assert response.status_code == 200
     body = response.json()
     assert body["project_id"] == project_id

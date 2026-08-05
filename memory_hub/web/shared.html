@@ -216,7 +216,7 @@
 <main>
   <div class="tab-panel active" id="boardPanel">
   <section class="card" id="boardCard" style="grid-column:1 / -1">
-    <h2>完整留言板 <span class="source-badge">实时</span></h2>
+    <h2>最近留言 <span class="source-badge">实时</span></h2>
     <div class="board-toolbar">
       <span>按状态筛选</span>
       <select id="boardFilter">
@@ -231,7 +231,7 @@
         <span class="count resolved">已解决 <b id="boardResolved">0</b></span>
       </div>
     </div>
-    <div id="boardArea"><div class="board-empty">连接后自动加载完整留言板。</div></div>
+    <div id="boardArea"><div class="board-empty">连接后自动加载最近留言。</div></div>
   </section>
   </div>
 
@@ -524,7 +524,7 @@
   function fetchGraph() {
     var token = tokenEl.value.trim(), currentProject = projectId.textContent.replace(/^·\s*/, "");
     if (!token || !currentProject || currentProject === "—") return;
-    fetch("/v1/projects/" + encodeURIComponent(currentProject) + "/graph", { headers: { "Authorization": "Bearer " + token } })
+    fetch("/v1/projects/" + encodeURIComponent(currentProject) + "/graph?include_metadata=true", { headers: { "Authorization": "Bearer " + token } })
       .then(function (resp) { if (resp.status === 200) return resp.json(); throw new Error("Graph 请求失败（HTTP " + resp.status + "）。"); })
       .then(renderGraph)
       .catch(function (err) { document.getElementById("graphArea").innerHTML = '<div class="errorbox">Graph 加载失败：' + esc(err.message || err) + "</div>"; });
@@ -535,7 +535,7 @@
     fetch("/v1/shared-board", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
-      body: "{}"
+      body: JSON.stringify({ max_items: 50, include_content: true, include_references: true })
     }).then(function (resp) {
       if (resp.status === 200) return resp.json();
       if (resp.status === 401) throw new Error("Token 无效或已过期（401）。");
@@ -561,7 +561,7 @@
     fetch("/v1/shared-feed", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
-      body: JSON.stringify({ max_age_minutes: 720, max_items: 50 })
+      body: JSON.stringify({ max_age_minutes: 720, max_items: 50, include_content: true, include_brief_details: true })
     }).then(function (resp) {
       if (resp.status === 200) return resp.json();
       if (resp.status === 401) throw new Error("Token 无效或已过期（401）。");
@@ -599,7 +599,7 @@
     document.getElementById("briefArea").innerHTML = '<div class="empty">尚未连接 · 输入只读 Token 后点击「连接」。</div>';
     document.getElementById("feedArea").innerHTML = '<div class="empty">连接后每 30 秒自动刷新。</div>';
     document.getElementById("freshness").style.display = "none";
-    document.getElementById("boardArea").innerHTML = '<div class="board-empty">连接后自动加载完整留言板。</div>';
+    document.getElementById("boardArea").innerHTML = '<div class="board-empty">连接后自动加载最近留言。</div>';
     document.getElementById("boardTotal").textContent = "0";
     document.getElementById("boardOpen").textContent = "0";
     document.getElementById("boardResolved").textContent = "0";

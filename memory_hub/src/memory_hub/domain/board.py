@@ -69,4 +69,6 @@ class BoardQueryRequest(_BoardRequest):
     status: str | None = Field(default=None, pattern=r"^(open|resolved)$")
     post_type: str | None = Field(default=None, pattern=r"^(note|question|request|warning|handoff|proposal|reply)$")
     thread_id: UUID | None = None
-    max_items: int = Field(default=20, ge=1, le=200)
+    max_items: int = Field(default=20, ge=1, le=50)
+    include_content: bool = False
+    include_references: bool = False

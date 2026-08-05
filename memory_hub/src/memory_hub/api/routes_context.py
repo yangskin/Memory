@@ -36,7 +36,7 @@ def _item(event: MemoryEvent) -> dict[str, object]:
     return {"event_id": str(event.event_id), "user_id": event.user_id, "agent_id": event.agent_id, "agent_instance_id": event.agent_instance_id, "task_id": event.task_id, "task_run_id": event.task_run_id, "record_kind": event.record_kind, "task_phase": event.task_phase, "occurred_at": event.occurred_at.isoformat(), "last_reported_at": event.occurred_at.isoformat(), "metadata": metadata}
 
 
-def _shared_item(event: MemoryEvent) -> dict[str, object]:
+def _shared_item(event: MemoryEvent, *, include_content: bool) -> dict[str, object]:
     """Event projection safe for the shared dashboard.
 
     Only called for events whose ``scope`` is project-visible, so including
@@ -45,7 +45,9 @@ def _shared_item(event: MemoryEvent) -> dict[str, object]:
     item = _item(event)
     item["scope"] = event.scope
     item["operation"] = event.operation
-    item["content_markdown"] = event.content_markdown
+    content = event.content_markdown or ""
+    item["content_markdown"] = content if include_content else content[:512]
+    item["content_truncated"] = not include_content and len(content) > 512
     return item
 
 
@@ -72,7 +74,8 @@ def _brief(session, project_id: str, brief_type: str, subject_user_id: str) -> t
     snapshot = session.get(BriefSnapshot, head.current_brief_id)
     if snapshot is None:
         return None, 0
-    return {"generated_at": snapshot.generated_at.isoformat(), "covers_through_seq": snapshot.input_seq_to, "markdown": snapshot.rendered_markdown}, snapshot.input_seq_to
+    markdown = snapshot.rendered_markdown or ""
+    return {"generated_at": snapshot.generated_at.isoformat(), "covers_through_seq": snapshot.input_seq_to, "markdown": markdown[:4000], "truncated": len(markdown) > 4000}, snapshot.input_seq_to
 
 
 @router.post("/v1/projects/{project_id}/context")
@@ -141,9 +144,10 @@ def shared_feed(payload: SharedFeedRequest, request: Request, principal: Princip
                 brief = {
                     "generated_at": snapshot.generated_at.isoformat(),
                     "covers_through_seq": snapshot.input_seq_to,
-                    "markdown": snapshot.rendered_markdown,
-                    "structured": snapshot.structured_brief,
+                    "markdown": snapshot.rendered_markdown if payload.include_brief_details else snapshot.rendered_markdown[:4000],
                 }
+                if payload.include_brief_details:
+                    brief["structured"] = snapshot.structured_brief
                 watermark = snapshot.input_seq_to
         return {
             "project_id": project_id,
@@ -155,5 +159,5 @@ def shared_feed(payload: SharedFeedRequest, request: Request, principal: Princip
                 "project_brief_lag_events": max(0, project_latest_seq - watermark),
             },
             "brief": brief,
-            "events": [_shared_item(event) for event in events],
+            "events": [_shared_item(event, include_content=payload.include_content) for event in events],
         }

@@ -191,7 +191,7 @@ def test_rebuild_skips_write_when_generated_content_unchanged(populated_repo: Pa
     assert after == before
 
 
-def test_rebuild_migrates_legacy_generated_header_when_body_is_unchanged(populated_repo: Path) -> None:
+def test_rebuild_does_not_touch_legacy_header_when_body_is_unchanged(populated_repo: Path) -> None:
     config = load_config(populated_repo)
     first = rebuild_key_documents(
         config,
@@ -209,6 +209,7 @@ def test_rebuild_migrates_legacy_generated_header_when_body_is_unchanged(populat
         "config_hash=abc123 guard_optimized=deterministic -->"
     )
     target.write_text(current.replace(current.splitlines()[0], legacy_header, 1), encoding="utf-8")
+    before_refresh = target.read_bytes()
 
     second = rebuild_key_documents(
         config,
@@ -218,13 +219,9 @@ def test_rebuild_migrates_legacy_generated_header_when_body_is_unchanged(populat
     )
 
     assert second["ok"] is True
-    assert second["written"]["progress"].get("skipped") is not True
-    migrated = target.read_text(encoding="utf-8")
-    assert migrated.startswith("<!-- generated_by=memory-mcp renderer=deterministic -->")
-    assert "source_record_ids" not in migrated
-    assert "generated_at=" not in migrated
-    assert "config_hash=" not in migrated
-    assert "guard_optimized=" not in migrated
+    assert second["written"]["progress"].get("skipped") is True
+    assert second["written"]["progress"].get("skip_reason") == "no_content_change"
+    assert target.read_bytes() == before_refresh
 
 
 def test_team_documents_exclude_private_and_session_records(populated_repo: Path) -> None:

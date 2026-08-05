@@ -1004,9 +1004,42 @@ def _compact_read_response(operation: str, result: dict[str, Any], *, include_di
     return _prune_heavy_payload(result)
 
 
+def _bounded_read_args(operation: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Apply server-side defaults and ceilings even when schema validation is bypassed."""
+    bounded = dict(args)
+
+    def clamp(name: str, default: int | None, maximum: int) -> None:
+        raw = bounded.get(name)
+        if raw is None and default is None:
+            return
+        try:
+            value = int(raw if raw is not None else default)
+        except (TypeError, ValueError):
+            value = int(default or 1)
+        bounded[name] = max(1, min(value, maximum))
+
+    clamp("top_k", None, 50)
+    clamp("max_items", None, 50)
+    clamp("max_tokens", None, 8_000)
+    clamp("summary_max_tokens", None, 2_000)
+    clamp("summary_max_chars_per_record", None, 8_000)
+    if operation in {"get", "runtime_digest"}:
+        clamp("max_chars", 12_000, 32_000)
+    elif bounded.get("max_chars") is not None:
+        clamp("max_chars", None, 32_000)
+    if operation == "board":
+        clamp("max_items", 20, 50)
+    if operation == "project_graph":
+        clamp("depth", 1, 2)
+        clamp("max_nodes", 50, 200)
+        clamp("max_edges", 100, 400)
+    return bounded
+
+
 def _dispatch_memory_read(config: MemoryConfig, args: dict[str, Any]) -> dict[str, Any]:
     raw_operation = args.get("operation")
     operation = str(raw_operation or ("retrieve_context" if args.get("query") else "task_context"))
+    args = _bounded_read_args(operation, args)
     include_diagnostics = bool(args.get("include_diagnostics"))
     if operation == "task_context":
         begin_args = {k: v for k, v in args.items() if k != "operation"}

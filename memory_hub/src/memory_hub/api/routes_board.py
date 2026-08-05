@@ -38,24 +38,27 @@ def _ensure_board_content_safe(content: str) -> None:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "board content appears to include secret material")
 
 
-def _item(post: BoardPost) -> dict[str, object]:
-    return {
+def _item(post: BoardPost, *, include_content: bool = False, include_references: bool = False) -> dict[str, object]:
+    result: dict[str, object] = {
         "post_id": str(post.post_id),
         "project_id": post.project_id,
         "author_user_id": post.author_user_id,
         "author_agent_id": post.author_agent_id,
         "author_agent_instance_id": post.author_agent_instance_id,
         "post_type": post.post_type,
-        "content": post.content,
+        "content": post.content if include_content else post.content[:512],
+        "content_truncated": not include_content and len(post.content) > 512,
         "task_id": post.task_id,
         "thread_id": str(post.thread_id),
         "reply_to": str(post.reply_to) if post.reply_to else None,
-        "references_json": list(post.references_json or []),
         "status": post.status,
         "created_at": post.created_at.isoformat(),
         "updated_at": post.updated_at.isoformat(),
         "expires_at": post.expires_at.isoformat() if post.expires_at else None,
     }
+    if include_references:
+        result["references_json"] = list(post.references_json or [])
+    return result
 
 
 @router.post("/v1/projects/{project_id}/board/query")
@@ -83,7 +86,7 @@ def board_query(project_id: str, payload: BoardQueryRequest, request: Request, p
             "action": "query",
             "filter": payload.filter,
             "total": len(items),
-            "items": [_item(item) for item in items],
+            "items": [_item(item, include_content=payload.include_content, include_references=payload.include_references) for item in items],
         }
 
 
@@ -196,22 +199,22 @@ def board_resolve(project_id: str, payload: BoardResolveRequest, request: Reques
 
 
 @router.post("/v1/shared-board")
-def shared_board(request: Request, principal: Principal = Depends(require_principal("context:read"))) -> dict[str, object]:
-    """Read-only full board feed for the dashboard.
+def shared_board(payload: BoardQueryRequest, request: Request, principal: Principal = Depends(require_principal("context:read"))) -> dict[str, object]:
+    """Read-only bounded board feed for the dashboard.
 
     The project is taken from the token's principal, never from the request
-    body. Returns every board post (open and resolved) for that project,
-    newest first, so a browser can render the complete collaboration board.
+    body. Returns the newest bounded set of open and resolved posts; full
+    content and references require explicit request flags.
     """
     if not request.app.state.rate_limiter.allow(principal.token_id, "board_read", 120):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "rate limit exceeded")
     project_id = principal.project_id
     factory = request.app.state.session_factory
     with factory() as session:
-        posts = list_board_posts(session, project_id=project_id, max_items=200)
+        posts = list_board_posts(session, project_id=project_id, max_items=payload.max_items)
         return {
             "project_id": project_id,
             "generated_at": datetime.now(UTC).isoformat(),
             "total": len(posts),
-            "items": [_item(post) for post in posts],
+            "items": [_item(post, include_content=payload.include_content, include_references=payload.include_references) for post in posts],
         }

@@ -89,7 +89,7 @@ def test_optimize_text_falls_back_deterministically_without_llm(tmp_path: Path, 
     assert len(text) <= 300
 
 
-def test_optimize_text_normalizes_legacy_generated_header_within_budget(tmp_path: Path) -> None:
+def test_optimize_text_does_not_touch_legacy_generated_header_within_budget(tmp_path: Path) -> None:
     config = _config(tmp_path)
     source = (
         "<!-- generated_by=memory-mcp renderer=deterministic "
@@ -105,13 +105,9 @@ def test_optimize_text_normalizes_legacy_generated_header_within_budget(tmp_path
         prefer_llm=False,
     )
 
-    assert meta["optimized"] is True
-    assert meta["reason"] == "header_normalized"
-    assert text.startswith("<!-- generated_by=memory-mcp renderer=deterministic -->")
-    assert "source_record_ids" not in text
-    assert "generated_at=" not in text
-    assert "config_hash=" not in text
-    assert "guard_optimized=" not in text
+    assert meta["optimized"] is False
+    assert meta["reason"] == "within_budget"
+    assert text == source
 
 
 def test_deterministic_guard_compaction_does_not_restore_legacy_header_fields(tmp_path: Path, monkeypatch) -> None:

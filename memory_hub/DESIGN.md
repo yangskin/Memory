@@ -70,13 +70,26 @@ metadata 中的项目实体通过 `affects` 关联。节点和边使用项目限
 
 Hub 接口：
 
-- `GET /v1/projects/{project_id}/graph`：读取有界快照。
-- `POST /v1/projects/{project_id}/graph/query`：按 task、文件、类、模块、资产、Blueprint、Map、Plugin 或 system area 查询，并用 `depth`、`max_nodes`、`max_edges` 控制结果。
+- `GET /v1/projects/{project_id}/graph`：读取最多 200 节点、400 边的有界快照。
+- `POST /v1/projects/{project_id}/graph/query`：按 task、文件、类、模块、资产、Blueprint、Map、Plugin 或 system area 查询；默认 `depth=1`、50 节点、100 边，最大 `depth=2`、200 节点、400 边。
 
 两个接口都需要 Token 的 `context:read` scope，项目身份只取自 Token；路径项目不匹配时返回
 `403`。响应中的 `freshness` 包含已投影的 `covers_through_seq`、项目最新事件序号和
 `stale` 标志。Graph 投影是最终一致的，投影失败只记录日志，不回滚或阻断旧事件与 Brief
-处理。
+处理。Graph 默认只返回紧凑节点和边：metadata、边 ID 与来源事件 UUID 列表必须显式请求；
+MCP Graph 客户端固定使用紧凑模式。
+
+### 3.2 响应与 Token 预算
+
+服务端在数据源和 MCP 边界实施两层限制。Hub Feed 默认 20 项、最大 50 项，事件正文为
+512 字符预览；Board 默认 20 项、最大 50 项，正文为 512 字符预览且省略 references；
+Context 默认 10 项、最大 20 项且最多 6 个 include 区段。完整正文、structured brief、
+Graph metadata/provenance 和 Board references 都是显式 opt-in，Web 面板自行请求 UI 所需详情。
+
+MCP dispatcher 对所有扩展参数做运行时 clamp，最终序列化边界再限制为 12,000 字符和保守
+估算 3,000 tokens。超限响应递归削减列表、字段、字符串与深度，但保持有效 JSON 和核心
+状态字段。该治理仅限制派生视图和传输，不删除 append-only Event 历史；大型项目通过实体
+过滤、时间窗口和分次查询控制工作集，Graph 不进入自动 task-context 注入路径。
 
 ## 4. 安全边界
 

@@ -942,9 +942,7 @@ def _rebuild_one(
                 if existing is not None and is_generated(existing):
                     existing_cmp = _normalize_for_compare(_strip_generated_header_line(existing))
                     rendered_cmp = _normalize_for_compare(_strip_generated_header_line(rendered))
-                    existing_header = existing.lstrip().splitlines()[0].strip()
-                    rendered_header = rendered.lstrip().splitlines()[0].strip()
-                    if existing_cmp == rendered_cmp and existing_header == rendered_header:
+                    if existing_cmp == rendered_cmp:
                         append_event(
                             config,
                             event_type="key_document_rebuild_skipped",

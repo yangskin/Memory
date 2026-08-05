@@ -14,4 +14,6 @@ from pydantic import BaseModel, ConfigDict, Field
 class SharedFeedRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     max_age_minutes: int = Field(default=720, ge=1, le=10080)
-    max_items: int = Field(default=50, ge=1, le=200)
+    max_items: int = Field(default=20, ge=1, le=50)
+    include_content: bool = False
+    include_brief_details: bool = False

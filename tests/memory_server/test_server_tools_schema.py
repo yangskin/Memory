@@ -69,4 +69,9 @@ def test_facade_schema_exposes_board_operation(tmp_path: Path) -> None:
 def test_facade_schema_exposes_project_graph_operation(tmp_path: Path) -> None:
     read_schema = _tool_schema(_make_config(tmp_path), "memory_read")
     assert "project_graph" in read_schema["properties"]["operation"]["enum"]
-    assert read_schema["properties"]["max_nodes"]["maximum"] == 1000
+    assert read_schema["properties"]["depth"] == {"type": "integer", "minimum": 0, "maximum": 2, "default": 1}
+    assert read_schema["properties"]["max_nodes"] == {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}
+    assert read_schema["properties"]["max_edges"] == {"type": "integer", "minimum": 1, "maximum": 400, "default": 100}
+    assert read_schema["properties"]["max_chars"]["maximum"] == 32000
+    assert read_schema["properties"]["max_tokens"]["maximum"] == 8000
+    assert read_schema["properties"]["max_items"]["maximum"] == 50

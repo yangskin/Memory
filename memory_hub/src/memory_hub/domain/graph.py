@@ -14,6 +14,8 @@ class GraphQueryRequest(BaseModel):
     maps: list[str] = Field(default_factory=list, max_length=50)
     plugins: list[str] = Field(default_factory=list, max_length=50)
     system_areas: list[str] = Field(default_factory=list, max_length=50)
-    depth: int = Field(default=2, ge=0, le=3)
-    max_nodes: int = Field(default=200, ge=1, le=1000)
-    max_edges: int = Field(default=500, ge=1, le=2000)
+    depth: int = Field(default=1, ge=0, le=2)
+    max_nodes: int = Field(default=50, ge=1, le=200)
+    max_edges: int = Field(default=100, ge=1, le=400)
+    include_metadata: bool = False
+    include_source_event_ids: bool = False

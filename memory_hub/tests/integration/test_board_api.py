@@ -175,7 +175,7 @@ def test_board_post_retry_with_same_client_id_is_idempotent() -> None:
     assert queried.json()["total"] == 1
 
 
-def test_shared_board_returns_full_board_scoped_to_token_project() -> None:
+def test_shared_board_returns_project_board_with_explicit_details() -> None:
     app = create_app()
     project_id = f"project-{uuid4().hex}"
     raw_token = _seed_token(app, project_id=project_id)
@@ -212,6 +212,15 @@ def test_shared_board_returns_full_board_scoped_to_token_project() -> None:
     assert root["post_id"] in ids
     statuses = {item["post_type"] for item in body["items"]}
     assert {"question", "reply"} <= statuses
+    assert all("references_json" not in item for item in body["items"])
+
+    detailed = client.post(
+        "/v1/shared-board",
+        headers={"Authorization": f"Bearer {raw_token}"},
+        json={"include_content": True, "include_references": True},
+    )
+    assert detailed.status_code == 200
+    assert all("references_json" in item for item in detailed.json()["items"])
 
 
 def test_shared_board_requires_context_read_scope() -> None:

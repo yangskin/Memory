@@ -157,9 +157,9 @@ Hub 管理员的服务器部署、运维、备份和 Token 签发方式见
   "active_files": ["src/example.py"],
   "class_names": ["Example"],
   "module_names": ["core"],
-  "depth": 2,
-  "max_nodes": 100,
-  "max_edges": 200
+  "depth": 1,
+  "max_nodes": 50,
+  "max_edges": 100
 }
 ```
 
@@ -167,6 +167,20 @@ Hub 管理员的服务器部署、运维、备份和 Token 签发方式见
 项目可见事件生成，返回节点、边和 `freshness`；它是最终一致的派生视图，不是新的记忆真源。
 该 operation 不改变 `task_context` 的默认响应，也不改变本地离线读写、Brief、Board 或
 `shared_context` 的既有语义。详细接口和部署侧说明见 [`memory_hub/README.md`](memory_hub/README.md)。
+
+#### 2.3.3 响应预算与大型项目
+
+所有 MCP 返回值在序列化前统一经过响应预算：默认最多 `12,000` 个字符和保守估算
+`3,000` tokens。超限时服务端递归限制列表、字段、字符串和嵌套深度，保持有效 JSON，
+并返回 `response_truncated=true` 与 `response_budget`。读取参数也在运行时限制，不能通过
+绕过 JSON Schema 扩大响应：一般列表最多 50 项，`max_chars` 最多 32,000，`max_tokens`
+最多 8,000；Project Graph 默认 `depth=1`、50 节点、100 边，最大为 2、200、400。
+
+Hub API 默认使用紧凑投影：Graph 不返回 metadata 和来源事件 ID，Feed 正文为 512 字符
+预览且 Brief 不返回 structured 详情，Board 正文为 512 字符预览且不返回 references。
+Web 面板会显式请求展示所需详情；agent 应先使用 task、文件、类、模块等过滤器缩小范围，
+不要把完整项目 Graph 自动注入 `task_context`。这些限制只控制查询投影和传输，不删除
+append-only Event 真源，也不改变现有本地记忆、Brief 或 Board 数据。
 
 ### 2.4 Agent 规则配置（团队接入必做）
 

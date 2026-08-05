@@ -28,6 +28,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
 from .memory_config import MemoryConfig, MemoryConfigError, ReloadableMemoryConfig, load_config
+from .memory_response_budget import finalize_mcp_response
 from .memory_worker import MemoryBackgroundWorker
 
 # Back-compat re-exports for tests and external callers that still import
@@ -77,7 +78,8 @@ def create_server(config: MemoryConfig | ReloadableMemoryConfig) -> Server:
         result = _dispatch_tool(current, name, arguments or {})
         if isinstance(result, dict) and (arguments or {}).get("include_diagnostics"):
             result.setdefault("runtime_config", provider.diagnostics())
-        text = json.dumps(result, ensure_ascii=False, indent=2)
+        result = finalize_mcp_response(result)
+        text = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         return [TextContent(type="text", text=text)]
 
     setattr(server, "memory_config_provider", provider)
