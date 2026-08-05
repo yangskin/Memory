@@ -63,12 +63,8 @@ def extract_event_facts(event: Any) -> GraphFacts:
         nodes[identity] = NodeFact(node_type, key, key, metadata)
         return identity
 
-    agent_name = str(event.agent_instance_id or event.agent_id or "").strip()
     task_name = str(event.task_id or "").strip()
-    agent = add_node("agent", agent_name, agent_id=event.agent_id) if agent_name else None
     task = add_node("task", task_name, task_run_id=event.task_run_id) if task_name else None
-    if agent and task:
-        edges.add(EdgeFact(agent, task, "performed"))
 
     entities: list[tuple[str, str]] = []
     metadata = event.metadata_json if isinstance(event.metadata_json, dict) else {}
@@ -78,7 +74,6 @@ def extract_event_facts(event: Any) -> GraphFacts:
     for field, node_type in _ENTITY_FIELDS:
         entities.extend(add_node(node_type, value) for value in _values(metadata, field))
 
-    owner = task or agent
-    if owner:
-        edges.update(EdgeFact(owner, entity, "affects") for entity in entities)
+    if task:
+        edges.update(EdgeFact(task, entity, "affects") for entity in entities)
     return GraphFacts(tuple(nodes[key] for key in sorted(nodes)), tuple(sorted(edges, key=lambda item: (item.source, item.target, item.relation_type))))

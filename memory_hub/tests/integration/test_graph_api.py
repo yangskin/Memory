@@ -44,6 +44,7 @@ def test_projector_and_graph_query_are_idempotent_and_private_safe() -> None:
     assert body["freshness"]["stale"] is False
     assert "visible.py" in {node["key"] for node in body["nodes"]}
     assert "private.py" not in {node["key"] for node in body["nodes"]}
+    assert "agent" not in {node["type"] for node in body["nodes"]}
     assert all("metadata" not in node for node in body["nodes"])
     assert all("source_event_ids" not in edge for edge in body["edges"])
 

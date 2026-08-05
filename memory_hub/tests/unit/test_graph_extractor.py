@@ -21,13 +21,18 @@ def test_extract_event_facts_is_deterministic_and_deduplicated() -> None:
     second = extract_event_facts(_event())
     assert first == second
     assert [(node.node_type, node.node_key) for node in first.nodes] == [
-        ("agent", "copilot-1"),
         ("class", "Thing"),
         ("file", "a.py"),
         ("module", "core"),
         ("task", "task-1"),
     ]
-    assert len(first.edges) == 4
+    assert len(first.edges) == 3
+
+
+def test_extract_event_facts_does_not_project_agent_instances() -> None:
+    facts = extract_event_facts(_event(task_id="", metadata_json={"active_files": ["a.py"]}))
+    assert [(node.node_type, node.node_key) for node in facts.nodes] == [("file", "a.py")]
+    assert facts.edges == ()
 
 
 def test_extract_event_facts_excludes_private_events() -> None:

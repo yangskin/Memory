@@ -10,6 +10,8 @@ from memory_hub.domain.graph import GraphQueryRequest
 
 router = APIRouter()
 
+GRAPH_NODE_TYPES = frozenset({"task", "file", "class", "module", "asset", "blueprint", "map", "plugin", "system"})
+
 
 def _assert_project(principal: Principal, project_id: str) -> None:
     if principal.project_id != project_id:
@@ -32,9 +34,9 @@ def _edge(item: GraphEdge, *, include_source_event_ids: bool) -> dict[str, objec
 
 
 def _graph(session, project_id: str, *, node_limit: int, edge_limit: int, node_ids: set[object] | None = None, include_metadata: bool = False, include_source_event_ids: bool = False) -> dict[str, object]:
-    node_query = select(GraphNode).where(GraphNode.project_id == project_id).order_by(GraphNode.node_type, GraphNode.node_key).limit(node_limit)
+    node_query = select(GraphNode).where(GraphNode.project_id == project_id, GraphNode.node_type.in_(GRAPH_NODE_TYPES)).order_by(GraphNode.node_type, GraphNode.node_key).limit(node_limit)
     if node_ids is not None:
-        node_query = select(GraphNode).where(GraphNode.project_id == project_id, GraphNode.id.in_(node_ids)).order_by(GraphNode.node_type, GraphNode.node_key).limit(node_limit)
+        node_query = select(GraphNode).where(GraphNode.project_id == project_id, GraphNode.id.in_(node_ids), GraphNode.node_type.in_(GRAPH_NODE_TYPES)).order_by(GraphNode.node_type, GraphNode.node_key).limit(node_limit)
     nodes = list(session.scalars(node_query))
     selected_ids = {node.id for node in nodes}
     edges = list(session.scalars(select(GraphEdge).where(GraphEdge.project_id == project_id, GraphEdge.source_node_id.in_(selected_ids), GraphEdge.target_node_id.in_(selected_ids)).order_by(GraphEdge.relation_type).limit(edge_limit))) if selected_ids else []

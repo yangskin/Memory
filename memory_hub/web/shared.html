@@ -90,12 +90,8 @@
   [data-theme="dark"] .board-post .body pre, [data-theme="dark"] .board-post .body code { background: #111827; }
   .graph-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; color: var(--muted); font-size: 13px; }
   .graph-toolbar input { min-width: 240px; flex: 1; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--card-soft); color: var(--ink); }
-  .graph-canvas { min-height: 520px; border: 1px solid var(--line); border-radius: 10px; overflow: auto; background-color: var(--card-soft); background-image: radial-gradient(var(--graph-grid) 1px, transparent 1px); background-size: 18px 18px; }
-  .graph-canvas svg { display: block; min-width: 760px; width: 100%; height: 520px; }
-  .graph-edge { stroke: var(--graph-edge); stroke-width: 1.5; }
-  .graph-edge-label { fill: var(--muted); font-size: 10px; }
-  .graph-node circle { stroke: var(--card); stroke-width: 3; }
-  .graph-node text { fill: var(--ink); font-size: 11px; font-weight: 600; }
+  .graph-canvas { height: min(68vh, 680px); min-height: 520px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background-color: var(--card-soft); background-image: radial-gradient(var(--graph-grid) 1px, transparent 1px); background-size: 18px 18px; }
+  .graph-canvas .empty, .graph-canvas .errorbox { margin: 18px; }
   .graph-legend { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; color: var(--muted); font-size: 12px; }
   .legend-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; }
   .card h2 { margin: 0 0 12px; font-size: 15px; color: var(--muted); font-weight: 600; letter-spacing: .3px; }
@@ -262,6 +258,7 @@
   </div>
 </main>
 
+<script src="/assets/cytoscape.min.js"></script>
 <script>
 (function () {
   "use strict";
@@ -275,6 +272,7 @@
   var pill = document.getElementById("statusPill");
   var lastUpdated = document.getElementById("lastUpdated");
   var projectId = document.getElementById("projectId");
+  var graph = null;
 
   function setPill(state, text) {
     pill.className = "pill";
@@ -483,50 +481,136 @@
     area.innerHTML = html;
   }
   var GRAPH_COLORS = { task: "#4f6ef7", file: "#0e9f9f", "class": "#d9822b", module: "#d9822b", asset: "#b06ad4", blueprint: "#b06ad4", map: "#b06ad4", plugin: "#7a5af5", system: "#6b7590" };
+  var GRAPH_TYPE_LABELS = { task: "任务", file: "文件", "class": "类", module: "模块", asset: "资源", blueprint: "蓝图", map: "地图", plugin: "插件", system: "系统区域" };
+  var expandedGraphGroups = {};
   function graphNodeLabel(node) {
     var value = node.name || node.key || node.type;
     value = String(value);
     return value.length > 24 ? value.slice(0, 22) + "..." : value;
+  }
+  function projectGraphDetails(nodes, edges) {
+    var degree = {}, incident = {};
+    nodes.forEach(function (node) { degree[node.id] = 0; incident[node.id] = []; });
+    edges.forEach(function (edge) {
+      if (degree[edge.source] === undefined || degree[edge.target] === undefined) return;
+      degree[edge.source] += 1;
+      degree[edge.target] += 1;
+      incident[edge.source].push(edge);
+      incident[edge.target].push(edge);
+    });
+    var groups = {};
+    nodes.forEach(function (node) {
+      if (node.type === "task" || degree[node.id] !== 1) return;
+      var edge = incident[node.id][0];
+      var outgoing = edge.source === node.id;
+      var neighbor = outgoing ? edge.target : edge.source;
+      var key = [neighbor, node.type, edge.relation_type || "", outgoing ? "out" : "in"].join("|");
+      (groups[key] = groups[key] || []).push({ node: node, edge: edge, outgoing: outgoing });
+    });
+    var hidden = {}, aggregateNodes = [], aggregateEdges = [];
+    Object.keys(groups).sort().forEach(function (key, groupIndex) {
+      var members = groups[key];
+      if (members.length < 2 || expandedGraphGroups[key]) return;
+      members.forEach(function (member) { hidden[member.node.id] = true; });
+      var first = members[0], aggregateId = "aggregate-" + groupIndex;
+      var typeLabel = GRAPH_TYPE_LABELS[first.node.type] || first.node.type;
+      aggregateNodes.push({
+        id: aggregateId,
+        name: typeLabel + " · " + members.length,
+        key: key,
+        type: first.node.type,
+        aggregate: true,
+        member_count: members.length
+      });
+      aggregateEdges.push({
+        source: first.outgoing ? aggregateId : (first.edge.source === first.node.id ? first.edge.target : first.edge.source),
+        target: first.outgoing ? (first.edge.target === first.node.id ? first.edge.source : first.edge.target) : aggregateId,
+        relation_type: first.edge.relation_type,
+        source_event_count: members.reduce(function (sum, member) { return sum + (member.edge.source_event_count || 1); }, 0),
+        aggregate: true
+      });
+    });
+    return {
+      nodes: nodes.filter(function (node) { return !hidden[node.id]; }).concat(aggregateNodes),
+      edges: edges.filter(function (edge) { return !hidden[edge.source] && !hidden[edge.target]; }).concat(aggregateEdges)
+    };
+  }
+  function destroyGraph() {
+    if (graph) { graph.destroy(); graph = null; }
   }
   function renderGraph(data) {
     var area = document.getElementById("graphArea");
     var nodes = (data && data.nodes) || [];
     var edges = (data && data.edges) || [];
     var query = document.getElementById("graphSearch").value.trim().toLowerCase();
-    if (query) nodes = nodes.filter(function (node) { return [node.name, node.key, node.type].join(" ").toLowerCase().indexOf(query) >= 0; });
+    if (query) {
+      var matched = {};
+      nodes.forEach(function (node) {
+        if ([node.name, node.key, node.type, GRAPH_TYPE_LABELS[node.type]].join(" ").toLowerCase().indexOf(query) >= 0) matched[node.id] = true;
+      });
+      edges.forEach(function (edge) {
+        if (matched[edge.source] || matched[edge.target]) { matched[edge.source] = true; matched[edge.target] = true; }
+      });
+      nodes = nodes.filter(function (node) { return matched[node.id]; });
+    }
     var visible = {};
     nodes.forEach(function (node) { visible[node.id] = node; });
     edges = edges.filter(function (edge) { return visible[edge.source] && visible[edge.target]; });
+    var projected = projectGraphDetails(nodes, edges);
+    nodes = projected.nodes;
+    edges = projected.edges;
     document.getElementById("graphStats").textContent = nodes.length + " 个节点 · " + edges.length + " 条关系";
     var freshness = (data && data.freshness) || {};
     var freshEl = document.getElementById("graphFreshness");
     freshEl.textContent = freshness.stale ? "投影整理中" : "已同步";
+    destroyGraph();
     if (!nodes.length) { area.innerHTML = '<div class="empty">当前查询没有匹配的节点。</div>'; return; }
-    var width = Math.max(760, area.clientWidth || 760), height = 520;
-    var columns = Math.max(1, Math.ceil(Math.sqrt(nodes.length * width / height)));
-    var positions = {};
-    nodes.forEach(function (node, index) {
-      var col = index % columns, row = Math.floor(index / columns);
-      positions[node.id] = { x: 70 + col * ((width - 140) / Math.max(1, columns - 1)), y: 60 + row * 92 };
+    area.innerHTML = "";
+    var elements = nodes.map(function (node) {
+      return { data: { id: node.id, label: graphNodeLabel(node), color: GRAPH_COLORS[node.type] || "#6b7590", type: GRAPH_TYPE_LABELS[node.type] || node.type, key: node.key, aggregate: node.aggregate ? 1 : 0, memberCount: node.member_count || 0 } };
     });
-    var svg = '<svg viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="项目关系图">';
-    edges.forEach(function (edge) {
-      var from = positions[edge.source], to = positions[edge.target];
-      svg += '<line class="graph-edge" x1="' + from.x + '" y1="' + from.y + '" x2="' + to.x + '" y2="' + to.y + '"></line>';
-      svg += '<text class="graph-edge-label" x="' + ((from.x + to.x) / 2) + '" y="' + ((from.y + to.y) / 2 - 4) + '">' + esc(edge.relation_type) + '</text>';
+    edges.forEach(function (edge, index) {
+      elements.push({ data: { id: "edge-" + index, source: edge.source, target: edge.target, relation: edge.relation_type, count: edge.source_event_count || 1 } });
     });
-    nodes.forEach(function (node) {
-      var pos = positions[node.id], color = GRAPH_COLORS[node.type] || "#6b7590";
-      svg += '<g class="graph-node"><title>' + esc(node.type + " · " + node.key) + '</title><circle cx="' + pos.x + '" cy="' + pos.y + '" r="19" fill="' + color + '"></circle><text text-anchor="middle" x="' + pos.x + '" y="' + (pos.y + 37) + '">' + esc(graphNodeLabel(node)) + '</text></g>';
+    var styles = getComputedStyle(document.documentElement);
+    graph = cytoscape({
+      container: area,
+      elements: elements,
+      minZoom: 0.15,
+      maxZoom: 2.5,
+      style: [
+        { selector: "node", style: { "background-color": "data(color)", "border-color": styles.getPropertyValue("--card").trim(), "border-width": 2, "color": "#fff", "font-size": 11, "font-weight": 600, "height": 42, "label": "data(label)", "shape": "round-rectangle", "text-halign": "center", "text-valign": "center", "text-wrap": "ellipsis", "text-max-width": 116, "width": 138 } },
+        { selector: "node[aggregate = 1]", style: { "border-style": "dashed", "border-width": 3 } },
+        { selector: "edge", style: { "curve-style": "bezier", "line-color": styles.getPropertyValue("--graph-edge").trim(), "opacity": 0.58, "target-arrow-color": styles.getPropertyValue("--graph-edge").trim(), "target-arrow-shape": "triangle", "arrow-scale": 0.75, "width": 1.4 } },
+        { selector: ".faded", style: { "opacity": 0.12 } },
+        { selector: "node.focused", style: { "border-color": styles.getPropertyValue("--ink").trim(), "border-width": 4, "z-index": 10 } },
+        { selector: "edge.context", style: { "opacity": 0.34, "width": 1.8 } }
+      ],
+      layout: { name: "cose", animate: false, componentSpacing: 110, idealEdgeLength: 170, nodeOverlap: 48, nodeRepulsion: 14000, padding: 48, spacingFactor: 2 }
     });
-    area.innerHTML = svg + "</svg>";
+    graph.on("tap", "node", function (event) {
+      var selected = event.target;
+      if (selected.data("aggregate")) {
+        expandedGraphGroups[selected.data("key")] = true;
+        renderGraph(window.__graphCache);
+        return;
+      }
+      graph.elements().addClass("faded");
+      graph.elements().removeClass("focused context");
+      selected.removeClass("faded").addClass("focused");
+      selected.connectedEdges().removeClass("faded").addClass("context");
+    });
+    graph.on("tap", function (event) {
+      if (event.target !== graph) return;
+      graph.elements().removeClass("faded focused context");
+    });
   }
   function fetchGraph() {
     var token = tokenEl.value.trim(), currentProject = projectId.textContent.replace(/^·\s*/, "");
     if (!token || !currentProject || currentProject === "—") return;
     fetch("/v1/projects/" + encodeURIComponent(currentProject) + "/graph?include_metadata=true", { headers: { "Authorization": "Bearer " + token } })
       .then(function (resp) { if (resp.status === 200) return resp.json(); throw new Error("Graph 请求失败（HTTP " + resp.status + "）。"); })
-      .then(renderGraph)
+      .then(function (data) { window.__graphCache = data; renderGraph(data); })
       .catch(function (err) { document.getElementById("graphArea").innerHTML = '<div class="errorbox">Graph 加载失败：' + esc(err.message || err) + "</div>"; });
   }
   function fetchBoard() {
@@ -603,6 +687,7 @@
     document.getElementById("boardTotal").textContent = "0";
     document.getElementById("boardOpen").textContent = "0";
     document.getElementById("boardResolved").textContent = "0";
+    destroyGraph();
     document.getElementById("graphArea").innerHTML = '<div class="empty">连接后加载项目 Graph。</div>';
     document.getElementById("graphStats").textContent = "—";
     document.getElementById("graphFreshness").textContent = "未连接";
@@ -611,14 +696,19 @@
   refreshBtn.addEventListener("click", refreshAll);
   clearBtn.addEventListener("click", clearAll);
   document.getElementById("graphRefreshBtn").addEventListener("click", fetchGraph);
-  document.getElementById("graphSearch").addEventListener("input", fetchGraph);
+  document.getElementById("graphSearch").addEventListener("input", function () {
+    if (window.__graphCache) renderGraph(window.__graphCache);
+  });
   document.querySelectorAll(".tab").forEach(function (tab) {
     tab.addEventListener("click", function () {
       document.querySelectorAll(".tab").forEach(function (item) { item.classList.remove("active"); });
       document.querySelectorAll(".tab-panel").forEach(function (panel) { panel.classList.remove("active"); });
       tab.classList.add("active");
       document.getElementById(tab.dataset.tab).classList.add("active");
-      if (tab.dataset.tab === "graphPanel") fetchGraph();
+      if (tab.dataset.tab === "graphPanel") {
+        if (graph) { graph.resize(); graph.fit(undefined, 48); }
+        else fetchGraph();
+      }
     });
   });
   var themeBtn = document.getElementById("themeBtn");

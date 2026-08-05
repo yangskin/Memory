@@ -18,16 +18,18 @@ from memory_hub.api.routes_context import router as context_router
 from memory_hub.api.routes_events import router as events_router
 from memory_hub.api.routes_graph import router as graph_router
 
-# Directory that contains the shared dashboard page (web/shared.html).
+# Directory that contains the shared dashboard and its vendored browser assets.
 # The package is installed via `pip install .` into site-packages, so __file__
 # based lookup cannot locate the repo root; production sets MEMORY_HUB_WEB_DIR
 # explicitly (Dockerfile COPYs web/ to /app/web). Local source runs fall back
 # to the repository layout (src/memory_hub/api/main.py -> parents[3]).
-_WEB_SHARED_PAGE = (
-    Path(os.environ["MEMORY_HUB_WEB_DIR"]) / "web" / "shared.html"
+_WEB_DIR = (
+    Path(os.environ["MEMORY_HUB_WEB_DIR"]) / "web"
     if os.environ.get("MEMORY_HUB_WEB_DIR")
-    else Path(__file__).resolve().parents[3] / "web" / "shared.html"
+    else Path(__file__).resolve().parents[3] / "web"
 )
+_WEB_SHARED_PAGE = _WEB_DIR / "shared.html"
+_CYTOSCAPE_SCRIPT = _WEB_DIR / "vendor" / "cytoscape.min.js"
 
 
 def create_app() -> FastAPI:
@@ -57,6 +59,12 @@ def create_app() -> FastAPI:
         if not _WEB_SHARED_PAGE.is_file():
             raise HTTPException(status.HTTP_404_NOT_FOUND, "shared page not found")
         return FileResponse(_WEB_SHARED_PAGE, media_type="text/html")
+
+    @app.get("/assets/cytoscape.min.js", include_in_schema=False)
+    def cytoscape_script() -> FileResponse:
+        if not _CYTOSCAPE_SCRIPT.is_file():
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "graph renderer not found")
+        return FileResponse(_CYTOSCAPE_SCRIPT, media_type="text/javascript")
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
