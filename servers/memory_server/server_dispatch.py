@@ -996,6 +996,8 @@ def _compact_read_response(operation: str, result: dict[str, Any], *, include_di
             compact["query_rewrite"] = _compact_query_rewrite(result.get("query_rewrite"))
         if isinstance(result.get("task_context"), dict):
             compact["task_context"] = dict(result["task_context"])
+        if "shared_context" in result:
+            compact["shared_context"] = _prune_heavy_payload(result.get("shared_context"))
         for key in ("task_id", "task_run_id", "user", "author", "agent_id"):
             if key in result:
                 compact[key] = result.get(key)

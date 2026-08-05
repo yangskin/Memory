@@ -20,6 +20,7 @@ _PRIORITY_KEYS = (
     "path",
     "content",
     "brief_markdown",
+    "shared_context",
     "graph",
     "items",
     "results",
@@ -133,9 +134,17 @@ def finalize_mcp_response(
 
     minimal = {
         key: original[key]
-        for key in ("ok", "error", "message", "operation", "status")
+        for key in ("ok", "error", "message", "operation", "status", "shared_context")
         if key in original
     }
+    if "shared_context" in minimal:
+        minimal["shared_context"] = _bounded_value(
+            minimal["shared_context"],
+            max_dict_items=8,
+            max_list_items=1,
+            max_string_chars=80,
+            max_depth=4,
+        )
     minimal.update(
         {
             "response_truncated": True,

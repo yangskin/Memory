@@ -328,6 +328,46 @@ def test_q0_domain_query_downranks_memory_meta_records(repo: Path) -> None:
     assert meta_item["role_alignment"] == 0
 
 
+def test_q0_memory_hub_query_prioritizes_memory_meta_record(repo: Path) -> None:
+    config = load_config(repo)
+    meta = _write(
+        config,
+        title="Memory Hub shared context authority",
+        body="Memory Hub supplies the authoritative project brief and shared agent context.",
+        task_id="task-memory-hub",
+        kind="decision",
+        system_area="Memory Hub shared context",
+    )
+    domain = _write(
+        config,
+        title="SampleDomain asset hub runtime budget",
+        body="The asset hub keeps a bounded runtime memory budget for texture streaming.",
+        task_id="task-domain-hub",
+        kind="decision",
+        importance=1.0,
+        system_area="SampleEditor asset pipeline",
+    )
+
+    result = memory_retrieve_context(
+        config,
+        query="Memory Hub",
+        user="alice",
+        ranking_version="v2",
+        max_items=10,
+        top_k=10,
+    )
+
+    assert result["context_items"][0]["id"] == meta["id"]
+    meta_item = next(item for item in result["context_items"] if item["id"] == meta["id"])
+    assert meta_item["query_role"] == "memory_meta"
+    assert meta_item["memory_role"] == "memory_meta"
+    domain_item = next(item for item in result["context_items"] if item["id"] == domain["id"])
+    item_ids = [item["id"] for item in result["context_items"]]
+    assert item_ids.index(meta["id"]) < item_ids.index(domain["id"])
+    assert domain_item["memory_role"] == "domain"
+    assert domain_item["role_alignment"] == 1
+
+
 def test_q0_canonical_representative_inherits_group_best_relevance(repo: Path) -> None:
     config = load_config(repo)
     personal = _write(

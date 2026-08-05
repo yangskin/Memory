@@ -6,7 +6,7 @@ Extracted from `server.py` (P1-A). Pure data; no runtime side effects.
 from __future__ import annotations
 
 SERVER_NAME = "generic-memory-mcp"
-SERVER_VERSION = "0.5.11"
+SERVER_VERSION = "0.5.12"
 
 # ── Static base descriptions (functional semantics only) ────────────────
 

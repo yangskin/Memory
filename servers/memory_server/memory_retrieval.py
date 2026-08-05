@@ -171,6 +171,7 @@ _WEAK_QUERY_TERMS = {
     "c++",
     "mcp",
     "memory",
+    "hub",
     "记忆",
     "项目",
     "系统",
@@ -204,6 +205,7 @@ _WEAK_QUERY_TERMS = {
 
 _MEMORY_META_MARKERS = (
     "memory mcp",
+    "memory hub",
     "memory system",
     "memory retrieval",
     "memory recall",
@@ -229,7 +231,7 @@ _MEMORY_META_MARKERS = (
 def _query_role(query: str | None) -> str:
     """区分记忆系统自身查询和业务领域查询，避免自评记录污染业务事实。"""
     normalized = str(query or "").casefold().replace("-", " ").replace("_", " ")
-    context_words = r"mcp|context|brief|retrieval|retrieve|recall|authority|map|routing|governance|reflection|agent|persistent|project"
+    context_words = r"mcp|hub|context|brief|retrieval|retrieve|recall|authority|map|routing|governance|reflection|agent|persistent|project"
     is_memory_query = bool(
         re.search(rf"\bmemory\b.{{0,48}}\b(?:{context_words})\b", normalized)
         or re.search(rf"\b(?:{context_words})\b.{{0,48}}\bmemory\b", normalized)

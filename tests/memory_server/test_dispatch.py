@@ -191,6 +191,33 @@ def test_memory_read_retrieval_omits_diagnostics_by_default(repo: Path) -> None:
     assert "related_artifact_ids" not in item
 
 
+def test_memory_read_retrieve_context_keeps_requested_shared_context(repo: Path, monkeypatch) -> None:
+    config = load_config(repo)
+    shared = {
+        "status": "fresh",
+        "source": "remote",
+        "freshness": {"latest_event_seq": 42},
+        "project_brief": {"markdown": "Hub project context"},
+    }
+    monkeypatch.setattr(
+        "servers.memory_server.memory_shared_context.get_shared_context",
+        lambda *_args, **_kwargs: shared,
+    )
+
+    result = _dispatch_tool(
+        config,
+        "memory_read",
+        {
+            "operation": "retrieve_context",
+            "query": "Memory Hub",
+            "include_shared_context": True,
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["shared_context"] == shared
+
+
 
 def test_memory_read_project_graph_is_independent_operation(repo: Path, monkeypatch) -> None:
     config = load_config(repo)

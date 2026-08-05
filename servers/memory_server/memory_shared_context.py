@@ -42,8 +42,11 @@ def _compact_injected_context(payload: dict[str, Any], max_tokens: int) -> dict[
         while len(json.dumps(compact, ensure_ascii=False)) > budget and compact.get(key):
             compact[key] = compact[key][:-1]
     if len(json.dumps(compact, ensure_ascii=False)) > budget:
+        priority_keys = ("status", "source", "freshness", "user_brief", "project_brief")
+        ordered = {key: compact[key] for key in priority_keys if key in compact}
+        ordered.update((key, value) for key, value in compact.items() if key not in ordered)
         compact = _bounded_value(
-            compact,
+            ordered,
             max_dict_items=30,
             max_list_items=3,
             max_string_chars=max(80, budget // 8),
