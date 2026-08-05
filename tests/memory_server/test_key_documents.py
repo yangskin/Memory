@@ -191,6 +191,42 @@ def test_rebuild_skips_write_when_generated_content_unchanged(populated_repo: Pa
     assert after == before
 
 
+def test_rebuild_migrates_legacy_generated_header_when_body_is_unchanged(populated_repo: Path) -> None:
+    config = load_config(populated_repo)
+    first = rebuild_key_documents(
+        config,
+        targets=["progress"],
+        user="alice",
+        renderer="deterministic",
+    )
+    assert first["ok"] is True
+
+    target = populated_repo / "memory-bank/progress.md"
+    current = target.read_text(encoding="utf-8")
+    legacy_header = (
+        "<!-- generated_by=memory-mcp renderer=deterministic "
+        "source_record_ids=[old-record] generated_at=2026-08-05T00:00:00+00:00 "
+        "config_hash=abc123 guard_optimized=deterministic -->"
+    )
+    target.write_text(current.replace(current.splitlines()[0], legacy_header, 1), encoding="utf-8")
+
+    second = rebuild_key_documents(
+        config,
+        targets=["progress"],
+        user="alice",
+        renderer="deterministic",
+    )
+
+    assert second["ok"] is True
+    assert second["written"]["progress"].get("skipped") is not True
+    migrated = target.read_text(encoding="utf-8")
+    assert migrated.startswith("<!-- generated_by=memory-mcp renderer=deterministic -->")
+    assert "source_record_ids" not in migrated
+    assert "generated_at=" not in migrated
+    assert "config_hash=" not in migrated
+    assert "guard_optimized=" not in migrated
+
+
 def test_team_documents_exclude_private_and_session_records(populated_repo: Path) -> None:
     config = load_config(populated_repo)
     memory_write_record(

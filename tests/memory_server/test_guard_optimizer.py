@@ -89,6 +89,67 @@ def test_optimize_text_falls_back_deterministically_without_llm(tmp_path: Path, 
     assert len(text) <= 300
 
 
+def test_optimize_text_normalizes_legacy_generated_header_within_budget(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    source = (
+        "<!-- generated_by=memory-mcp renderer=deterministic "
+        "source_record_ids=[a,b] generated_at=2026-08-05T00:00:00+00:00 "
+        "config_hash=abc123 guard_optimized=deterministic -->\n\n"
+        "# Progress\n\n- Stable content\n"
+    )
+
+    text, meta = optimize_text_for_guard(
+        config,
+        rel_path="memory-bank/progress.md",
+        text=source,
+        prefer_llm=False,
+    )
+
+    assert meta["optimized"] is True
+    assert meta["reason"] == "header_normalized"
+    assert text.startswith("<!-- generated_by=memory-mcp renderer=deterministic -->")
+    assert "source_record_ids" not in text
+    assert "generated_at=" not in text
+    assert "config_hash=" not in text
+    assert "guard_optimized=" not in text
+
+
+def test_deterministic_guard_compaction_does_not_restore_legacy_header_fields(tmp_path: Path, monkeypatch) -> None:
+    config = _config(tmp_path)
+
+    class _Envelope:
+        ok = False
+        status = "unavailable"
+        error = "no llm"
+
+        def to_dict(self) -> dict[str, Any]:
+            return {"ok": False, "status": "unavailable", "error": "no llm"}
+
+    import servers.memory_server.memory_llm_runner as runner
+
+    monkeypatch.setattr(runner, "run_llm_capability", lambda *a, **kw: _Envelope())
+    source = (
+        "<!-- generated_by=memory-mcp renderer=deterministic "
+        "source_record_ids=[a,b] generated_at=2026-08-05T00:00:00+00:00 "
+        "config_hash=abc123 guard_optimized=deterministic -->\n\n"
+        "# Progress\n\n## Current sprint\n" + ("- verbose detail\n" * 200)
+    )
+
+    text, meta = optimize_text_for_guard(
+        config,
+        rel_path="memory-bank/progress.md",
+        text=source,
+        prefer_llm=True,
+    )
+
+    assert meta["method"] == "deterministic"
+    assert text.startswith("<!-- generated_by=memory-mcp renderer=deterministic -->")
+    assert "source_record_ids" not in text
+    assert "generated_at=" not in text
+    assert "config_hash=" not in text
+    assert "guard_optimized=" not in text
+
+
 def test_optimize_guard_targets_reduces_total_budget_overflow(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / ".ai-memory").mkdir(parents=True, exist_ok=True)
     bank = tmp_path / "memory-bank"

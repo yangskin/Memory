@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -91,13 +92,43 @@ def _generated_header(text: str) -> str | None:
     return None
 
 
+_GENERATED_RENDERER_RE = re.compile(r"\brenderer=([A-Za-z0-9_-]+)")
+
+
+def _stable_generated_header(header: str) -> str:
+    """Keep only the stable generated-document identity fields.
+
+    Legacy generated headers carried record IDs, timestamps, configuration
+    hashes, and guard method markers. They are volatile provenance rather than
+    document content, so retaining them creates needless merge conflicts.
+    """
+    match = _GENERATED_RENDERER_RE.search(header)
+    renderer = match.group(1) if match else ""
+    suffix = f" renderer={renderer}" if renderer else ""
+    return f"<!-- generated_by=memory-mcp{suffix} -->"
+
+
+def _canonicalize_generated_header(text: str) -> str:
+    """Replace a legacy generated header in-place with its stable form."""
+    lines = text.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not (stripped.startswith("<!--") and "generated_by=memory-mcp" in stripped):
+            return text
+        newline = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+        leading = line[: len(line) - len(line.lstrip())]
+        lines[index] = leading + _stable_generated_header(stripped) + newline
+        return "".join(lines)
+    return text
+
+
 def _stamp_guard_optimized_header(original: str, candidate: str, method: str) -> str:
     header = _generated_header(original)
     if not header:
         return candidate
-    stamped = header
-    if "guard_optimized=" not in stamped:
-        stamped = stamped.replace("-->", f"guard_optimized={method} -->")
+    stamped = _stable_generated_header(header)
     lines = candidate.lstrip().splitlines()
     if lines and lines[0].strip().startswith("<!--") and "generated_by=memory-mcp" in lines[0]:
         lines[0] = stamped
@@ -294,8 +325,17 @@ def optimize_text_for_guard(
             policy=budget.policy,
         )
     before = {"chars": len(text), "tokens_est": estimate_tokens(text)}
+    normalized = _canonicalize_generated_header(text)
+    header_normalized = normalized != text
+    text = normalized
     if not force and _within_budget(text, budget):
-        return text, {"optimized": False, "reason": "within_budget", "before": before}
+        return text, {
+            "optimized": header_normalized,
+            "reason": "header_normalized" if header_normalized else "within_budget",
+            "method": "header_normalization" if header_normalized else "none",
+            "before": before,
+            "after": {"chars": len(text), "tokens_est": estimate_tokens(text)},
+        }
 
     llm_meta: dict[str, Any] | None = None
     method = "deterministic"
