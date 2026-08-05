@@ -313,53 +313,56 @@ Before any development task, call `memory_read(operation="task_context", user_go
 
 ### 3.2.C Project Board 推荐必要提示词
 
-从 v0.5.12 起，MCP facade 新增 `board` operation（单一入口，按 `action` 分流 `post/query/reply/resolve`），用于多人协作留言，不替代正式 Memory 事实。
+配置并启用远端 Hub 后，优先使用专用的 `memory_board_read` / `memory_board_write` 进行多人协作留言。原有 `memory_read(operation="board")` / `memory_write(operation="board")` 继续兼容，但不再作为 Agent 规则的推荐入口。Board 用于同步重要变更、结论、待处理事项、回复与关闭状态，不替代正式 Memory 事实。
 
 可复制到 agent 规则的提示词：
 
 ```markdown
-At task start, use unresolved board items injected by `memory_read(operation="task_context")` as advisory coordination context. Board availability, remote delivery, and replies must never gate local work: if the service is unavailable or nobody replies, continue with the safest local path and record assumptions. Create a board post when a blocker, open question, handoff, or cross-agent risk would help others align; do not post routine progress noise. Query unresolved items when available to avoid duplicates, then use `memory_write(operation="board", action="post", post_type=<note|question|request|warning|handoff|proposal>, content_markdown=<message>, task_id=<task>)`. Reply on an existing thread when useful, and resolve it after the outcome is locally observed or validated; never wait for a reply or remote confirmation solely to advance task state. Board identity and project membership come from the configured Hub token; do not put identity data, API keys, private keys, bearer tokens, or database connection strings in board content. Board messages are non-authoritative, best-effort discussion items and must not be treated as verified facts.
+When a remote Memory Hub is configured and active, use the dedicated `memory_board_read` and `memory_board_write` tools for cross-agent coordination. At task start, use unresolved board items injected by `memory_read(operation="task_context")` as advisory context and query `memory_board_read(filter="unresolved", task_id=<task>)` when needed to avoid duplicate posts. You MUST create or update a board item after a material project change, when reaching a conclusion that affects later work, or when a blocker, open question, handoff, or cross-agent risk would help others align; include the outcome, affected area, validation state, and remaining risk, but do not post routine progress noise. Use `memory_board_write(action="post", post_type=<note|question|request|warning|handoff|proposal>, content=<message>, task_id=<task>)`; reply on an existing thread when useful, and resolve it after the outcome is locally observed or validated. Board availability, remote delivery, and replies must never gate local work: if the service is unavailable or nobody replies, continue with the safest local path and record assumptions. Never wait for a reply or remote confirmation solely to advance task state. Board identity and project membership come from the configured Hub token; do not put identity data, API keys, private keys, bearer tokens, database connection strings, or private memory content in board messages. Board messages are non-authoritative, best-effort coordination items; persist verified decisions and conclusions separately with `memory_write(operation="record", ...)`.
 ```
 
 最小调用示例：
 
 ```json
 {
-  "operation": "board",
   "action": "post",
   "post_type": "question",
-  "content_markdown": "请确认网络接口修改影响",
+  "content": "请确认网络接口修改影响",
   "task_id": "network"
 }
 ```
 
+调用工具：`memory_board_write`
+
 ```json
 {
-  "operation": "board",
-  "action": "query",
   "filter": "unresolved",
   "task_id": "network",
   "max_items": 20
 }
 ```
 
-```json
-{
-  "operation": "board",
-  "action": "reply",
-  "thread_id": "<thread-id>",
-  "reply_to": "<post-id>",
-  "content_markdown": "回复内容"
-}
-```
+调用工具：`memory_board_read`
 
 ```json
 {
-  "operation": "board",
+  "action": "reply",
+  "thread_id": "<thread-id>",
+  "reply_to": "<post-id>",
+  "content": "回复内容"
+}
+```
+
+调用工具：`memory_board_write`
+
+```json
+{
   "action": "resolve",
   "post_id": "<post-id>"
 }
 ```
+
+调用工具：`memory_board_write`
 
 ### 3.3 派生文档与自动维护
 
