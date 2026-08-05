@@ -273,6 +273,56 @@ workflow
 Before any development task, call `memory_read(operation="task_context", user_goal=<current request>, agent_id=<agent name>, active_files=<relevant files>)`, keep the returned `context_token`, and reuse it for every task-scoped memory read or write; during the task, read memory only when project background, prior decisions, root causes, or validation results are needed; before finishing, write one structured summary with `memory_write(operation="record", context_token=...)` covering outcome, changed files, validation, and remaining risk, then send `memory_write(operation="checkpoint", task_phase="task_done", context_token=...)` without a body; choose `record_kind` by meaning: `decision` for architecture or technical decisions, `handoff` or `note` for implementation handoff, `validation_result` for test or verification results, `incident` for bug/root-cause notes, and `procedure` for reusable workflow; prefer the default personal scope unless the caller explicitly needs a shared raw record, because high-signal personal decisions/handoffs/procedures can be auto-settled into derived `project_shared` summaries; tags are optional, so omit `tags` when unsure instead of inventing labels; when tags are useful, use only `.ai-memory/config.json` `tag_schema.allowed_tags` (default full set: `archive_candidate`, `asset_pipeline`, `build`, `handoff_ready`, `high_value`, `material`, `mcp`, `needs_validation`, `skill_possible`, `texture`, `ui`, `validation`, `workflow`); common safe choices are implementation handoff `record_kind="handoff", tags=["handoff_ready", "high_value"]`, decision `record_kind="decision", tags=["high_value"]`, validation `record_kind="validation_result", tags=["validation"]`, workflow/procedure `record_kind="procedure", tags=["workflow", "high_value"]`, build/tooling `tags=["build"]`, and MCP/Memory work `tags=["mcp", "high_value"]`; put business-domain words, asset names, module names, and feature names in `system_area`, typed metadata fields, or the record body instead of `tags`; if an LLM is configured and the tool schema exposes it, `llm_normalize_tags=True` may be used as an opt-in safety net for accidental non-vocabulary tags, but do not depend on it for normal writes; never store secrets, credentials, tokens, or private user data; never edit `activeContext/{user}.md`, `teamContext.md`, `progress.md`, `techContext.md`, or `systemPatterns.md` directly; use the CLI for administrative work.
 ```
 
+### 3.2.C Project Board 推荐必要提示词
+
+从 v0.5.12 起，MCP facade 新增 `board` operation（单一入口，按 `action` 分流 `post/query/reply/resolve`），用于多人协作留言，不替代正式 Memory 事实。
+
+可复制到 agent 规则的提示词：
+
+```markdown
+When collaboration notes are needed, use `memory_write(operation="board", action="post", post_type=<note|question|request|warning|handoff|proposal>, content_markdown=<message>, task_id=<task>)` to create a board post; before posting, call `memory_read(operation="board", action="query", filter="unresolved", task_id=<task>, max_items=20)` to avoid duplicates; reply with `memory_write(operation="board", action="reply", thread_id=<thread>, reply_to=<post_id>, content_markdown=<reply>)`; close with `memory_write(operation="board", action="resolve", post_id=<post_id>)` only after validation evidence is available; never place API keys, private keys, bearer tokens, or database connection strings in board content; board messages are non-authoritative discussion items and must not be treated as verified facts.
+```
+
+最小调用示例：
+
+```json
+{
+  "operation": "board",
+  "action": "post",
+  "post_type": "question",
+  "content_markdown": "请确认网络接口修改影响",
+  "task_id": "network"
+}
+```
+
+```json
+{
+  "operation": "board",
+  "action": "query",
+  "filter": "unresolved",
+  "task_id": "network",
+  "max_items": 20
+}
+```
+
+```json
+{
+  "operation": "board",
+  "action": "reply",
+  "thread_id": "<thread-id>",
+  "reply_to": "<post-id>",
+  "content_markdown": "回复内容"
+}
+```
+
+```json
+{
+  "operation": "board",
+  "action": "resolve",
+  "post_id": "<post-id>"
+}
+```
+
 ### 3.3 派生文档与自动维护
 
 ### 3.3.1 Raw Record Packing

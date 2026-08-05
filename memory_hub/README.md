@@ -61,6 +61,25 @@ docker compose -p <project-id> exec api \
 > 提示：该 Token 只能读取项目共同内容，不能写入任何事件。请仅分发给可信团队，
 > 且不要提交、打印或发送到聊天中。
 
+## Project Board API
+
+Hub 提供轻量协作看板接口，用于跨 Agent/成员同步「待处理事项、回复与关闭状态」。
+所有 Board 数据都按 Token 绑定的 `project_id` 强隔离；请求体不能覆盖项目身份。
+
+- `POST /v1/board/query`：查询看板（需要 `context:read`）
+- `POST /v1/board/post`：发布主题（需要 `events:write`）
+- `POST /v1/board/reply`：回复主题（需要 `events:write`）
+- `POST /v1/board/resolve`：关闭主题（需要 `events:write`）
+
+请求与响应使用 `contracts/v1` 对齐的数据结构，接口会执行内容安全检查（例如密钥样式
+字符串拦截），并继承 API 的速率限制策略（超限返回 `429`）。
+
+可见性与边界：
+
+- 仅返回当前 `project_id` 下的数据。
+- 可按 `task_id` 和状态筛选；默认查询 `open` 项。
+- `reply` 与 `resolve` 必须命中同项目内的现有 `post_id`，跨项目访问会被拒绝。
+
 ## 验证与运维
 
 ```bash

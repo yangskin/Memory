@@ -108,3 +108,28 @@ class BriefHead(Base):
     brief_type: Mapped[str] = mapped_column(String(64), primary_key=True)
     subject_user_id: Mapped[str] = mapped_column(String(256), primary_key=True)
     current_brief_id: Mapped[UUID] = mapped_column(nullable=False)
+
+
+class BoardPost(Base):
+    __tablename__ = "board_posts"
+    __table_args__ = (
+        Index("idx_board_posts_project_created", "project_id", "created_at"),
+        Index("idx_board_posts_project_status", "project_id", "status", "created_at"),
+        Index("idx_board_posts_project_thread", "project_id", "thread_id", "created_at"),
+    )
+
+    post_id: Mapped[UUID] = mapped_column(primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    author_user_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    author_agent_id: Mapped[str | None] = mapped_column(String(256))
+    author_agent_instance_id: Mapped[str | None] = mapped_column(String(256))
+    post_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    task_id: Mapped[str | None] = mapped_column(String(256))
+    thread_id: Mapped[UUID] = mapped_column(nullable=False)
+    reply_to: Mapped[UUID | None] = mapped_column()
+    references_json: Mapped[list[object]] = mapped_column(JSONB, nullable=False, server_default="[]")
+    status: Mapped[str] = mapped_column(String(64), nullable=False, server_default="open")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

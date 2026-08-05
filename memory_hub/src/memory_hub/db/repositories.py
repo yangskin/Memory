@@ -5,10 +5,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, desc, func, select
 from sqlalchemy.orm import Session
 
-from .models import AccessToken, BriefJob, MemoryEvent
+from .models import AccessToken, BoardPost, BriefJob, MemoryEvent
 
 
 def active_token(session: Session, token_id: str) -> AccessToken | None:
@@ -40,3 +40,45 @@ def mark_brief_jobs_dirty(session: Session, project_id: str, user_id: str, throu
             elif job.status == "pending":
                 job.not_before = min(job.not_before, not_before)
             job.updated_at = datetime.now(UTC)
+
+
+def board_post_by_id(session: Session, project_id: str, post_id: UUID) -> BoardPost | None:
+    return session.scalar(select(BoardPost).where(BoardPost.project_id == project_id, BoardPost.post_id == post_id))
+
+
+def list_board_posts(
+    session: Session,
+    *,
+    project_id: str,
+    user_id: str | None = None,
+    agent_instance_id: str | None = None,
+    task_id: str | None = None,
+    status: str | None = None,
+    post_type: str | None = None,
+    thread_id: UUID | None = None,
+    unresolved_only: bool = False,
+    max_items: int = 20,
+) -> list[BoardPost]:
+    clauses = [BoardPost.project_id == project_id]
+    if unresolved_only:
+        clauses.append(BoardPost.status == "open")
+    if user_id:
+        clauses.append(BoardPost.author_user_id == user_id)
+    if agent_instance_id:
+        clauses.append(BoardPost.author_agent_instance_id == agent_instance_id)
+    if task_id:
+        clauses.append(BoardPost.task_id == task_id)
+    if status:
+        clauses.append(BoardPost.status == status)
+    if post_type:
+        clauses.append(BoardPost.post_type == post_type)
+    if thread_id is not None:
+        clauses.append(BoardPost.thread_id == thread_id)
+
+    query = (
+        select(BoardPost)
+        .where(and_(*clauses))
+        .order_by(desc(BoardPost.created_at))
+        .limit(max(1, min(200, max_items)))
+    )
+    return list(session.scalars(query))

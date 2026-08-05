@@ -1,0 +1,338 @@
+from __future__ import annotations
+
+import json
+import re
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from .memory_config import MemoryConfig
+from .memory_events import get_current_user
+from .memory_identity import canonical_identity
+from .memory_locks import file_lock
+from .memory_result import error_result, ok_result
+
+ALLOWED_POST_TYPES = {"note", "question", "request", "warning", "handoff", "proposal", "reply"}
+ALLOWED_STATUSES = {"open", "resolved"}
+MAX_CONTENT_CHARS = 64 * 1024
+
+_SECRET_PATTERNS = (
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", re.IGNORECASE),
+    re.compile(r"\bapi[_-]?key\b\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{16,}", re.IGNORECASE),
+    re.compile(r"\bbearer\s+[A-Za-z0-9\-_=]+(?:\.[A-Za-z0-9\-_=]+){1,2}", re.IGNORECASE),
+    re.compile(r"\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?)://[^\s:@]+:[^\s@]+@", re.IGNORECASE),
+)
+
+
+def _now_text() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _board_path(config: MemoryConfig) -> Path:
+    return config.repo_root / ".ai-memory" / "board_posts.jsonl"
+
+
+def _project_id(config: MemoryConfig) -> str:
+    shared_cfg = getattr(config, "shared_memory", None)
+    value = str(getattr(shared_cfg, "project_id", "") or "").strip()
+    if value:
+        return value
+    return config.repo_root.name
+
+
+def _contains_forbidden_secret(text: str) -> bool:
+    return any(pattern.search(text) for pattern in _SECRET_PATTERNS)
+
+
+def _load_posts(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    posts: list[dict[str, Any]] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            item = json.loads(line)
+            if isinstance(item, dict):
+                posts.append(item)
+    except (OSError, json.JSONDecodeError):
+        return []
+    return posts
+
+
+def _append_post(path: Path, post: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with file_lock(path.parent.parent, path):
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(post, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        return error_result("write_failed", f"failed to append board post: {exc}")
+    return None
+
+
+def _rewrite_posts(path: Path, posts: list[dict[str, Any]]) -> dict[str, Any] | None:
+    payload = "\n".join(json.dumps(item, ensure_ascii=False) for item in posts)
+    if payload:
+        payload += "\n"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with file_lock(path.parent.parent, path):
+            path.write_text(payload, encoding="utf-8")
+    except OSError as exc:
+        return error_result("write_failed", f"failed to update board posts: {exc}")
+    return None
+
+
+def _normalize_content(content_markdown: str | None) -> str:
+    return str(content_markdown or "").strip()
+
+
+def _base_author(author: str | None) -> str:
+    return canonical_identity(author or "")
+
+
+def _new_post(
+    config: MemoryConfig,
+    *,
+    post_type: str,
+    content: str,
+    task_id: str | None,
+    thread_id: str,
+    reply_to: str | None,
+    references_json: list[Any] | None,
+    expires_at: str | None,
+    author_user_id: str,
+    author_agent_id: str | None,
+    author_agent_instance_id: str | None,
+) -> dict[str, Any]:
+    now = _now_text()
+    post_id = str(uuid.uuid4())
+    return {
+        "post_id": post_id,
+        "project_id": _project_id(config),
+        "author_user_id": author_user_id,
+        "author_agent_id": str(author_agent_id or "").strip() or None,
+        "author_agent_instance_id": str(author_agent_instance_id or "").strip() or None,
+        "post_type": post_type,
+        "content": content,
+        "task_id": str(task_id or "").strip() or None,
+        "thread_id": thread_id,
+        "reply_to": str(reply_to or "").strip() or None,
+        "references_json": list(references_json or []),
+        "status": "open",
+        "created_at": now,
+        "updated_at": now,
+        "expires_at": str(expires_at or "").strip() or None,
+    }
+
+
+def board_post(
+    config: MemoryConfig,
+    *,
+    post_type: str,
+    content_markdown: str,
+    task_id: str | None = None,
+    thread_id: str | None = None,
+    references_json: list[Any] | None = None,
+    expires_at: str | None = None,
+    author_user_id: str | None = None,
+    author_agent_id: str | None = None,
+    author_agent_instance_id: str | None = None,
+) -> dict[str, Any]:
+    normalized_type = str(post_type or "").strip().lower()
+    if normalized_type not in (ALLOWED_POST_TYPES - {"reply"}):
+        return error_result(
+            "invalid_input",
+            "post_type must be one of: handoff, note, proposal, question, request, warning",
+        )
+    content = _normalize_content(content_markdown)
+    if not content:
+        return error_result("invalid_input", "content_markdown must not be empty")
+    if len(content) > MAX_CONTENT_CHARS:
+        return error_result("invalid_input", f"content_markdown exceeds max size {MAX_CONTENT_CHARS} chars")
+    if _contains_forbidden_secret(content):
+        return error_result("invalid_input", "board content appears to include secret material and was rejected")
+
+    user_id = _base_author(author_user_id or get_current_user(config.repo_root))
+    post = _new_post(
+        config,
+        post_type=normalized_type,
+        content=content,
+        task_id=task_id,
+        thread_id=str(thread_id or "").strip() or "",
+        reply_to=None,
+        references_json=references_json,
+        expires_at=expires_at,
+        author_user_id=user_id,
+        author_agent_id=author_agent_id,
+        author_agent_instance_id=author_agent_instance_id,
+    )
+    if not post["thread_id"]:
+        post["thread_id"] = post["post_id"]
+
+    write_error = _append_post(_board_path(config), post)
+    if write_error is not None:
+        return write_error
+    return ok_result("board post created", operation="board", action="post", post=post)
+
+
+def board_reply(
+    config: MemoryConfig,
+    *,
+    content_markdown: str,
+    thread_id: str | None = None,
+    reply_to: str | None = None,
+    task_id: str | None = None,
+    references_json: list[Any] | None = None,
+    expires_at: str | None = None,
+    author_user_id: str | None = None,
+    author_agent_id: str | None = None,
+    author_agent_instance_id: str | None = None,
+) -> dict[str, Any]:
+    content = _normalize_content(content_markdown)
+    if not content:
+        return error_result("invalid_input", "content_markdown must not be empty")
+    if len(content) > MAX_CONTENT_CHARS:
+        return error_result("invalid_input", f"content_markdown exceeds max size {MAX_CONTENT_CHARS} chars")
+    if _contains_forbidden_secret(content):
+        return error_result("invalid_input", "board content appears to include secret material and was rejected")
+
+    path = _board_path(config)
+    with file_lock(config.repo_root, path):
+        posts = _load_posts(path)
+        target_project = _project_id(config)
+        by_id = {str(item.get("post_id") or ""): item for item in posts if str(item.get("project_id") or "") == target_project}
+
+    reply_to_id = str(reply_to or "").strip() or None
+    effective_thread = str(thread_id or "").strip() or None
+    if reply_to_id:
+        parent = by_id.get(reply_to_id)
+        if not isinstance(parent, dict):
+            return error_result("not_found", f"reply_to post not found: {reply_to_id}")
+        effective_thread = str(parent.get("thread_id") or parent.get("post_id") or "").strip() or effective_thread
+    if not effective_thread:
+        return error_result("invalid_input", "thread_id or reply_to is required for board reply")
+
+    thread_exists = any(
+        str(item.get("thread_id") or "") == effective_thread and str(item.get("project_id") or "") == _project_id(config)
+        for item in by_id.values()
+    )
+    if not thread_exists:
+        return error_result("not_found", f"thread not found: {effective_thread}")
+
+    user_id = _base_author(author_user_id or get_current_user(config.repo_root))
+    post = _new_post(
+        config,
+        post_type="reply",
+        content=content,
+        task_id=task_id,
+        thread_id=effective_thread,
+        reply_to=reply_to_id,
+        references_json=references_json,
+        expires_at=expires_at,
+        author_user_id=user_id,
+        author_agent_id=author_agent_id,
+        author_agent_instance_id=author_agent_instance_id,
+    )
+    write_error = _append_post(path, post)
+    if write_error is not None:
+        return write_error
+    return ok_result("board reply created", operation="board", action="reply", post=post)
+
+
+def board_resolve(
+    config: MemoryConfig,
+    *,
+    post_id: str,
+    resolved_by: str | None = None,
+) -> dict[str, Any]:
+    target = str(post_id or "").strip()
+    if not target:
+        return error_result("invalid_input", "post_id is required")
+
+    path = _board_path(config)
+    with file_lock(config.repo_root, path):
+        posts = _load_posts(path)
+        project_id = _project_id(config)
+        matched = None
+        for item in posts:
+            if str(item.get("project_id") or "") != project_id:
+                continue
+            if str(item.get("post_id") or "") != target:
+                continue
+            item["status"] = "resolved"
+            item["updated_at"] = _now_text()
+            item["resolved_by"] = _base_author(resolved_by or get_current_user(config.repo_root))
+            matched = item
+            break
+        if matched is None:
+            return error_result("not_found", f"post not found: {target}")
+        write_error = _rewrite_posts(path, posts)
+        if write_error is not None:
+            return write_error
+    return ok_result("board post resolved", operation="board", action="resolve", post=matched)
+
+
+def board_query(
+    config: MemoryConfig,
+    *,
+    user_id: str | None = None,
+    agent_instance_id: str | None = None,
+    task_id: str | None = None,
+    status: str | None = None,
+    post_type: str | None = None,
+    thread_id: str | None = None,
+    filter_mode: str | None = None,
+    max_items: int = 20,
+) -> dict[str, Any]:
+    if status is not None and str(status).strip() and str(status).strip() not in ALLOWED_STATUSES:
+        return error_result("invalid_input", "status must be one of: open, resolved")
+    normalized_type = str(post_type or "").strip().lower()
+    if normalized_type and normalized_type not in ALLOWED_POST_TYPES:
+        return error_result(
+            "invalid_input",
+            "post_type must be one of: handoff, note, proposal, question, reply, request, warning",
+        )
+
+    items = _load_posts(_board_path(config))
+    project_id = _project_id(config)
+    filtered: list[dict[str, Any]] = []
+    user_filter = canonical_identity(str(user_id or "").strip()) if user_id else ""
+    agent_instance_filter = str(agent_instance_id or "").strip()
+    task_filter = str(task_id or "").strip()
+    status_filter = str(status or "").strip()
+    thread_filter = str(thread_id or "").strip()
+    unresolved_only = str(filter_mode or "").strip().lower() == "unresolved"
+    cap = max(1, min(200, int(max_items or 20)))
+
+    for item in items:
+        if str(item.get("project_id") or "") != project_id:
+            continue
+        if unresolved_only and str(item.get("status") or "") != "open":
+            continue
+        if user_filter and canonical_identity(str(item.get("author_user_id") or "")) != user_filter:
+            continue
+        if agent_instance_filter and str(item.get("author_agent_instance_id") or "") != agent_instance_filter:
+            continue
+        if task_filter and str(item.get("task_id") or "") != task_filter:
+            continue
+        if status_filter and str(item.get("status") or "") != status_filter:
+            continue
+        if normalized_type and str(item.get("post_type") or "") != normalized_type:
+            continue
+        if thread_filter and str(item.get("thread_id") or "") != thread_filter:
+            continue
+        filtered.append(item)
+
+    filtered.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    return ok_result(
+        "board items queried",
+        operation="board",
+        action="query",
+        filter=filter_mode or "all",
+        total=len(filtered),
+        items=filtered[:cap],
+    )

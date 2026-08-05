@@ -57,25 +57,19 @@ def _disable_llm_by_default(monkeypatch):
 def test_build_generated_header_contains_required_fields() -> None:
     header = build_generated_header(
         renderer="deterministic",
-        source_record_ids=["r-1", "r-2"],
-        generated_at="2026-04-27T12:00:00+00:00",
-        config_hash="abc123",
     )
     assert header.startswith("<!--")
     assert "generated_by=memory-mcp" in header
     assert "renderer=deterministic" in header
-    assert "source_record_ids=[r-1,r-2]" in header
-    assert "generated_at=2026-04-27T12:00:00+00:00" in header
-    assert "config_hash=abc123" in header
+    assert "source_record_ids" not in header
+    assert "generated_at" not in header
+    assert "config_hash" not in header
     assert header.rstrip().endswith("-->")
 
 
 def test_is_generated_detects_marker_first_line() -> None:
     text = build_generated_header(
         renderer="deterministic",
-        source_record_ids=[],
-        generated_at="2026-04-27T00:00:00+00:00",
-        config_hash="x",
     ) + "\n# Active Context\n"
     assert is_generated(text) is True
 
@@ -89,16 +83,13 @@ def test_is_generated_rejects_arbitrary_html_comment() -> None:
 def test_parse_generated_meta_round_trips() -> None:
     header = build_generated_header(
         renderer="llm",
-        source_record_ids=["a", "b", "c"],
-        generated_at="2026-04-27T12:00:00+00:00",
-        config_hash="hash9",
     )
     meta = parse_generated_meta(header + "\n# Title\n")
     assert meta is not None
     assert meta["renderer"] == "llm"
-    assert meta["source_record_ids"] == ["a", "b", "c"]
-    assert meta["generated_at"] == "2026-04-27T12:00:00+00:00"
-    assert meta["config_hash"] == "hash9"
+    assert "source_record_ids" not in meta
+    assert "generated_at" not in meta
+    assert "config_hash" not in meta
 
 
 def test_parse_generated_meta_returns_none_for_unmarked() -> None:
@@ -174,6 +165,30 @@ def test_render_deterministic_document_contains_header_and_records(populated_rep
     # at least one record body shows up (doctrine: no fabrication, content from raw)
     assert "Spdlog adopted" in text
     assert "Sprint focus" not in text
+
+
+def test_rebuild_skips_write_when_generated_content_unchanged(populated_repo: Path) -> None:
+    config = load_config(populated_repo)
+    first = rebuild_key_documents(
+        config,
+        targets=["progress"],
+        user="alice",
+        renderer="deterministic",
+    )
+    assert first["ok"] is True
+    before = (populated_repo / "memory-bank/progress.md").read_text(encoding="utf-8")
+
+    second = rebuild_key_documents(
+        config,
+        targets=["progress"],
+        user="alice",
+        renderer="deterministic",
+    )
+    assert second["ok"] is True
+    assert second["written"]["progress"].get("skipped") is True
+    assert second["written"]["progress"].get("skip_reason") == "no_content_change"
+    after = (populated_repo / "memory-bank/progress.md").read_text(encoding="utf-8")
+    assert after == before
 
 
 def test_team_documents_exclude_private_and_session_records(populated_repo: Path) -> None:
@@ -637,9 +652,6 @@ def test_rebuild_one_routes_through_dispatch_table(monkeypatch, populated_repo: 
         return (
             mkd.build_generated_header(
                 renderer="deterministic",
-                source_record_ids=[],
-                generated_at=generated_at,
-                config_hash="test",
             )
             + "\n# Faked\n",
             None,
@@ -717,6 +729,47 @@ def test_rebuild_auto_falls_back_when_llm_render_raises(monkeypatch, populated_r
     meta = parse_generated_meta(text)
     assert meta is not None
     assert meta["renderer"] == "deterministic"
+
+
+def test_llm_rebuild_appends_incremental_delta_when_document_is_short(
+    monkeypatch,
+    populated_repo: Path,
+) -> None:
+    """LLM tier should append incremental updates for short generated docs.
+
+    This reduces rewrite churn in collaborative merges while preserving
+    summary updates.
+    """
+    from servers.memory_server import memory_key_documents as mkd
+
+    monkeypatch.setattr(
+        mkd, "_maybe_build_llm_client", lambda: (_StubLLMClient(), None)
+    )
+
+    calls = {"n": 0}
+
+    def fake_map_reduce_distill(client, raw_records, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            content = "## LLM body\n- baseline summary"
+        else:
+            content = "## LLM body\n- baseline summary\n- newly validated change"
+        return {"id": kwargs["record_id"], "content": content}
+
+    monkeypatch.setattr(
+        "servers.memory_server.memory_llm_pipeline.map_reduce_distill",
+        fake_map_reduce_distill,
+    )
+
+    config = load_config(populated_repo)
+    first = rebuild_key_documents(config, targets=["progress"], user="alice", renderer="llm")
+    assert first["ok"] is True
+    second = rebuild_key_documents(config, targets=["progress"], user="alice", renderer="llm")
+    assert second["ok"] is True
+
+    text = (populated_repo / "memory-bank/progress.md").read_text(encoding="utf-8")
+    assert "## Incremental Update" in text
+    assert "- newly validated change" in text
 
 
 def test_config_parses_key_documents_section(tmp_path: Path) -> None:

@@ -38,7 +38,6 @@ and auditable.
 
 from __future__ import annotations
 
-import hashlib
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,7 +47,7 @@ from .memory_backup import backup_files
 from .memory_config import MemoryConfig
 from .memory_corpus import CompilableRecord, iter_compilable_records
 from .memory_events import append_event, get_current_user
-from .memory_guard_optimizer import optimize_text_for_guard
+from .memory_guard_optimizer import guard_budget_for_path, optimize_text_for_guard
 from .memory_locks import LockTimeoutError, file_lock
 from .memory_record_io import DiskFullError, _atomic_write_text
 from .memory_request_id import new_request_id
@@ -135,17 +134,11 @@ _HEADER_RE = re.compile(
 def build_generated_header(
     *,
     renderer: str,
-    source_record_ids: Iterable[str],
-    generated_at: str,
-    config_hash: str,
 ) -> str:
-    ids = ",".join(str(x) for x in source_record_ids)
     return (
         f"<!-- generated_by=memory-mcp"
         f" renderer={renderer}"
-        f" source_record_ids=[{ids}]"
-        f" generated_at={generated_at}"
-        f" config_hash={config_hash} -->"
+        f" -->"
     )
 
 
@@ -167,19 +160,12 @@ def parse_generated_meta(text: str) -> dict[str, Any] | None:
         return None
     body = match.group("body")
     out: dict[str, Any] = {}
-    # tokens are space-separated `key=value` pairs; the value for
-    # source_record_ids is `[id1,id2]` so we tokenise carefully.
+    # Tokens are space-separated `key=value` pairs.
     for token in _split_header_tokens(body):
         if "=" not in token:
             continue
         key, raw = token.split("=", 1)
-        if key == "source_record_ids":
-            inner = raw.strip()
-            if inner.startswith("[") and inner.endswith("]"):
-                inner = inner[1:-1]
-            out[key] = [piece for piece in inner.split(",") if piece]
-        else:
-            out[key] = raw
+        out[key] = raw
     return out
 
 
@@ -203,6 +189,79 @@ def _split_header_tokens(body: str) -> list[str]:
     if current:
         tokens.append("".join(current))
     return tokens
+
+
+def _strip_generated_header_line(text: str) -> str:
+    stripped = text.lstrip()
+    if not stripped:
+        return ""
+    lines = stripped.splitlines()
+    if lines and lines[0].strip().startswith("<!--") and _GENERATED_MARKER in lines[0]:
+        return "\n".join(lines[1:]).lstrip("\n")
+    return stripped
+
+
+def _normalize_for_compare(text: str) -> str:
+    lines = [line.rstrip() for line in text.strip().splitlines()]
+    return "\n".join(lines).strip()
+
+
+def _extract_summary_body(text: str) -> str:
+    lines = _strip_generated_header_line(text).splitlines()
+    idx = 0
+    if idx < len(lines) and lines[idx].startswith("# "):
+        idx += 1
+    while idx < len(lines) and not lines[idx].strip():
+        idx += 1
+    if idx < len(lines) and lines[idx].lstrip().startswith("> _"):
+        idx += 1
+    while idx < len(lines) and not lines[idx].strip():
+        idx += 1
+    return "\n".join(lines[idx:]).strip()
+
+
+def _llm_append_threshold_chars(config: MemoryConfig, rel_path: str) -> int:
+    budget = guard_budget_for_path(config, rel_path)
+    if budget is not None and budget.max_chars is not None:
+        return max(1200, int(budget.max_chars * 0.8))
+    return 8_000
+
+
+def _build_incremental_llm_delta(existing_text: str, rendered_text: str) -> str:
+    existing_body = _extract_summary_body(existing_text)
+    rendered_body = _extract_summary_body(rendered_text)
+    if not rendered_body:
+        return ""
+    if rendered_body in existing_body:
+        return ""
+
+    existing_lines = {line.strip() for line in existing_body.splitlines() if line.strip()}
+    delta_lines: list[str] = []
+    for line in rendered_body.splitlines():
+        clean = line.strip()
+        if not clean:
+            continue
+        if clean in existing_lines:
+            continue
+        delta_lines.append(line.rstrip())
+        if len("\n".join(delta_lines)) >= 2000:
+            break
+
+    if not delta_lines:
+        return ""
+    return "\n".join(delta_lines).strip()
+
+
+def _append_llm_delta(existing_text: str, delta: str, generated_at: str) -> str:
+    day = generated_at[:10] if len(generated_at) >= 10 else generated_at
+    block = [
+        "",
+        f"## Incremental Update ({day})",
+        "",
+        delta.strip(),
+        "",
+    ]
+    return existing_text.rstrip() + "\n" + "\n".join(block)
 
 
 # ── Record selection ────────────────────────────────────────────────────
@@ -377,19 +436,6 @@ def select_records_for(
 # ── Renderer ────────────────────────────────────────────────────────────
 
 
-def _config_hash_for(config: MemoryConfig, doc_key: str) -> str:
-    spec = KEY_DOCUMENTS[doc_key]
-    payload = repr((
-        doc_key,
-        spec["rel_path"],
-        spec.get("include_kinds"),
-        spec.get("preferred_tags"),
-        spec.get("max_items"),
-        spec.get("visibility"),
-    ))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
-
-
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
@@ -405,12 +451,8 @@ def render_deterministic_document(
         raise KeyError(doc_key)
     spec = KEY_DOCUMENTS[doc_key]
     records = select_records_for(config, doc_key=doc_key, user=user)
-    record_ids = [_record_id(r) for r in records if _record_id(r)]
     header = build_generated_header(
         renderer="deterministic",
-        source_record_ids=record_ids,
-        generated_at=generated_at or _now_iso(),
-        config_hash=_config_hash_for(config, doc_key),
     )
 
     lines: list[str] = [header, "", f"# {spec['title']}", ""]
@@ -544,16 +586,12 @@ def render_embedding_document(
 
     query = _embedding_query_for(spec)
     max_items = int(spec.get("max_items") or 60)
-    reordered, scores = _rerank_by_vector(
+    reordered, _ = _rerank_by_vector(
         config, records=candidates, query=query, top_k=max_items
     )
 
-    record_ids = [_record_id(r) for r in reordered if _record_id(r)]
     header = build_generated_header(
         renderer="embedding",
-        source_record_ids=record_ids,
-        generated_at=generated_at or _now_iso(),
-        config_hash=_config_hash_for(config, doc_key),
     )
 
     lines: list[str] = [header, "", f"# {spec['title']}", ""]
@@ -563,9 +601,7 @@ def render_embedding_document(
         lines.append("")
 
     for rec in reordered:
-        rid = _record_id(rec)
-        extra = [f"vector_score=`{scores[rid]:.3f}`"] if rid and rid in scores else []
-        _append_record_section(lines, rec, extra_meta_bits=extra)
+        _append_record_section(lines, rec)
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -604,6 +640,7 @@ def render_llm_document(
     user: str | None,
     llm_client: Any,
     generated_at: str | None = None,
+    existing_document: str | None = None,
 ) -> str:
     """LLM-backed renderer: produces the same scaffold as the deterministic
     tier (header → title → role) but the body is a faithful, concise summary
@@ -632,7 +669,6 @@ def render_llm_document(
     from .memory_llm_pipeline import map_reduce_distill
 
     raw_dicts: list[dict[str, Any]] = []
-    record_ids: list[str] = []
     for rec in records:
         rid = _record_id(rec) or f"anon::{len(raw_dicts)}"
         body = rec.body.strip() or rec.title or ""
@@ -652,16 +688,10 @@ def render_llm_document(
                 },
             )
         )
-        if _record_id(rec):
-            record_ids.append(_record_id(rec))
-
     title = spec["title"]
     role = spec.get("role") or ""
     header = build_generated_header(
         renderer="llm",
-        source_record_ids=record_ids,
-        generated_at=generated_at or _now_iso(),
-        config_hash=_config_hash_for(config, doc_key),
     )
 
     if not raw_dicts:
@@ -674,6 +704,8 @@ def render_llm_document(
         lines.append("_No raw records currently match this view (corpus is empty)._")
         return "\n".join(lines) + "\n"
 
+    existing_body = _extract_summary_body(existing_document or "")
+
     sys_prompt = (
         f"{DEFAULT_DISTILL_SYSTEM_PROMPT}\n\n"
         f"Compose the body of the project's '{title}' document. "
@@ -681,13 +713,22 @@ def render_llm_document(
         "Output GitHub-flavored Markdown only. Do not write a top-level title "
         "(no `# {title}` line) — only sub-headings (## …) and prose. "
         "Stay strictly grounded in the raw records above; do not invent facts, "
-        "deadlines, owners, file paths, or status. Prefer concise sectioned bullets."
+        "deadlines, owners, file paths, or status. Prefer concise sectioned bullets. "
+        "Preserve stable wording when information has not materially changed; avoid "
+        "cosmetic rewrites."
     )
     user_instruction = (
         f"Produce the body of '{title}'. "
         "Group related raw records under short ## sub-headings. "
         "If a record contradicts another, surface both rather than picking one."
     )
+    if existing_body:
+        existing_excerpt = existing_body[:3000]
+        user_instruction += (
+            "\n\nCurrent document body (for stability reference):\n"
+            f"{existing_excerpt}\n\n"
+            "If no material update is required, keep structure and wording highly stable."
+        )
 
     distilled = map_reduce_distill(
         llm_client,
@@ -786,6 +827,14 @@ def _invoke_llm_tier(
             )
         return client
 
+    existing_document: str | None = None
+    target = (config.repo_root / rel_path).resolve()
+    if target.exists() and target.is_file():
+        try:
+            existing_document = target.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            existing_document = None
+
     def _invoke(client, _profile):
         captured["text"] = render_llm_document(
             config,
@@ -793,6 +842,7 @@ def _invoke_llm_tier(
             user=user,
             llm_client=client,
             generated_at=generated_at,
+            existing_document=existing_document,
         )
         return captured["text"]
 
@@ -868,16 +918,18 @@ def _rebuild_one(
             tier=tier,
         )
     renderer_used = tier
-    rendered, guard_optimization = optimize_text_for_guard(
-        config,
-        rel_path=rel_path,
-        text=rendered,
-        prefer_llm=guard_prefer_llm,
-    )
+    guard_optimization = {
+        "optimized": False,
+        "method": "none",
+        "notes": [],
+        "before": {},
+        "after": {},
+    }
 
     archived_to: str | None = None
     try:
         with file_lock(config.repo_root, target):
+            existing: str | None = None
             if target.exists() and target.is_file():
                 try:
                     existing = target.read_text(encoding="utf-8", errors="replace")
@@ -887,10 +939,46 @@ def _rebuild_one(
                         f"failed to read existing {rel_path}: {exc}",
                         path=rel_path,
                     )
+                if existing is not None and is_generated(existing):
+                    existing_cmp = _normalize_for_compare(_strip_generated_header_line(existing))
+                    rendered_cmp = _normalize_for_compare(_strip_generated_header_line(rendered))
+                    if existing_cmp == rendered_cmp:
+                        append_event(
+                            config,
+                            event_type="key_document_rebuild_skipped",
+                            payload={
+                                "doc_key": doc_key,
+                                "path": rel_path,
+                                "renderer": renderer_used,
+                                "reason": "no_content_change",
+                                "generated_at": generated_at,
+                                "request_id": request_id,
+                                "user": get_current_user(config.repo_root),
+                                "for_user": user,
+                            },
+                        )
+                        return {
+                            "ok": True,
+                            "doc_key": doc_key,
+                            "path": rel_path,
+                            "renderer": renderer_used,
+                            "generated_at": generated_at,
+                            "skipped": True,
+                            "skip_reason": "no_content_change",
+                            "archived_manual_edit_to": None,
+                            "guard_optimization": guard_optimization,
+                        }
+
+                    if renderer_used == "llm" and len(existing) < _llm_append_threshold_chars(config, rel_path):
+                        delta = _build_incremental_llm_delta(existing, rendered)
+                        if delta:
+                            rendered = _append_llm_delta(existing, delta, generated_at)
+
                 if existing.strip() and not is_generated(existing):
                     archived_to = _archive_manual_edit(
                         config, rel_path, existing, timestamp=generated_at
                     )
+
                 # routine pre-write backup so we can roll back the rebuild
                 backup_files(
                     config,
@@ -900,6 +988,13 @@ def _rebuild_one(
                     event_type="memory_backup",
                     write_event=True,
                 )
+
+            rendered, guard_optimization = optimize_text_for_guard(
+                config,
+                rel_path=rel_path,
+                text=rendered,
+                prefer_llm=guard_prefer_llm,
+            )
             try:
                 _atomic_write_text(
                     target, rendered, fsync_strict=config.mcp_fsync_strict
@@ -978,7 +1073,7 @@ def rebuild_key_documents(
             - ``"embedding"``: RAG-backed renderer (P5 Phase 2b). Requires
               ``embeddings.enabled=true`` and a built vector index; the
               renderer reranks per-record candidates by chunk vector
-              similarity and stamps ``vector_score=…`` onto the meta line.
+                            similarity.
               Returns ``error="embeddings_disabled"`` when the gate is off.
                 guard_prefer_llm: Prefer the LLM guard compactor when a generated
                         key document exceeds its guard budget. CLI / explicit rebuilds

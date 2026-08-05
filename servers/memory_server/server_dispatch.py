@@ -12,6 +12,13 @@ import re
 from typing import Any
 
 from .memory_backup import backup_files
+from .memory_board import board_post, board_query, board_reply, board_resolve
+from .memory_board_client import (
+    remote_board_post,
+    remote_board_query,
+    remote_board_reply,
+    remote_board_resolve,
+)
 from .memory_compactor import compact_memory
 from .memory_compiler import memory_compare_snapshots, memory_compile, memory_get_runtime_digest
 from .memory_config import MemoryConfig
@@ -47,6 +54,64 @@ from .memory_users import is_placeholder_user
 from .memory_writer import memory_write as memory_write_file
 
 logger = logging.getLogger(__name__)
+
+
+def _estimate_tokens(text: str) -> int:
+    return max(1, (len(text) + 3) // 4)
+
+
+def _board_priority(post_type: str) -> int:
+    order = {
+        "warning": 0,
+        "request": 1,
+        "question": 2,
+        "handoff": 3,
+        "proposal": 4,
+        "reply": 5,
+        "note": 6,
+    }
+    return order.get(post_type, 7)
+
+
+def _load_open_board_items_for_task(
+    config: MemoryConfig,
+    *,
+    task_id: str,
+    max_items: int,
+    max_tokens: int,
+) -> list[dict[str, Any]]:
+    payload = {
+        "filter": "unresolved",
+        "task_id": task_id,
+        "max_items": max(1, min(50, max_items * 3)),
+    }
+    remote = remote_board_query(config, payload)
+    if remote.get("ok"):
+        body = remote.get("remote") if isinstance(remote.get("remote"), dict) else {}
+        raw_items = [dict(item) for item in body.get("items") or [] if isinstance(item, dict)]
+    else:
+        local = board_query(config, task_id=task_id, filter_mode="unresolved", max_items=max(1, min(50, max_items * 3)))
+        raw_items = [dict(item) for item in local.get("items") or [] if isinstance(item, dict)]
+
+    raw_items.sort(key=lambda item: (_board_priority(str(item.get("post_type") or "")), str(item.get("created_at") or "")), reverse=False)
+
+    selected: list[dict[str, Any]] = []
+    used_tokens = 0
+    for item in raw_items:
+        if len(selected) >= max_items:
+            break
+        content = str(item.get("content") or "")
+        est = _estimate_tokens(content) + 20
+        if used_tokens + est > max_tokens:
+            # 超预算优先丢弃普通 note，其他类型尽量保留。
+            if str(item.get("post_type") or "") == "note":
+                continue
+            if selected:
+                continue
+        used_tokens += est
+        selected.append(item)
+
+    return selected
 
 
 def _attach_key_document_autorun(
@@ -733,6 +798,8 @@ def _compact_read_response(operation: str, result: dict[str, Any], *, include_di
                 result["task_brief"],
                 include_diagnostics=False,
             )
+        if isinstance(result.get("open_board_items"), list):
+            compact["open_board_items"] = result["open_board_items"]
         if "suggested_metadata" in result:
             compact["suggested_metadata"] = result["suggested_metadata"]
         for key in ("shared_context", "shared_sync"):
@@ -762,6 +829,8 @@ def _compact_read_response(operation: str, result: dict[str, Any], *, include_di
         }
         if include_diagnostics and isinstance(result.get("map"), dict):
             compact["map"] = result["map"]
+        if isinstance(result.get("open_board_items"), list):
+            compact["open_board_items"] = result["open_board_items"]
         if isinstance(result.get("task_context"), dict):
             compact["task_context"] = dict(result["task_context"])
         return _prune_heavy_payload(compact)
@@ -878,6 +947,14 @@ def _dispatch_memory_read(config: MemoryConfig, args: dict[str, Any]) -> dict[st
             active_context=active,
             current_task=current,
         )
+        board_items = _load_open_board_items_for_task(
+            config,
+            task_id=str(args.get("task_id") or task.get("task_id") or ""),
+            max_items=int(args.get("board_max_items") or 8),
+            max_tokens=int(args.get("board_max_tokens") or 500),
+        )
+        if board_items:
+            result["open_board_items"] = board_items
         if bool(args.get("include_task_brief", True)):
             try:
                 result["task_brief"] = build_task_brief(
@@ -903,6 +980,8 @@ def _dispatch_memory_read(config: MemoryConfig, args: dict[str, Any]) -> dict[st
                     "task_brief_failed",
                     f"task context is available but task brief generation failed: {type(exc).__name__}: {exc}",
                 )
+        if board_items and isinstance(result.get("task_brief"), dict) and result["task_brief"].get("ok"):
+            result["task_brief"]["open_board_items"] = board_items
         if args.get("query"):
             result["retrieved_context"] = _dispatch_memory_read(
                 config,
@@ -1053,6 +1132,56 @@ def _dispatch_memory_read(config: MemoryConfig, args: dict[str, Any]) -> dict[st
         if isinstance(result, dict) and result.get("ok"):
             result.setdefault("user", effective_user)
         return _compact_read_response(operation, result, include_diagnostics=include_diagnostics)
+    if operation == "board":
+        action = str(args.get("action") or "query").strip().lower()
+        if action != "query":
+            return error_result("invalid_input", "board read action must be: query")
+        remote_payload = {
+            "filter": str(args["filter"]) if args.get("filter") is not None else "all",
+            "user_id": str(args["user_id"]) if args.get("user_id") is not None else None,
+            "agent_instance_id": str(args["agent_instance_id"]) if args.get("agent_instance_id") is not None else None,
+            "task_id": str(args["task_id"]) if args.get("task_id") is not None else None,
+            "status": str(args["status"]) if args.get("status") is not None else None,
+            "post_type": str(args["post_type"]) if args.get("post_type") is not None else None,
+            "thread_id": str(args["thread_id"]) if args.get("thread_id") is not None else None,
+            "max_items": int(args.get("max_items") or 20),
+        }
+        remote = remote_board_query(config, remote_payload)
+        if remote.get("ok"):
+            body = remote.get("remote") if isinstance(remote.get("remote"), dict) else {}
+            result = ok_result(
+                "board items queried",
+                operation="board",
+                action="query",
+                filter=body.get("filter", remote_payload["filter"]),
+                total=int(body.get("total") or 0),
+                items=list(body.get("items") or []),
+                board_sync={"remote": True, "fallback": False, "http_status": remote.get("http_status")},
+            )
+            return _compact_read_response(operation, attach_task_context(result, args), include_diagnostics=include_diagnostics)
+
+        result = board_query(
+            config,
+            user_id=str(args["user_id"]) if args.get("user_id") is not None else None,
+            agent_instance_id=(
+                str(args["agent_instance_id"]) if args.get("agent_instance_id") is not None else None
+            ),
+            task_id=str(args["task_id"]) if args.get("task_id") is not None else None,
+            status=str(args["status"]) if args.get("status") is not None else None,
+            post_type=str(args["post_type"]) if args.get("post_type") is not None else None,
+            thread_id=str(args["thread_id"]) if args.get("thread_id") is not None else None,
+            filter_mode=str(args["filter"]) if args.get("filter") is not None else None,
+            max_items=int(args.get("max_items") or 20),
+        )
+        if result.get("ok"):
+            result["board_sync"] = {
+                "remote": False,
+                "fallback": True,
+                "error": remote.get("error"),
+                "message": remote.get("message"),
+                "http_status": remote.get("http_status"),
+            }
+        return _compact_read_response(operation, attach_task_context(result, args), include_diagnostics=include_diagnostics)
     if operation == "runtime_digest":
         return attach_task_context(memory_get_runtime_digest(
             config,
@@ -1063,7 +1192,7 @@ def _dispatch_memory_read(config: MemoryConfig, args: dict[str, Any]) -> dict[st
         ), args)
     return error_result(
         "invalid_input",
-        "operation must be one of: task_context, task_brief, get_task_context, get, search, search_records, runtime_digest, retrieve_context, important_memories, latest_memories, shared_context",
+        "operation must be one of: task_context, task_brief, get_task_context, get, search, search_records, board, runtime_digest, retrieve_context, important_memories, latest_memories, shared_context",
     )
 
 
@@ -1401,6 +1530,147 @@ def _dispatch_memory_write(config: MemoryConfig, args: dict[str, Any]) -> dict[s
             result=write_result,
             phase=str(args["task_phase"]) if args.get("task_phase") is not None else None,
         ), args))
+    if operation == "board":
+        action = str(args.get("action") or "post").strip().lower()
+        if action == "post":
+            content = args.get("content_markdown")
+            if content is None and args.get("content") is not None:
+                content = args.get("content")
+            err = _check_required({"content_markdown": content}, "content_markdown")
+            if err:
+                return err
+            remote_payload = {
+                "post_type": str(args.get("post_type") or ""),
+                "content": str(content or ""),
+                "task_id": str(args["task_id"]) if args.get("task_id") is not None else None,
+                "thread_id": str(args["thread_id"]) if args.get("thread_id") is not None else None,
+                "references_json": args.get("references_json") if isinstance(args.get("references_json"), list) else None,
+                "expires_at": str(args["expires_at"]) if args.get("expires_at") is not None else None,
+                "author_agent_id": str(args.get("agent_id") or (args.get("_task_context") or {}).get("agent_id") or "") or None,
+                "author_agent_instance_id": str(args.get("agent_instance_id") or args.get("task_run_id") or "") or None,
+            }
+            remote = remote_board_post(config, remote_payload)
+            if remote.get("ok"):
+                body = remote.get("remote") if isinstance(remote.get("remote"), dict) else {}
+                result = ok_result(
+                    "board post created",
+                    operation="board",
+                    action="post",
+                    post=body.get("post"),
+                    board_sync={"remote": True, "fallback": False, "http_status": remote.get("http_status")},
+                )
+                return attach_task_context(result, args)
+            result = board_post(
+                config,
+                post_type=str(args.get("post_type") or ""),
+                content_markdown=str(content or ""),
+                task_id=str(args["task_id"]) if args.get("task_id") is not None else None,
+                thread_id=str(args["thread_id"]) if args.get("thread_id") is not None else None,
+                references_json=args.get("references_json") if isinstance(args.get("references_json"), list) else None,
+                expires_at=str(args["expires_at"]) if args.get("expires_at") is not None else None,
+                author_user_id=str(args.get("author") or args.get("user") or "") or None,
+                author_agent_id=(
+                    str(args.get("agent_id") or (args.get("_task_context") or {}).get("agent_id") or "")
+                    or None
+                ),
+                author_agent_instance_id=(
+                    str(args.get("agent_instance_id") or args.get("task_run_id") or "") or None
+                ),
+            )
+            if result.get("ok"):
+                result["board_sync"] = {
+                    "remote": False,
+                    "fallback": True,
+                    "error": remote.get("error"),
+                    "message": remote.get("message"),
+                    "http_status": remote.get("http_status"),
+                }
+            return attach_task_context(result, args)
+        if action == "reply":
+            content = args.get("content_markdown")
+            if content is None and args.get("content") is not None:
+                content = args.get("content")
+            err = _check_required({"content_markdown": content}, "content_markdown")
+            if err:
+                return err
+            remote_payload = {
+                "content": str(content or ""),
+                "thread_id": str(args["thread_id"]) if args.get("thread_id") is not None else None,
+                "reply_to": str(args["reply_to"]) if args.get("reply_to") is not None else None,
+                "task_id": str(args["task_id"]) if args.get("task_id") is not None else None,
+                "references_json": args.get("references_json") if isinstance(args.get("references_json"), list) else None,
+                "expires_at": str(args["expires_at"]) if args.get("expires_at") is not None else None,
+                "author_agent_id": str(args.get("agent_id") or (args.get("_task_context") or {}).get("agent_id") or "") or None,
+                "author_agent_instance_id": str(args.get("agent_instance_id") or args.get("task_run_id") or "") or None,
+            }
+            remote = remote_board_reply(config, remote_payload)
+            if remote.get("ok"):
+                body = remote.get("remote") if isinstance(remote.get("remote"), dict) else {}
+                result = ok_result(
+                    "board reply created",
+                    operation="board",
+                    action="reply",
+                    post=body.get("post"),
+                    board_sync={"remote": True, "fallback": False, "http_status": remote.get("http_status")},
+                )
+                return attach_task_context(result, args)
+            result = board_reply(
+                config,
+                content_markdown=str(content or ""),
+                thread_id=str(args["thread_id"]) if args.get("thread_id") is not None else None,
+                reply_to=str(args["reply_to"]) if args.get("reply_to") is not None else None,
+                task_id=str(args["task_id"]) if args.get("task_id") is not None else None,
+                references_json=args.get("references_json") if isinstance(args.get("references_json"), list) else None,
+                expires_at=str(args["expires_at"]) if args.get("expires_at") is not None else None,
+                author_user_id=str(args.get("author") or args.get("user") or "") or None,
+                author_agent_id=(
+                    str(args.get("agent_id") or (args.get("_task_context") or {}).get("agent_id") or "")
+                    or None
+                ),
+                author_agent_instance_id=(
+                    str(args.get("agent_instance_id") or args.get("task_run_id") or "") or None
+                ),
+            )
+            if result.get("ok"):
+                result["board_sync"] = {
+                    "remote": False,
+                    "fallback": True,
+                    "error": remote.get("error"),
+                    "message": remote.get("message"),
+                    "http_status": remote.get("http_status"),
+                }
+            return attach_task_context(result, args)
+        if action == "resolve":
+            err = _check_required(args, "post_id")
+            if err:
+                return err
+            remote_payload = {"post_id": str(args.get("post_id") or "")}
+            remote = remote_board_resolve(config, remote_payload)
+            if remote.get("ok"):
+                body = remote.get("remote") if isinstance(remote.get("remote"), dict) else {}
+                result = ok_result(
+                    "board post resolved",
+                    operation="board",
+                    action="resolve",
+                    post=body.get("post"),
+                    board_sync={"remote": True, "fallback": False, "http_status": remote.get("http_status")},
+                )
+                return attach_task_context(result, args)
+            result = board_resolve(
+                config,
+                post_id=str(args.get("post_id") or ""),
+                resolved_by=str(args.get("author") or args.get("user") or "") or None,
+            )
+            if result.get("ok"):
+                result["board_sync"] = {
+                    "remote": False,
+                    "fallback": True,
+                    "error": remote.get("error"),
+                    "message": remote.get("message"),
+                    "http_status": remote.get("http_status"),
+                }
+            return attach_task_context(result, args)
+        return error_result("invalid_input", "board write action must be one of: post, reply, resolve")
     if operation == "observation":
         if args.get("content_markdown") is None and args.get("content") is not None:
             args = {**args, "content_markdown": args.get("content")}
@@ -1455,7 +1725,7 @@ def _dispatch_memory_write(config: MemoryConfig, args: dict[str, Any]) -> dict[s
             "admin_cli_required",
             "memory_write no longer links artifacts through MCP; use the CLI link-artifact command.",
         )
-    return error_result("invalid_input", "operation must be one of: record, observation, checkpoint")
+    return error_result("invalid_input", "operation must be one of: record, observation, checkpoint, board")
 
 
 def _dispatch_memory_context(config: MemoryConfig, args: dict[str, Any]) -> dict[str, Any]:

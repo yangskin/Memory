@@ -52,3 +52,15 @@ def test_memory_write_tags_schema_uses_configured_controlled_vocabulary(tmp_path
 
     assert tags_schema["items"]["enum"] == ["custom_tag", "mcp"]
     assert "Omit tags when unsure" in tags_schema["description"]
+
+
+def test_facade_schema_exposes_board_operation(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+
+    read_schema = _tool_schema(config, "memory_read")
+    write_schema = _tool_schema(config, "memory_write")
+
+    assert "board" in read_schema["properties"]["operation"]["enum"]
+    assert "board" in write_schema["properties"]["operation"]["enum"]
+    assert read_schema["properties"]["action"]["enum"] == ["query", "post", "reply", "resolve"]
+    assert write_schema["properties"]["action"]["enum"] == ["query", "post", "reply", "resolve"]

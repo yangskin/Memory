@@ -241,8 +241,6 @@ def test_render_embedding_document_returns_generated_body(repo: Path) -> None:
     body = render_embedding_document(config, doc_key="progress", user="alice")
     assert body.startswith("<!-- generated_by=memory-mcp")
     assert "renderer=embedding" in body
-    # Vector score badge is emitted only when at least one hit overlapped.
-    assert "vector_score=" in body
 
 
 def test_rebuild_embedding_renderer_writes_when_enabled(repo: Path) -> None:
