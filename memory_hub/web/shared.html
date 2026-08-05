@@ -104,6 +104,51 @@
     border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px;
   }
   a { color: var(--brand); }
+
+  /* ---- full board ---- */
+  .board-toolbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    margin-bottom: 12px; font-size: 13px; color: var(--muted);
+  }
+  .board-toolbar .counts { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+  .board-toolbar .count { background: #eef0f5; border-radius: 999px; padding: 2px 10px; font-size: 12px; }
+  .board-toolbar .count b { font-family: var(--mono); }
+  .board-toolbar .count.open b { color: var(--warn); }
+  .board-toolbar .count.resolved b { color: var(--ok); }
+  .board-toolbar select, .board-toolbar input[type=search] {
+    border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
+    font-size: 13px; background: #fbfcff; color: var(--ink);
+  }
+  .board-thread {
+    border: 1px solid var(--line); border-radius: 12px; margin: 10px 0;
+    overflow: hidden; background: #fbfcff;
+  }
+  .board-thread .thread-head {
+    display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+    font-size: 12px; color: var(--muted); background: #f1f3f9; border-bottom: 1px solid var(--line);
+  }
+  .board-post { padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .board-post:last-child { border-bottom: 0; }
+  .board-post.reply { padding-left: 28px; background: #f8fafd; }
+  .board-post .meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .type-tag { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; color: #fff; }
+  .type-tag.question { background: #4f6ef7; }
+  .type-tag.request { background: #7a5af5; }
+  .type-tag.warning { background: #d9822b; }
+  .type-tag.handoff { background: #0e9f9f; }
+  .type-tag.proposal { background: #b06ad4; }
+  .type-tag.note { background: #6b7590; }
+  .type-tag.reply { background: #8a93a8; }
+  .status-tag { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; }
+  .status-tag.open { background: #fdf3e4; color: #b26a16; }
+  .status-tag.resolved { background: #e5f7ee; color: var(--ok); }
+  .board-post .who { font-family: var(--mono); font-size: 12px; }
+  .board-post .when { margin-left: auto; white-space: nowrap; }
+  .board-post .body { margin-top: 7px; font-size: 14px; }
+  .board-post .body p { margin: 4px 0; }
+  .board-post .body pre { background: #f1f3f9; border-radius: 6px; padding: 8px; overflow-x: auto; font-size: 12px; }
+  .board-post .body code { background: #f1f3f9; border-radius: 4px; padding: 1px 4px; font-family: var(--mono); font-size: 12px; }
+  .board-empty { color: var(--muted); text-align: center; padding: 26px 0; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -134,6 +179,25 @@
     <h2>最近共同事件</h2>
     <div id="feedArea"><div class="empty">连接后每 30 秒自动刷新。</div></div>
     <div class="freshness" id="freshness" style="display:none"></div>
+  </section>
+
+  <section class="card" id="boardCard" style="grid-column:1 / -1">
+    <h2>完整留言板 <span class="source-badge">实时</span></h2>
+    <div class="board-toolbar">
+      <span>按状态筛选</span>
+      <select id="boardFilter">
+        <option value="all">全部</option>
+        <option value="open">未解决</option>
+        <option value="resolved">已解决</option>
+      </select>
+      <input type="search" id="boardSearch" placeholder="搜索留言内容 / 任务 / 作者" autocomplete="off">
+      <div class="counts">
+        <span class="count">全部 <b id="boardTotal">0</b></span>
+        <span class="count open">未解决 <b id="boardOpen">0</b></span>
+        <span class="count resolved">已解决 <b id="boardResolved">0</b></span>
+      </div>
+    </div>
+    <div id="boardArea"><div class="board-empty">连接后自动加载完整留言板。</div></div>
   </section>
 </main>
 
@@ -284,6 +348,97 @@
     setPill(lag > 0 ? "busy" : "ok", lag > 0 ? "整理中" : "已同步");
     lastUpdated.textContent = "更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
   }
+  function typeClass(t) {
+    var v = String(t || "").toLowerCase();
+    return ["question", "request", "warning", "handoff", "proposal", "note", "reply"].indexOf(v) >= 0 ? v : "note";
+  }
+  function boardMetaTag(cls, text) {
+    return '<span class="' + cls + '">' + esc(text) + "</span>";
+  }
+  function renderBoardPost(post, isRoot) {
+    var html = '<div class="board-post' + (isRoot ? "" : " reply") + '">';
+    html += '<div class="meta">';
+    html += boardMetaTag("type-tag " + typeClass(post.post_type), post.post_type);
+    html += boardMetaTag("status-tag " + (post.status === "resolved" ? "resolved" : "open"), post.status === "resolved" ? "已解决" : "未解决");
+    html += '<span class="who">' + esc(post.author_user_id || "?") + "</span>";
+    if (post.author_agent_id) html += '<span class="who">' + esc(post.author_agent_id) + "</span>";
+    if (post.task_id) html += '<span class="who">#' + esc(post.task_id) + "</span>";
+    html += '<span class="when">' + fmtTime(post.created_at) + "</span>";
+    html += "</div>";
+    if (post.content) html += '<div class="body">' + renderMarkdown(post.content) + "</div>";
+    html += "</div>";
+    return html;
+  }
+  function boardMatches(post, statusFilter, query) {
+    if (statusFilter === "open" && post.status !== "open") return false;
+    if (statusFilter === "resolved" && post.status !== "resolved") return false;
+    if (query) {
+      var q = query.toLowerCase();
+      var hay = [post.content, post.task_id, post.author_user_id, post.author_agent_id, post.post_type]
+        .join(" ").toLowerCase();
+      if (hay.indexOf(q) < 0) return false;
+    }
+    return true;
+  }
+  function renderBoard(data) {
+    window.__boardCache = data;
+    var area = document.getElementById("boardArea");
+    var items = (data && data.items) || [];
+    var statusFilter = document.getElementById("boardFilter").value;
+    var query = document.getElementById("boardSearch").value.trim();
+    var filtered = items.filter(function (it) { return boardMatches(it, statusFilter, query); });
+
+    document.getElementById("boardTotal").textContent = items.length;
+    document.getElementById("boardOpen").textContent = items.filter(function (it) { return it.status === "open"; }).length;
+    document.getElementById("boardResolved").textContent = items.filter(function (it) { return it.status === "resolved"; }).length;
+
+    if (!items.length) {
+      area.innerHTML = '<div class="board-empty">留言板为空 · 有新留言时会自动出现。</div>';
+      return;
+    }
+    if (!filtered.length) {
+      area.innerHTML = '<div class="board-empty">没有符合当前筛选的留言。</div>';
+      return;
+    }
+
+    var byThread = {};
+    filtered.forEach(function (it) {
+      var tid = it.thread_id || it.post_id;
+      (byThread[tid] = byThread[tid] || []).push(it);
+    });
+    var html = "";
+    Object.keys(byThread).forEach(function (tid) {
+      var posts = byThread[tid].slice().sort(function (a, b) {
+        return (a.created_at < b.created_at ? -1 : 1);
+      });
+      var root = posts[0];
+      html += '<div class="board-thread">';
+      html += '<div class="thread-head">线程 ' + esc(tid) + " · " + posts.length + " 条</div>";
+      posts.forEach(function (p, idx) { html += renderBoardPost(p, idx === 0); });
+      html += "</div>";
+    });
+    area.innerHTML = html;
+  }
+  function fetchBoard() {
+    var token = tokenEl.value.trim();
+    if (!token) return;
+    fetch("/v1/shared-board", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+      body: "{}"
+    }).then(function (resp) {
+      if (resp.status === 200) return resp.json();
+      if (resp.status === 401) throw new Error("Token 无效或已过期（401）。");
+      if (resp.status === 403) throw new Error("Token 缺少 context:read 权限（403）。");
+      if (resp.status === 429) throw new Error("请求过于频繁（429）。");
+      throw new Error("服务错误（HTTP " + resp.status + "）。");
+    }).then(function (data) {
+      renderBoard(data);
+    }).catch(function (err) {
+      var area = document.getElementById("boardArea");
+      area.innerHTML = '<div class="errorbox">留言板加载失败：' + esc(err && err.message ? err.message : String(err)) + "</div>";
+    });
+  }
   function showError(message) {
     var feedArea = document.getElementById("feedArea");
     feedArea.innerHTML = '<div class="errorbox">' + esc(message) + "</div>";
@@ -310,16 +465,17 @@
       showError(err && err.message ? err.message : String(err));
     });
   }
+  function refreshAll() { fetchFeed(); fetchBoard(); }
   function schedule() {
     if (timer) clearInterval(timer);
-    timer = setInterval(fetchFeed, POLL_MS);
+    timer = setInterval(refreshAll, POLL_MS);
   }
   function connect() {
     var token = tokenEl.value.trim();
     if (!token) { showError("请先输入只读 Token。"); return; }
     try { sessionStorage.setItem(STORE_KEY, token); } catch (e) {}
     refreshBtn.disabled = false;
-    fetchFeed();
+    refreshAll();
   }
   function clearAll() {
     try { sessionStorage.removeItem(STORE_KEY); } catch (e) {}
@@ -332,15 +488,27 @@
     document.getElementById("briefArea").innerHTML = '<div class="empty">尚未连接 · 输入只读 Token 后点击「连接」。</div>';
     document.getElementById("feedArea").innerHTML = '<div class="empty">连接后每 30 秒自动刷新。</div>';
     document.getElementById("freshness").style.display = "none";
+    document.getElementById("boardArea").innerHTML = '<div class="board-empty">连接后自动加载完整留言板。</div>';
+    document.getElementById("boardTotal").textContent = "0";
+    document.getElementById("boardOpen").textContent = "0";
+    document.getElementById("boardResolved").textContent = "0";
   }
   connectBtn.addEventListener("click", connect);
-  refreshBtn.addEventListener("click", fetchFeed);
+  refreshBtn.addEventListener("click", refreshAll);
   clearBtn.addEventListener("click", clearAll);
   tokenEl.addEventListener("keydown", function (e) { if (e.key === "Enter") connect(); });
+  document.getElementById("boardFilter").addEventListener("change", function () {
+    var last = window.__boardCache;
+    if (last) renderBoard(last);
+  });
+  document.getElementById("boardSearch").addEventListener("input", function () {
+    var last = window.__boardCache;
+    if (last) renderBoard(last);
+  });
 
   try {
     var saved = sessionStorage.getItem(STORE_KEY);
-    if (saved) { tokenEl.value = saved; refreshBtn.disabled = false; fetchFeed(); }
+    if (saved) { tokenEl.value = saved; refreshBtn.disabled = false; refreshAll(); }
   } catch (e) {}
 })();
 </script>

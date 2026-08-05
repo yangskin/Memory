@@ -173,3 +173,51 @@ def test_board_post_retry_with_same_client_id_is_idempotent() -> None:
     )
     assert queried.status_code == 200
     assert queried.json()["total"] == 1
+
+
+def test_shared_board_returns_full_board_scoped_to_token_project() -> None:
+    app = create_app()
+    project_id = f"project-{uuid4().hex}"
+    raw_token = _seed_token(app, project_id=project_id)
+    client = TestClient(app)
+    headers = {"Authorization": f"Bearer {raw_token}", "X-Memory-User-ID": "alice"}
+
+    first = client.post(
+        f"/v1/projects/{project_id}/board/post",
+        headers=headers,
+        json={"post_type": "question", "content": "question one"},
+    )
+    root = first.json()["post"]
+    client.post(
+        f"/v1/projects/{project_id}/board/reply",
+        headers=headers,
+        json={"thread_id": root["thread_id"], "reply_to": root["post_id"], "content": "reply one"},
+    )
+    client.post(
+        f"/v1/projects/{project_id}/board/resolve",
+        headers=headers,
+        json={"post_id": root["post_id"]},
+    )
+
+    board = client.post(
+        "/v1/shared-board",
+        headers={"Authorization": f"Bearer {raw_token}"},
+        json={},
+    )
+    assert board.status_code == 200
+    body = board.json()
+    assert body["project_id"] == project_id
+    assert body["total"] == 2
+    ids = {item["post_id"] for item in body["items"]}
+    assert root["post_id"] in ids
+    statuses = {item["post_type"] for item in body["items"]}
+    assert {"question", "reply"} <= statuses
+
+
+def test_shared_board_requires_context_read_scope() -> None:
+    app = create_app()
+    project_id = f"project-{uuid4().hex}"
+    writer = _seed_token(app, scopes=["events:write"], project_id=project_id)
+    client = TestClient(app)
+    resp = client.post("/v1/shared-board", headers={"Authorization": f"Bearer {writer}"}, json={})
+    assert resp.status_code == 403

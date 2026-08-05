@@ -193,3 +193,25 @@ def board_resolve(project_id: str, payload: BoardResolveRequest, request: Reques
         session.commit()
         session.refresh(item)
         return {"ok": True, "operation": "board", "action": "resolve", "post": _item(item)}
+
+
+@router.post("/v1/shared-board")
+def shared_board(request: Request, principal: Principal = Depends(require_principal("context:read"))) -> dict[str, object]:
+    """Read-only full board feed for the dashboard.
+
+    The project is taken from the token's principal, never from the request
+    body. Returns every board post (open and resolved) for that project,
+    newest first, so a browser can render the complete collaboration board.
+    """
+    if not request.app.state.rate_limiter.allow(principal.token_id, "board_read", 120):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "rate limit exceeded")
+    project_id = principal.project_id
+    factory = request.app.state.session_factory
+    with factory() as session:
+        posts = list_board_posts(session, project_id=project_id, max_items=200)
+        return {
+            "project_id": project_id,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "total": len(posts),
+            "items": [_item(post) for post in posts],
+        }
