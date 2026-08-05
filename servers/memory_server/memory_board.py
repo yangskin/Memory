@@ -86,6 +86,132 @@ def _rewrite_posts(path: Path, posts: list[dict[str, Any]]) -> dict[str, Any] | 
     return None
 
 
+def _rewrite_posts_locked(path: Path, posts: list[dict[str, Any]]) -> dict[str, Any] | None:
+    payload = "\n".join(json.dumps(item, ensure_ascii=False) for item in posts)
+    if payload:
+        payload += "\n"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(payload, encoding="utf-8")
+    except OSError as exc:
+        return error_result("write_failed", f"failed to update board posts: {exc}")
+    return None
+
+
+def mark_board_post_pending(config: MemoryConfig, post_id: str) -> dict[str, Any] | None:
+    path = _board_path(config)
+    target = str(post_id or "").strip()
+    with file_lock(config.repo_root, path):
+        posts = _load_posts(path)
+        for item in posts:
+            if str(item.get("post_id") or "") == target:
+                item["remote_sync"] = "pending"
+                item["remote_sync_updated_at"] = _now_text()
+                return _rewrite_posts_locked(path, posts)
+    return error_result("not_found", f"post not found: {target}")
+
+
+def mark_board_post_synced(
+    config: MemoryConfig,
+    post_id: str,
+    remote_post: dict[str, Any],
+) -> dict[str, Any] | None:
+    path = _board_path(config)
+    target = str(post_id or "").strip()
+    with file_lock(config.repo_root, path):
+        posts = _load_posts(path)
+        for item in posts:
+            if str(item.get("post_id") or "") == target:
+                item["remote_sync"] = "synced"
+                item["remote_post_id"] = str(remote_post.get("post_id") or "") or None
+                item["remote_thread_id"] = str(remote_post.get("thread_id") or "") or None
+                item["remote_sync_updated_at"] = _now_text()
+                return _rewrite_posts_locked(path, posts)
+    return error_result("not_found", f"post not found: {target}")
+
+
+def pending_board_posts(config: MemoryConfig, *, max_items: int = 20) -> list[dict[str, Any]]:
+    project_id = _project_id(config)
+    pending = [
+        item
+        for item in _load_posts(_board_path(config))
+        if str(item.get("project_id") or "") == project_id
+        and str(item.get("remote_sync") or "") == "pending"
+    ]
+    pending.sort(key=lambda item: str(item.get("created_at") or ""))
+    return pending[: max(1, min(100, int(max_items or 20)))]
+
+
+def remote_board_post_id(config: MemoryConfig, local_post_id: str | None) -> str | None:
+    target = str(local_post_id or "").strip()
+    if not target:
+        return None
+    for item in _load_posts(_board_path(config)):
+        if str(item.get("post_id") or "") != target:
+            continue
+        return str(item.get("remote_post_id") or target).strip() or target
+    return target
+
+
+def mark_board_resolve_pending(config: MemoryConfig, post_id: str) -> dict[str, Any] | None:
+    path = _board_path(config)
+    target = str(post_id or "").strip()
+    with file_lock(config.repo_root, path):
+        posts = _load_posts(path)
+        for item in posts:
+            if str(item.get("post_id") or "") == target:
+                item["remote_resolve_sync"] = "pending"
+                item["remote_sync_updated_at"] = _now_text()
+                return _rewrite_posts_locked(path, posts)
+    return error_result("not_found", f"post not found: {target}")
+
+
+def mark_board_resolve_synced(config: MemoryConfig, post_id: str) -> dict[str, Any] | None:
+    path = _board_path(config)
+    target = str(post_id or "").strip()
+    with file_lock(config.repo_root, path):
+        posts = _load_posts(path)
+        for item in posts:
+            if str(item.get("post_id") or "") == target:
+                item["remote_resolve_sync"] = "synced"
+                item["remote_sync_updated_at"] = _now_text()
+                return _rewrite_posts_locked(path, posts)
+    return error_result("not_found", f"post not found: {target}")
+
+
+def pending_board_resolves(config: MemoryConfig, *, max_items: int = 20) -> list[dict[str, Any]]:
+    project_id = _project_id(config)
+    items = [
+        item
+        for item in _load_posts(_board_path(config))
+        if str(item.get("project_id") or "") == project_id
+        and str(item.get("remote_resolve_sync") or "") == "pending"
+    ]
+    return items[: max(1, min(100, int(max_items or 20)))]
+
+
+def cache_remote_board_items(config: MemoryConfig, items: list[dict[str, Any]]) -> None:
+    if not items:
+        return
+    path = _board_path(config)
+    with file_lock(config.repo_root, path):
+        posts = _load_posts(path)
+        by_id = {str(item.get("post_id") or ""): item for item in posts}
+        changed = False
+        for remote in items:
+            post_id = str(remote.get("post_id") or "").strip()
+            if not post_id or post_id in by_id:
+                continue
+            cached = dict(remote)
+            cached["remote_sync"] = "synced"
+            cached["remote_post_id"] = post_id
+            posts.append(cached)
+            by_id[post_id] = cached
+            changed = True
+        if changed:
+            _rewrite_posts_locked(path, posts)
+
+
 def _normalize_content(content_markdown: str | None) -> str:
     return str(content_markdown or "").strip()
 
@@ -210,9 +336,10 @@ def board_reply(
     effective_thread = str(thread_id or "").strip() or None
     if reply_to_id:
         parent = by_id.get(reply_to_id)
-        if not isinstance(parent, dict):
+        if not isinstance(parent, dict) and not effective_thread:
             return error_result("not_found", f"reply_to post not found: {reply_to_id}")
-        effective_thread = str(parent.get("thread_id") or parent.get("post_id") or "").strip() or effective_thread
+        if isinstance(parent, dict):
+            effective_thread = str(parent.get("thread_id") or parent.get("post_id") or "").strip() or effective_thread
     if not effective_thread:
         return error_result("invalid_input", "thread_id or reply_to is required for board reply")
 
@@ -220,7 +347,7 @@ def board_reply(
         str(item.get("thread_id") or "") == effective_thread and str(item.get("project_id") or "") == _project_id(config)
         for item in by_id.values()
     )
-    if not thread_exists:
+    if not thread_exists and not reply_to_id:
         return error_result("not_found", f"thread not found: {effective_thread}")
 
     user_id = _base_author(author_user_id or get_current_user(config.repo_root))
@@ -270,7 +397,7 @@ def board_resolve(
             break
         if matched is None:
             return error_result("not_found", f"post not found: {target}")
-        write_error = _rewrite_posts(path, posts)
+        write_error = _rewrite_posts_locked(path, posts)
         if write_error is not None:
             return write_error
     return ok_result("board post resolved", operation="board", action="resolve", post=matched)

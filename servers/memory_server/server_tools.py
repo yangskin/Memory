@@ -156,7 +156,7 @@ def _build_facade_tools(
                     "action": {
                         "type": "string",
                         "enum": ["query", "post", "reply", "resolve"],
-                        "description": "Board action selector. Read path supports query only.",
+                        "description": "Board action selector. Read path supports query only. task_context automatically injects unresolved task items.",
                     },
                     "filter": {
                         "type": "string",
@@ -264,7 +264,12 @@ def _build_facade_tools(
                     "action": {
                         "type": "string",
                         "enum": ["query", "post", "reply", "resolve"],
-                        "description": "operation=board action selector.",
+                        "description": (
+                            "operation=board action selector. Board messages are best-effort advisory coordination and must never "
+                            "gate local work or cause the agent to wait for a reply. Post blockers, open questions, handoffs, or "
+                            "cross-agent risks when useful; reply when useful; resolve after the outcome is locally observed or "
+                            "validated. Continue safely when the service is unavailable. Do not post routine progress noise."
+                        ),
                     },
                     "context_token": {
                         "type": "string",
@@ -283,10 +288,10 @@ def _build_facade_tools(
                     "post_type": {
                         "type": "string",
                         "enum": ["note", "question", "request", "warning", "handoff", "proposal", "reply"],
-                        "description": "operation=board post type. Use reply via action=reply.",
+                        "description": "operation=board post type. Use question/request/warning/handoff for required collaboration; use reply via action=reply.",
                     },
-                    "thread_id": {"type": "string", "description": "operation=board thread id for reply/query."},
-                    "reply_to": {"type": "string", "description": "operation=board parent post id for reply."},
+                    "thread_id": {"type": "string", "description": "operation=board optional thread id; omit or send blank for a new post."},
+                    "reply_to": {"type": "string", "description": "operation=board optional parent post id for reply; blank is treated as omitted."},
                     "post_id": {"type": "string", "description": "operation=board target post id for resolve."},
                     "expires_at": {"type": "string", "description": "operation=board optional expiration timestamp (ISO-8601)."},
                     "references_json": {

@@ -95,10 +95,14 @@ def board_post(project_id: str, payload: BoardPostRequest, request: Request, pri
     _ensure_board_content_safe(payload.content)
 
     now = datetime.now(UTC)
-    post_id = uuid4()
+    post_id = payload.post_id or uuid4()
     thread_id = payload.thread_id or post_id
     factory = request.app.state.session_factory
     with factory() as session:
+        existing = session.get(BoardPost, post_id)
+        if existing is not None:
+            _assert_project(principal, existing.project_id)
+            return {"ok": True, "operation": "board", "action": "post", "post": _item(existing)}
         item = BoardPost(
             post_id=post_id,
             project_id=project_id,
@@ -131,6 +135,11 @@ def board_reply(project_id: str, payload: BoardReplyRequest, request: Request, p
 
     factory = request.app.state.session_factory
     with factory() as session:
+        if payload.post_id is not None:
+            existing = session.get(BoardPost, payload.post_id)
+            if existing is not None:
+                _assert_project(principal, existing.project_id)
+                return {"ok": True, "operation": "board", "action": "reply", "post": _item(existing)}
         reply_to = payload.reply_to
         thread_id = payload.thread_id
         if reply_to is not None:
@@ -146,7 +155,7 @@ def board_reply(project_id: str, payload: BoardReplyRequest, request: Request, p
 
         now = datetime.now(UTC)
         item = BoardPost(
-            post_id=uuid4(),
+            post_id=payload.post_id or uuid4(),
             project_id=project_id,
             author_user_id=effective_user_id(request, principal),
             author_agent_id=payload.author_agent_id,

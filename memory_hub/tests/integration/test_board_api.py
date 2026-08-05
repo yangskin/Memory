@@ -141,3 +141,35 @@ def test_board_project_scope_is_enforced() -> None:
         json={"post_type": "note", "content": "cross project"},
     )
     assert forbidden.status_code == 403
+
+
+def test_board_post_retry_with_same_client_id_is_idempotent() -> None:
+    app = create_app()
+    project_id = f"project-{uuid4().hex}"
+    raw_token = _seed_token(app, project_id=project_id)
+    client = TestClient(app)
+    headers = {"Authorization": f"Bearer {raw_token}", "X-Memory-User-ID": "alice"}
+    post_id = str(uuid4())
+    payload = {
+        "post_id": post_id,
+        "post_type": "handoff",
+        "content": "offline-first retry",
+        "thread_id": "",
+        "references_json": [],
+    }
+
+    first = client.post(f"/v1/projects/{project_id}/board/post", headers=headers, json=payload)
+    second = client.post(f"/v1/projects/{project_id}/board/post", headers=headers, json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["post"]["post_id"] == post_id
+    assert second.json()["post"]["post_id"] == post_id
+
+    queried = client.post(
+        f"/v1/projects/{project_id}/board/query",
+        headers={"Authorization": f"Bearer {raw_token}"},
+        json={"thread_id": post_id},
+    )
+    assert queried.status_code == 200
+    assert queried.json()["total"] == 1

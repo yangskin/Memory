@@ -5,11 +5,36 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-class BoardPostRequest(BaseModel):
+class _BoardRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+    @field_validator(
+        "task_id",
+        "post_id",
+        "thread_id",
+        "reply_to",
+        "expires_at",
+        "author_agent_id",
+        "author_agent_instance_id",
+        "user_id",
+        "agent_instance_id",
+        "status",
+        "post_type",
+        mode="before",
+        check_fields=False,
+    )
+    @classmethod
+    def blank_optional_values_are_none(cls, value):
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+
+class BoardPostRequest(_BoardRequest):
+    post_id: UUID | None = None
     post_type: str = Field(pattern=r"^(note|question|request|warning|handoff|proposal)$")
     content: str = Field(min_length=1, max_length=65536)
     task_id: str | None = None
@@ -20,8 +45,8 @@ class BoardPostRequest(BaseModel):
     author_agent_instance_id: str | None = None
 
 
-class BoardReplyRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class BoardReplyRequest(_BoardRequest):
+    post_id: UUID | None = None
     content: str = Field(min_length=1, max_length=65536)
     thread_id: UUID | None = None
     reply_to: UUID | None = None
@@ -32,13 +57,11 @@ class BoardReplyRequest(BaseModel):
     author_agent_instance_id: str | None = None
 
 
-class BoardResolveRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class BoardResolveRequest(_BoardRequest):
     post_id: UUID
 
 
-class BoardQueryRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class BoardQueryRequest(_BoardRequest):
     filter: str = Field(default="all", pattern=r"^(all|unresolved)$")
     user_id: str | None = None
     agent_instance_id: str | None = None
