@@ -183,7 +183,7 @@ def test_build_tools_excludes_governance_tools_from_mcp(repo: Path) -> None:
     config = load_config(repo)
     tool_names = {tool.name for tool in _build_tools(config)}
 
-    assert tool_names == {"memory_read", "memory_write"}
+    assert tool_names == {"memory_read", "memory_write", "memory_board_read", "memory_board_write"}
     assert "memory_validate_candidate" not in tool_names
     assert "memory_publish_candidate" not in tool_names
     assert "memory_archive_record" not in tool_names

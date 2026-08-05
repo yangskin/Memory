@@ -44,6 +44,15 @@ _BASE_DESCRIPTIONS: dict[str, str] = {
         "observations, and task checkpoints only. File maintenance, artifact linking, "
         "governance, rebuild, diagnose, lineage, and LLM-enhance flows are CLI/internal."
     ),
+    "memory_board_read": (
+        "Dedicated Project Board read interface for agent coordination. Query unresolved or historical "
+        "posts by task, author, type, status, or thread. Remote Hub results are merged with pending local posts."
+    ),
+    "memory_board_write": (
+        "Dedicated Project Board write interface for agent coordination. Post blockers, questions, requests, "
+        "warnings, handoffs, and proposals; reply to threads; or resolve observed outcomes. Writes are local-first "
+        "and remote synchronization is best-effort."
+    ),
     "memory_context": (
         "Internal/CLI context operations. Supports deterministic compile, "
         "runtime digest reads, lineage tracing, conflict listing, snapshot comparison, "

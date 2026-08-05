@@ -2,7 +2,7 @@
 
 Verifies:
 - Public symbols are still importable from `servers.memory_server.server`.
-- Default MCP surface exposes only memory_read / memory_write.
+- Default MCP surface exposes memory read/write and dedicated Board tools.
 - Admin flows are CLI-only and cannot be enabled through MCP config.
 - Each advertised read operation enum is wired in dispatch.
 - create_server returns a Server instance and registers handlers.
@@ -66,18 +66,18 @@ def test_public_reexports_present():
         assert hasattr(server_module, name), f"missing re-export: {name}"
 
 
-def test_default_facade_returns_two_tools(tmp_path):
+def test_default_facade_exposes_memory_and_board_tools(tmp_path):
     config = _make_config(tmp_path)
     tools = _build_tools(config)
     names = [t.name for t in tools]
-    assert names == ["memory_read", "memory_write"]
+    assert names == ["memory_read", "memory_write", "memory_board_read", "memory_board_write"]
 
 
 def test_admin_flows_are_not_configurable_through_mcp_surface(tmp_path):
     config = _make_config(tmp_path)
     tools = _build_tools(config)
     names = [t.name for t in tools]
-    assert names == ["memory_read", "memory_write"]
+    assert names == ["memory_read", "memory_write", "memory_board_read", "memory_board_write"]
 
 
 def test_check_required_returns_error_for_missing(tmp_path):

@@ -160,8 +160,8 @@ def test_build_tools_dynamic_descriptions(repo: Path) -> None:
     """_build_tools produces descriptions containing dynamic file roles."""
     config = load_config(repo)
     tools = _build_tools(config)
-    assert len(tools) == 2
-    assert {tool.name for tool in tools} == {"memory_read", "memory_write"}
+    assert len(tools) == 4
+    assert {tool.name for tool in tools} == {"memory_read", "memory_write", "memory_board_read", "memory_board_write"}
 
     read_tool = next(t for t in tools if t.name == "memory_read")
     assert "hot task context" in read_tool.description

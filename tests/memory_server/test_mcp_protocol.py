@@ -56,12 +56,12 @@ async def _call_tool(server, name: str, arguments: dict) -> dict:
 
 
 def test_mcp_list_tools_default_facade(repo: Path) -> None:
-    """Default config exposes exactly the 2 agent tools via MCP envelope."""
+    """Default config exposes general memory and dedicated Board tools."""
     config = load_config(repo)
     server = create_server(config)
     tools = _run(_list_tools(server))
     names = sorted(t.name for t in tools)
-    assert names == ["memory_read", "memory_write"]
+    assert names == ["memory_board_read", "memory_board_write", "memory_read", "memory_write"]
 
 
 def test_mcp_list_tools_excludes_admin_flows(repo: Path) -> None:
@@ -70,7 +70,7 @@ def test_mcp_list_tools_excludes_admin_flows(repo: Path) -> None:
     server = create_server(config)
     tools = _run(_list_tools(server))
     names = [t.name for t in tools]
-    assert names == ["memory_read", "memory_write"]
+    assert names == ["memory_read", "memory_write", "memory_board_read", "memory_board_write"]
 
 
 def test_mcp_call_memory_read_get(repo: Path) -> None:
@@ -99,6 +99,25 @@ def test_mcp_call_memory_write_record(repo: Path) -> None:
     assert result["record_kind"] == "note"
 
 
+def test_mcp_call_dedicated_board_tools(repo: Path) -> None:
+    config = load_config(repo)
+    server = create_server(config)
+    posted = _run(_call_tool(server, "memory_board_write", {
+        "action": "post",
+        "post_type": "request",
+        "content": "MCP protocol board test",
+        "task_id": "mcp-board",
+    }))
+    assert posted["ok"] is True, posted
+
+    queried = _run(_call_tool(server, "memory_board_read", {
+        "filter": "unresolved",
+        "task_id": "mcp-board",
+    }))
+    assert queried["ok"] is True, queried
+    assert any(item["post_id"] == posted["post"]["post_id"] for item in queried["items"])
+
+
 def test_mcp_call_memory_read_task_context(repo: Path) -> None:
     """memory_read{operation=task_context} is the MCP task bootstrap path."""
     config = load_config(repo)
@@ -125,7 +144,7 @@ def test_mcp_call_unknown_tool_returns_error(repo: Path) -> None:
 
 
 def test_mcp_call_legacy_tool_is_rejected(repo: Path) -> None:
-    """Legacy MCP tools are rejected because the MCP surface has only two tools."""
+    """Legacy MCP tools are rejected because they are outside the public agent surface."""
     config = load_config(repo)
     server = create_server(config)
     result = _run(_call_tool(server, "memory_get", {"path": "memory-bank/notes.md"}))

@@ -839,7 +839,7 @@ def test_dispatch_narrative_disabled(repo: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Two-tool surface lockdown: every legacy MCP name must be rejected with a
+# Public agent surface lockdown: every legacy MCP name must be rejected with a
 # stable error envelope and a per-name migration_hint.
 # ---------------------------------------------------------------------------
 
@@ -909,11 +909,13 @@ def test_dispatch_non_memory_tool_still_rejected(repo: Path) -> None:
     assert "migration_hint" in result
 
 
-def test_allowed_tools_constant_is_the_two_tool_surface() -> None:
-    """The exported allow-list must remain exactly memory_read + memory_write."""
+def test_allowed_tools_constant_matches_public_agent_surface() -> None:
+    """The exported allow-list includes general memory and dedicated Board tools."""
     from servers.memory_server.server_dispatch import ALLOWED_TOOLS
 
-    assert ALLOWED_TOOLS == frozenset({"memory_read", "memory_write"})
+    assert ALLOWED_TOOLS == frozenset(
+        {"memory_read", "memory_write", "memory_board_read", "memory_board_write"}
+    )
 
 
 def test_facade_schema_drops_get_task_context_alias(repo: Path) -> None:

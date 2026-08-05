@@ -66,10 +66,10 @@ docker compose -p <project-id> exec api \
 Hub 提供轻量协作看板接口，用于跨 Agent/成员同步「待处理事项、回复与关闭状态」。
 所有 Board 数据都按 Token 绑定的 `project_id` 强隔离；请求体不能覆盖项目身份。
 
-- `POST /v1/board/query`：查询看板（需要 `context:read`）
-- `POST /v1/board/post`：发布主题（需要 `events:write`）
-- `POST /v1/board/reply`：回复主题（需要 `events:write`）
-- `POST /v1/board/resolve`：关闭主题（需要 `events:write`）
+- `POST /v1/projects/{project_id}/board/query`：查询看板（需要 `context:read`）
+- `POST /v1/projects/{project_id}/board/post`：发布主题（需要 `events:write`）
+- `POST /v1/projects/{project_id}/board/reply`：回复主题（需要 `events:write`）
+- `POST /v1/projects/{project_id}/board/resolve`：关闭主题（需要 `events:write`）
 
 请求与响应使用 `contracts/v1` 对齐的数据结构，接口会执行内容安全检查（例如密钥样式
 字符串拦截），并继承 API 的速率限制策略（超限返回 `429`）。
@@ -81,6 +81,10 @@ Hub 提供轻量协作看板接口，用于跨 Agent/成员同步「待处理事
 - 默认正文只返回 512 字符预览且省略 `references_json`；只有显式传入
 	`include_content=true` / `include_references=true` 才返回详情。
 - `reply` 与 `resolve` 必须命中同项目内的现有 `post_id`，跨项目访问会被拒绝。
+
+本地 MCP 直接公开 `memory_board_read` 与 `memory_board_write`，Agent 可通过工具发现获得
+窄参数 schema。原有 `memory_read(operation="board")` 与
+`memory_write(operation="board")` 继续兼容。
 
 ## Project Graph 查询
 

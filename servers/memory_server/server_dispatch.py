@@ -2137,14 +2137,16 @@ def _dispatch_memory_enhance(config: MemoryConfig, args: dict[str, Any]) -> dict
 
 # ── Public allow-list for the MCP surface ───────────────────────────────
 #
-# The MCP surface is intentionally exactly two tools; everything else
-# routes through the CLI (`python -m servers.memory_server.cli ...`).
+# The MCP surface contains the general memory facades and dedicated Project
+# Board tools; admin and maintenance operations route through the CLI.
 # Migration hints map well-known legacy tool names to the closest
 # replacement so an agent caller can self-correct from a single error
 # response. The map is intentionally exhaustive for the legacy names that
 # used to exist on the MCP surface; novel `memory_*` names get a generic
 # CLI hint.
-ALLOWED_TOOLS: frozenset[str] = frozenset({"memory_read", "memory_write"})
+ALLOWED_TOOLS: frozenset[str] = frozenset(
+    {"memory_read", "memory_write", "memory_board_read", "memory_board_write"}
+)
 
 LEGACY_TOOL_MIGRATION_HINTS: dict[str, str] = {
     "memory_get": "memory_read(operation='get', path=...)",
@@ -2181,7 +2183,7 @@ LEGACY_TOOL_MIGRATION_HINTS: dict[str, str] = {
 }
 
 _GENERIC_CLI_HINT = (
-    "MCP exposes only memory_read and memory_write; use the CLI for admin, sync, rebuild, "
+    "MCP exposes memory read/write and dedicated Project Board tools; use the CLI for admin, sync, rebuild, "
     "diagnose, lineage, and LLM-enhance operations."
 )
 
@@ -2194,7 +2196,7 @@ def _migration_hint_for(name: str) -> str:
 def _dispatch_tool(config: MemoryConfig, name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Dispatch a tool call and return the result dict.
 
-    The MCP surface is locked to ``ALLOWED_TOOLS`` (memory_read / memory_write).
+    The MCP surface is locked to ``ALLOWED_TOOLS``.
     Any other tool name — including legacy ``memory_*`` names that used to be
     part of the MCP surface — returns ``error="unknown_tool"`` with a
     ``migration_hint`` pointing at the equivalent CLI command (or the matching
@@ -2205,6 +2207,13 @@ def _dispatch_tool(config: MemoryConfig, name: str, args: dict[str, Any]) -> dic
             return _dispatch_memory_read(config, args)
         if name == "memory_write":
             return _dispatch_memory_write(config, args)
+        if name == "memory_board_read":
+            return _dispatch_memory_read(config, {**args, "operation": "board", "action": "query"})
+        if name == "memory_board_write":
+            board_args = {**args, "operation": "board"}
+            if "content" in board_args and "content_markdown" not in board_args:
+                board_args["content_markdown"] = board_args.pop("content")
+            return _dispatch_memory_write(config, board_args)
         result = error_result(
             "unknown_tool",
             f"unknown tool: {name}. {_GENERIC_CLI_HINT}",

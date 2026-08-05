@@ -86,6 +86,30 @@ def test_board_post_query_reply_resolve_flow(repo: Path) -> None:
     assert any(item["post_id"] == root["post_id"] for item in resolved_list["items"])
 
 
+def test_dedicated_board_tools_reuse_board_read_write_flow(repo: Path) -> None:
+    config = load_config(repo)
+
+    posted = _dispatch_tool(
+        config,
+        "memory_board_write",
+        {
+            "action": "post",
+            "post_type": "request",
+            "content": "验证专用留言板工具",
+            "task_id": "board-discovery",
+        },
+    )
+    assert posted["ok"] is True
+
+    queried = _dispatch_tool(
+        config,
+        "memory_board_read",
+        {"filter": "unresolved", "task_id": "board-discovery", "max_items": 20},
+    )
+    assert queried["ok"] is True
+    assert any(item["post_id"] == posted["post"]["post_id"] for item in queried["items"])
+
+
 def test_board_post_type_validation(repo: Path) -> None:
     config = load_config(repo)
     result = _dispatch_tool(

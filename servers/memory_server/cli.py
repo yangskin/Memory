@@ -1,7 +1,7 @@
 """Memory MCP — administrative CLI.
 
 A first-class command-line entry point for maintenance / governance
-operations that are intentionally kept outside the two-tool MCP surface.
+operations that are intentionally kept outside the public agent MCP surface.
 
 Examples (all run from the repository root)::
 

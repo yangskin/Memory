@@ -2,9 +2,9 @@
 
 Extracted from `server.py` (P1-A). Pure schema construction; no dispatch.
 The tool list returned by `_build_tools` is what FastMCP advertises to
-clients. The default MCP surface is intentionally two tools only:
-``memory_read`` and ``memory_write``. Maintenance/admin schemas remain here
-for historical reference, but CLI is the supported surface for those flows.
+clients. The default MCP surface contains general memory read/write tools and
+dedicated Project Board read/write tools. Maintenance/admin schemas remain
+here for historical reference, but CLI is the supported surface for those flows.
 """
 
 from __future__ import annotations
@@ -375,6 +375,59 @@ def _build_facade_tools(
                             "tags, and park rejected business words on system_area."
                         ),
                     },
+                },
+                "additionalProperties": False,
+            },
+        ),
+        Tool(
+            name="memory_board_read",
+            description=_BASE_DESCRIPTIONS["memory_board_read"],
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "filter": {"type": "string", "enum": ["all", "unresolved"], "default": "unresolved"},
+                    "user_id": {"type": "string", "description": "Filter by author user id."},
+                    "agent_instance_id": {"type": "string", "description": "Filter by author agent instance id."},
+                    "task_id": {"type": "string", "description": "Filter by task id."},
+                    "status": {"type": "string", "description": "Filter by post status."},
+                    "post_type": {
+                        "type": "string",
+                        "enum": ["note", "question", "request", "warning", "handoff", "proposal", "reply"],
+                    },
+                    "thread_id": {"type": "string", "description": "Filter by thread id."},
+                    "max_items": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
+                    "context_token": {"type": "string", "description": "Optional task context token for attribution."},
+                    "include_diagnostics": {"type": "boolean", "default": False},
+                },
+                "additionalProperties": False,
+            },
+        ),
+        Tool(
+            name="memory_board_write",
+            description=_BASE_DESCRIPTIONS["memory_board_write"],
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["post", "reply", "resolve"], "default": "post"},
+                    "content": {"type": "string", "description": "Post or reply content."},
+                    "post_type": {
+                        "type": "string",
+                        "enum": ["note", "question", "request", "warning", "handoff", "proposal"],
+                        "description": "Required for post; replies are assigned type reply automatically.",
+                    },
+                    "post_id": {"type": "string", "description": "Target post id for resolve."},
+                    "thread_id": {"type": "string", "description": "Target thread id for reply."},
+                    "reply_to": {"type": "string", "description": "Parent post id for reply."},
+                    "task_id": {"type": "string"},
+                    "references_json": {
+                        "type": "array",
+                        "items": {"type": ["string", "number", "boolean", "object", "array", "null"]},
+                    },
+                    "expires_at": {"type": "string", "description": "Optional ISO-8601 expiration timestamp."},
+                    "author": {"type": "string"},
+                    "agent_id": {"type": "string"},
+                    "agent_instance_id": {"type": "string"},
+                    "context_token": {"type": "string", "description": "Optional task context token for attribution."},
                 },
                 "additionalProperties": False,
             },
@@ -851,8 +904,8 @@ def _build_legacy_tools(file_roles: str, path_hint: str) -> list[Tool]:
 def _build_tools(config: MemoryConfig) -> list[Tool]:
     """Build tool definitions with dynamic descriptions from config.
 
-    The MCP surface is intentionally exactly two tools (`memory_read` /
-    `memory_write`). `_build_facade_tools` no longer constructs schemas
+    The MCP surface exposes the general read/write facades plus dedicated
+    Project Board read/write tools. `_build_facade_tools` no longer constructs schemas
     for legacy `memory_context` / `memory_enhance`; admin/legacy ops live
     on the CLI. We still defensively filter by name in case a downstream
     caller monkey-patches `_build_facade_tools` to extend the surface.
@@ -862,7 +915,8 @@ def _build_tools(config: MemoryConfig) -> list[Tool]:
     target_paths = [t.path for t in config.guard_targets]
     path_hint = ", ".join(target_paths) if target_paths else "memory-bank/*.md, .ai-context/*.md"
     facade_tools = _build_facade_tools(file_roles, path_hint, config.tag_allowed_tags)
-    return [tool for tool in facade_tools if tool.name in {"memory_read", "memory_write"}]
+    allowed_tools = {"memory_read", "memory_write", "memory_board_read", "memory_board_write"}
+    return [tool for tool in facade_tools if tool.name in allowed_tools]
 
 
 __all__ = ["_build_file_roles", "_build_facade_tools", "_build_legacy_tools", "_build_tools"]

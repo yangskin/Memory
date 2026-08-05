@@ -207,7 +207,7 @@ def test_build_tools_excludes_runtime_maintenance_tools_from_mcp(repo: Path) -> 
     config = load_config(repo)
     tool_names = {tool.name for tool in _build_tools(config)}
 
-    assert tool_names == {"memory_read", "memory_write"}
+    assert tool_names == {"memory_read", "memory_write", "memory_board_read", "memory_board_write"}
     assert "memory_health_check" not in tool_names
     assert "memory_migrate_records" not in tool_names
     assert "memory_update_index" not in tool_names

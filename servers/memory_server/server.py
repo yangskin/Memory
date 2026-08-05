@@ -1,9 +1,11 @@
 """
 Generic Memory MCP Server (Phase 1) — powered by mcp SDK.
 
-Exposes 2 default MCP tools:
+Exposes 4 default MCP tools:
     1. memory_read    — task context bootstrap, reads, search, recall
     2. memory_write   — structured memory records, observations, checkpoints
+    3. memory_board_read  — dedicated Project Board queries
+    4. memory_board_write — dedicated Project Board post/reply/resolve actions
 
 Admin/sync/rebuild/diagnose/lineage/LLM-enhance flows are CLI/internal only.
 

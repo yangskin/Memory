@@ -1,6 +1,6 @@
 # MCP 记忆系统设计文档
 
-> 状态：v0.12 接口收敛。P0/P1/P2、P3 结构升级、P3 hardening、P4 LLM pipeline、P4-B LLM enhance 内部/CLI 能力、P4-C 关键文档可重建、P5 RAG Phase 1–2c、P4 LLM 软增强余项（v0.10.0）、v0.10.1 团队接入、v0.11.0 RAG/LLM 首批、v0.11.1 两个保留项（`PRESETS` sha256 + `llm_smoke.py`）均已落地；普通 agent 默认 MCP 表面已收敛为 `memory_read` / `memory_write` 两个工具。多人沉淀模型已拆分为 per-user `activeContext/{user}.md` 与 shared `teamContext.md`。
+> 状态：v0.12 接口收敛。P0/P1/P2、P3 结构升级、P3 hardening、P4 LLM pipeline、P4-B LLM enhance 内部/CLI 能力、P4-C 关键文档可重建、P5 RAG Phase 1–2c、P4 LLM 软增强余项（v0.10.0）、v0.10.1 团队接入、v0.11.0 RAG/LLM 首批、v0.11.1 两个保留项（`PRESETS` sha256 + `llm_smoke.py`）均已落地；普通 agent 默认 MCP 表面包含通用 `memory_read` / `memory_write` 与专用 `memory_board_read` / `memory_board_write`。多人沉淀模型已拆分为 per-user `activeContext/{user}.md` 与 shared `teamContext.md`。
 >
 > 日期：2026-05-11
 >
@@ -8,7 +8,7 @@
 
 ## 0. 当前基线（一句话总结）
 
-仓库已具备：2 个默认 MCP tool（`memory_read` / `memory_write`）+ CLI 维护/同步/诊断/重建/谱系/LLM enhance 入口 + 三层目录（`memory-bank/` / `.ai-context/` / `.ai-memory/`）+ 路径安全 + 原子写入 + 跨进程文件锁 + SQLite FTS（含 CJK bigram/trigram）+ schema v2 + 时间快照 + lineage + importance scoring + budget-first retrieval + dao/fa/shu 视图 + LLM map-reduce pipeline + 6 项 read-only LLM 增强能力 + verified embedding presets + gated 真 LLM smoke。普通 agent 的心智模型固定为：读取上下文/检索用 `memory_read`，写入记忆/任务 checkpoint 用 `memory_write`。详细历史见 DEVLOG。
+仓库已具备：4 个默认 MCP tool（通用 `memory_read` / `memory_write`，专用 `memory_board_read` / `memory_board_write`）+ CLI 维护/同步/诊断/重建/谱系/LLM enhance 入口 + 三层目录（`memory-bank/` / `.ai-context/` / `.ai-memory/`）+ 路径安全 + 原子写入 + 跨进程文件锁 + SQLite FTS（含 CJK bigram/trigram）+ schema v2 + 时间快照 + lineage + importance scoring + budget-first retrieval + dao/fa/shu 视图 + LLM map-reduce pipeline + 6 项 read-only LLM 增强能力 + verified embedding presets + gated 真 LLM smoke。普通 agent 的心智模型固定为：读取上下文/检索用 `memory_read`，写入记忆/任务 checkpoint 用 `memory_write`，跨 Agent 留言使用专用 Board 工具。详细历史见 DEVLOG。
 
 ## 1. 文档目标
 
@@ -167,7 +167,7 @@ v0.12 MCP 表面固定为：
 
 | 项 | 验收标准 |
 |---|---|
-| A. 默认工具安全 | 默认 MCP `list_tools` 只出现 `memory_read` / `memory_write` |
+| A. 默认工具安全 | 默认 MCP `list_tools` 只出现通用记忆工具与专用 Board 工具，管理能力仍为 CLI-only |
 | B. 单写入入口 | 调 `memory_write(content_markdown=...)` 必须写出 `memory-bank/people/{user}/mem_*.md` 或显式 shared record |
 | C. 无路径逃逸 | MCP `memory_write` schema 不接受 `path` / `mode`；`operation=file` 返回 `admin_cli_required` |
 | D. 多 agent 稳定 | 交错 agent 携带各自 `context_token` 写入时，author/task_id 不串线 |

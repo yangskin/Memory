@@ -1,6 +1,6 @@
 # Memory MCP Server
 
-给 AI agent 使用的项目记忆服务器。Markdown 是真源，SQLite 是索引，MCP 默认只暴露两个工具：`memory_read` 和 `memory_write`。
+给 AI agent 使用的项目记忆服务器。Markdown 是真源，SQLite 是索引。MCP 默认暴露通用的 `memory_read` / `memory_write`，以及可直接发现的 `memory_board_read` / `memory_board_write`。
 
 高级维护能力走 CLI：重建、诊断、备份、压缩、快照、谱系、治理、LLM enhance。
 
@@ -14,7 +14,7 @@
   - `memory-bank/`：项目记忆，建议入版本管理。
   - `.ai-context/`：当前任务热上下文，不入版本管理。
   - `.ai-memory/`：配置、索引、备份、审计、缓存，不入版本管理；`.ai-memory/config.json` 可入版本管理。
-- **工具表面**：普通 agent 只使用 `memory_read` / `memory_write`。
+- **工具表面**：普通 agent 使用 `memory_read` / `memory_write`；跨 Agent 留言板使用专用的 `memory_board_read` / `memory_board_write`。
 - **多人模式**：始终开启。`activeContext` 按用户分文件，`teamContext` / `progress` / `techContext` / `systemPatterns` 只沉淀共享或发布记录。
 - **维护策略**：guard 超限、总预算超限、索引过期、事件膨胀、冷数据 retention 都由 auto-maintenance 处理。
 - **测试状态**：`tests/memory_server` 当前通过 `862 passed, 5 skipped`。
@@ -218,6 +218,8 @@ python scripts/check_public_tree.py
 |---|---|
 | `memory_read` | 读取任务上下文与任务简报、读取文件、搜索、检索上下文、获取重要记忆、获取最新记忆、读取 runtime digest |
 | `memory_write` | 写入 raw record、observation、checkpoint |
+| `memory_board_read` | 查询未解决或历史留言，可按任务、作者、类型、状态和 thread 筛选 |
+| `memory_board_write` | 发布留言、回复 thread、关闭已确认事项；本地优先，远端同步不阻塞 |
 
 `memory_read(operation="task_context")` 是会话入口，返回 `context_token`、`task_id`、`task_run_id`、`active_context`、`current_task` 与 `task_brief`。`current_task` 来自 `.ai-context/current-task/{user}/{context_token}.md`，不是全局单文件。`memory_write` 只写结构化记忆，不做文件维护。guard、health、backup、compact、rebuild、snapshot、lineage、conflict、LLM enhance 等管理能力走 CLI。
 
@@ -254,7 +256,7 @@ python scripts/check_public_tree.py
   - LLM 不可用 / 调用失败时不改写 args，返回原 `invalid_input`，并附带 `metadata_suggestion` 帮调用方诊断。
 - `memory_read(operation="task_context", llm_suggest_metadata=True, user_goal=..., active_files=[...])`：在原返回结构上额外追加 `suggested_metadata`（与上面同构），便于 agent 在动手前预先对齐 `record_kind` 与 tag。
 
-设计要点：保持两工具 MCP 表面不变；不引入 `memory_enhance`；LLM 永远只是“建议器”，最终 tag 仍由服务端 schema 校验保证 ⊆ `tag_schema.allowed_tags`。
+设计要点：保持通用记忆工具与专用 Board 工具的 MCP 表面稳定；不引入 `memory_enhance`；LLM 永远只是“建议器”，最终 tag 仍由服务端 schema 校验保证 ⊆ `tag_schema.allowed_tags`。
 
 无 LLM 或未启用 `llm_normalize_tags` 时，调用方必须自行只传受控 tag；未知业务词不会被静默改写，会按原 schema 校验返回 `invalid_input`。当前项目可用 tag 由 `.ai-memory/config.json` 的 `tag_schema.allowed_tags` 配置，内置默认值由 `servers/memory_server/memory_config.py` 的 `DEFAULT_ALLOWED_TAGS` 提供。默认完整词表为：
 
@@ -545,7 +547,7 @@ LLM 能力边界：
 
 当前已具备：
 
-- 两工具 MCP 表面：`memory_read` / `memory_write`。
+- 普通 Agent MCP 表面：通用 `memory_read` / `memory_write`，专用 `memory_board_read` / `memory_board_write`。
 - CLI 管理面。
 - Markdown raw 真源。
 - SQLite FTS。

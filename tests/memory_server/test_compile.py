@@ -228,6 +228,6 @@ def test_build_tools_keeps_compile_cli_only(repo: Path) -> None:
     config = load_config(repo)
     tool_names = {tool.name for tool in _build_tools(config)}
 
-    assert tool_names == {"memory_read", "memory_write"}
+    assert tool_names == {"memory_read", "memory_write", "memory_board_read", "memory_board_write"}
     assert "memory_compile" not in tool_names
     assert "memory_get_runtime_digest" not in tool_names

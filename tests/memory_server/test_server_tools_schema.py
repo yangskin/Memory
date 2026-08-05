@@ -66,6 +66,19 @@ def test_facade_schema_exposes_board_operation(tmp_path: Path) -> None:
     assert write_schema["properties"]["action"]["enum"] == ["query", "post", "reply", "resolve"]
 
 
+def test_dedicated_board_tools_are_discoverable_with_narrow_schemas(tmp_path: Path) -> None:
+    tools = {tool.name: tool for tool in _build_tools(_make_config(tmp_path))}
+
+    assert {"memory_board_read", "memory_board_write"} <= set(tools)
+    read_schema = tools["memory_board_read"].inputSchema
+    write_schema = tools["memory_board_write"].inputSchema
+    assert "operation" not in read_schema["properties"]
+    assert read_schema["properties"]["filter"]["default"] == "unresolved"
+    assert write_schema["properties"]["action"]["enum"] == ["post", "reply", "resolve"]
+    assert read_schema["additionalProperties"] is False
+    assert write_schema["additionalProperties"] is False
+
+
 def test_facade_schema_exposes_project_graph_operation(tmp_path: Path) -> None:
     read_schema = _tool_schema(_make_config(tmp_path), "memory_read")
     assert "project_graph" in read_schema["properties"]["operation"]["enum"]

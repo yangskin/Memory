@@ -27,6 +27,20 @@ case "$user_id" in
         ;;
 esac
 
+conflicting_projects="$(
+    docker ps \
+        --filter "label=com.docker.compose.project.working_dir=$hub_dir" \
+        --format '{{.Label "com.docker.compose.project"}}' \
+        | sort -u \
+        | grep -Fvx "$project_id" \
+        || true
+)"
+if [ -n "$conflicting_projects" ]; then
+    echo "Another Memory Hub Compose project is already running from $hub_dir: $conflicting_projects" >&2
+    echo "Stop the conflicting project before starting $project_id." >&2
+    exit 1
+fi
+
 if [ ! -f "$leaf" ] || [ ! -f "$key" ]; then
     echo "Expected certificate files are missing: $leaf and $key" >&2
     exit 1
