@@ -31,6 +31,8 @@ flowchart LR
     Worker -->|可选| LLM
     Worker -->|Brief 快照| DB
     MCP -->|HTTPS 上下文读取| Hub
+    DB -->|项目可见事件旁路投影| Graph[Project Graph]
+    MCP -->|显式 project_graph 查询| Graph
 ```
 
 生产 Compose 栈包含四个服务：
@@ -49,9 +51,32 @@ flowchart LR
 3. 事件按 `(project_id, event_id)` 幂等。相同内容重复上传返回 duplicate，不同内容复用同一 ID 会被拒绝。
 4. 成功事件写入 append-only `memory_events`，并标记用户与项目 Brief Job 为 dirty。
 5. Worker 使用带租约的 Job 领取、退避重试和水位线处理，生成 `user_recent` 与 `project_recent` 快照。
-6. API 从当前 Brief Head 和可见事件提供 `POST /v1/projects/{project_id}/context`。
+6. Worker 在独立数据库会话中旁路投影项目可见事件，生成 Graph 节点、边和 freshness watermark。
+7. API 从当前 Brief Head 和可见事件提供 `POST /v1/projects/{project_id}/context`。
 
 Brief 是可重建的派生视图，不是事件真源。Worker 失败时保留旧 Head；项目 Brief 不向其他用户暴露个人范围的事件正文。
+
+### 3.1 Project Graph 旁路
+
+Project Graph 是从 `MemoryEvent` 结构化 metadata 确定性提取的项目级派生视图，不调用
+LLM，也不参与事件 ingest、Brief、Board 或 `shared_context` 的默认返回路径。只有
+`shared`、`project_shared` 和 `org_shared` 事件会进入 Graph；`personal`、`session`、
+`user_private` 等范围在投影前直接跳过。
+
+当前节点类型包括 `agent`、`task`、`file`、`class`、`module`、`asset`、`blueprint`、
+`map`、`plugin` 和 `system`。Agent 与 Task 通过 `performed` 关联，Task/Agent 与事件
+metadata 中的项目实体通过 `affects` 关联。节点和边使用项目限定的确定性 UUID，因此重复
+投影不会生成重复图数据；边最多保留最近 256 个来源事件 ID，避免单行派生数据无限膨胀。
+
+Hub 接口：
+
+- `GET /v1/projects/{project_id}/graph`：读取有界快照。
+- `POST /v1/projects/{project_id}/graph/query`：按 task、文件、类、模块、资产、Blueprint、Map、Plugin 或 system area 查询，并用 `depth`、`max_nodes`、`max_edges` 控制结果。
+
+两个接口都需要 Token 的 `context:read` scope，项目身份只取自 Token；路径项目不匹配时返回
+`403`。响应中的 `freshness` 包含已投影的 `covers_through_seq`、项目最新事件序号和
+`stale` 标志。Graph 投影是最终一致的，投影失败只记录日志，不回滚或阻断旧事件与 Brief
+处理。
 
 ## 4. 安全边界
 

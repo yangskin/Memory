@@ -61,3 +61,26 @@ def get_shared_context(store: SyncStore, config: SharedMemoryConfig, args: dict[
         payload = _compact_injected_context(payload, config.max_injected_tokens) if not active else payload
         return {"status": "fresh", "source": "remote", **payload}
     return ({"status": "stale", "source": "cache", **__import__("json").loads(cached["payload_json"])} if cached else None)
+
+
+def get_project_graph(config: SharedMemoryConfig, args: dict[str, Any]) -> dict[str, Any] | None:
+    if not config.active or not config.read_enabled:
+        return None
+    request = {
+        "task_id": args.get("task_id"),
+        "files": args.get("active_files") or args.get("files") or [],
+        "classes": args.get("class_names") or args.get("classes") or [],
+        "modules": args.get("module_names") or args.get("modules") or [],
+        "assets": args.get("asset_paths") or args.get("assets") or [],
+        "blueprints": args.get("blueprint_paths") or args.get("blueprints") or [],
+        "maps": args.get("map_names") or args.get("maps") or [],
+        "plugins": args.get("plugin_names") or args.get("plugins") or [],
+        "system_areas": args.get("system_areas") or ([args["system_area"]] if args.get("system_area") else []),
+        "depth": int(args.get("depth") or 2),
+        "max_nodes": int(args.get("max_nodes") or args.get("max_items") or 200),
+        "max_edges": int(args.get("max_edges") or 500),
+    }
+    status, payload = MemoryHubClient(config).graph(request, config.active_query_timeout_ms / 1000)
+    if status == 200:
+        return payload
+    return {"status": "unavailable", "error": payload.get("error", "remote_unavailable")}

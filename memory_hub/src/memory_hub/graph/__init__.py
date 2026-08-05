@@ -1,0 +1,1 @@
+"""Deterministic project graph projection."""

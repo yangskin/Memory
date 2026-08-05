@@ -16,6 +16,7 @@ from memory_hub.api.routes_board import router as board_router
 from memory_hub.db.session import create_session_factory
 from memory_hub.api.routes_context import router as context_router
 from memory_hub.api.routes_events import router as events_router
+from memory_hub.api.routes_graph import router as graph_router
 
 # Directory that contains the shared dashboard page (web/shared.html).
 # The package is installed via `pip install .` into site-packages, so __file__
@@ -49,6 +50,7 @@ def create_app() -> FastAPI:
         app.include_router(events_router)
         app.include_router(context_router)
         app.include_router(board_router)
+        app.include_router(graph_router)
 
     @app.get("/shared", include_in_schema=False)
     def shared_page() -> FileResponse:

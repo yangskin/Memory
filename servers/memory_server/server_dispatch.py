@@ -1129,6 +1129,18 @@ def _dispatch_memory_read(config: MemoryConfig, args: dict[str, Any]) -> dict[st
         except Exception as exc:
             return error_result("shared_context_unavailable", type(exc).__name__)
 
+    if operation == "project_graph":
+        try:
+            from .memory_shared_context import get_project_graph
+            payload = get_project_graph(config.shared_memory, args)
+            if payload is None:
+                return error_result("shared_context_unavailable", "project graph read is disabled")
+            if payload.get("status") == "unavailable":
+                return error_result("project_graph_unavailable", str(payload.get("error") or "remote_unavailable"))
+            return ok_result("project graph read", operation="project_graph", graph=payload)
+        except Exception as exc:
+            return error_result("project_graph_unavailable", type(exc).__name__)
+
     if operation == "get_task_context":
         return get_task_context(config, str(args.get("context_token") or ""))
 
@@ -1317,7 +1329,7 @@ def _dispatch_memory_read(config: MemoryConfig, args: dict[str, Any]) -> dict[st
         ), args)
     return error_result(
         "invalid_input",
-        "operation must be one of: task_context, task_brief, get_task_context, get, search, search_records, board, runtime_digest, retrieve_context, important_memories, latest_memories, shared_context",
+        "operation must be one of: task_context, task_brief, get_task_context, get, search, search_records, board, runtime_digest, retrieve_context, important_memories, latest_memories, shared_context, project_graph",
     )
 
 

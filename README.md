@@ -146,6 +146,28 @@ Hub 管理员的服务器部署、运维、备份和 Token 签发方式见
 [`memory_hub/README.md`](memory_hub/README.md)；中文的架构、部署与当前进展说明见
 [`memory_hub/DESIGN.md`](memory_hub/DESIGN.md)。
 
+#### 2.3.2 显式查询 Project Graph
+
+启用 Hub 后，agent 可以通过现有 `memory_read` 工具显式读取项目 Graph：
+
+```json
+{
+  "operation": "project_graph",
+  "task_id": "task-123",
+  "active_files": ["src/example.py"],
+  "class_names": ["Example"],
+  "module_names": ["core"],
+  "depth": 2,
+  "max_nodes": 100,
+  "max_edges": 200
+}
+```
+
+也支持 `blueprint_paths`、`map_names`、`plugin_names` 和 `system_area` 过滤。Graph 只从
+项目可见事件生成，返回节点、边和 `freshness`；它是最终一致的派生视图，不是新的记忆真源。
+该 operation 不改变 `task_context` 的默认响应，也不改变本地离线读写、Brief、Board 或
+`shared_context` 的既有语义。详细接口和部署侧说明见 [`memory_hub/README.md`](memory_hub/README.md)。
+
 ### 2.4 Agent 规则配置（团队接入必做）
 
 目标仓库的 agent 规则文件需要固定 Memory MCP 使用方式，例如 `AGENTS.md`、`.github/copilot-instructions.md`、`.cursorrules`。规则内容以 [3.2 推荐工作流](#32-推荐工作流) 的可复制提示词为准，不要在多个文档维护不同版本。

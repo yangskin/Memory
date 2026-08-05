@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKeyConstraint, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -133,3 +133,50 @@ class BoardPost(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class GraphNode(Base):
+    __tablename__ = "graph_nodes"
+    __table_args__ = (
+        UniqueConstraint("project_id", "node_type", "node_key", name="uq_graph_nodes_project_type_key"),
+        UniqueConstraint("project_id", "id", name="uq_graph_nodes_project_id"),
+        Index("idx_graph_nodes_project_type", "project_id", "node_type"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    node_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    node_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    name: Mapped[str] = mapped_column(String(1024), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False, server_default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class GraphEdge(Base):
+    __tablename__ = "graph_edges"
+    __table_args__ = (
+        UniqueConstraint("project_id", "source_node_id", "target_node_id", "relation_type", name="uq_graph_edges_project_relation"),
+        ForeignKeyConstraint(["project_id", "source_node_id"], ["graph_nodes.project_id", "graph_nodes.id"], ondelete="CASCADE", name="fk_graph_edges_source_project_node"),
+        ForeignKeyConstraint(["project_id", "target_node_id"], ["graph_nodes.project_id", "graph_nodes.id"], ondelete="CASCADE", name="fk_graph_edges_target_project_node"),
+        Index("idx_graph_edges_project_source", "project_id", "source_node_id"),
+        Index("idx_graph_edges_project_target", "project_id", "target_node_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    source_node_id: Mapped[UUID] = mapped_column(nullable=False)
+    target_node_id: Mapped[UUID] = mapped_column(nullable=False)
+    relation_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, server_default="1")
+    source_event_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, server_default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class GraphProjectionState(Base):
+    __tablename__ = "graph_projection_states"
+
+    project_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    covers_through_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

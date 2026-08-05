@@ -190,6 +190,17 @@ def test_memory_read_retrieval_omits_diagnostics_by_default(repo: Path) -> None:
     assert "source_refs" not in item
     assert "related_artifact_ids" not in item
 
+    def test_memory_read_project_graph_is_independent_operation(repo: Path, monkeypatch) -> None:
+        config = load_config(repo)
+        monkeypatch.setattr(
+            "servers.memory_server.memory_shared_context.get_project_graph",
+            lambda _config, _args: {"nodes": [{"id": "n1"}], "edges": [], "freshness": {"stale": False}},
+        )
+        result = _dispatch_tool(config, "memory_read", {"operation": "project_graph", "task_id": "task-1"})
+        assert result["ok"] is True
+        assert result["operation"] == "project_graph"
+        assert result["graph"]["nodes"] == [{"id": "n1"}]
+
 
 def test_memory_read_include_diagnostics_restores_retrieval_metadata(repo: Path) -> None:
     config = load_config(repo)

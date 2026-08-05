@@ -80,6 +80,40 @@ Hub 提供轻量协作看板接口，用于跨 Agent/成员同步「待处理事
 - 可按 `task_id` 和状态筛选；默认查询 `open` 项。
 - `reply` 与 `resolve` 必须命中同项目内的现有 `post_id`，跨项目访问会被拒绝。
 
+## Project Graph 查询
+
+Project Graph 是从项目可见事件的结构化 metadata 生成的确定性派生视图。它不会读取或展示
+个人 scope 事件，也不会改变 Brief、Board、`shared_context` 或旧事件 ingest 的默认行为。
+投影由 Worker 旁路执行，查询结果可能暂时落后于最新事件，可通过响应中的 `freshness.stale`
+判断。
+
+接口需要 `context:read`：
+
+```bash
+curl --fail -X POST "https://memory.example.com/v1/projects/<project-id>/graph/query" \
+	-H "Authorization: Bearer <context-read-token>" \
+	-H "Content-Type: application/json" \
+	-d '{"task_id":"task-123","files":["src/example.py"],"depth":2,"max_nodes":100,"max_edges":200}'
+```
+
+查询过滤器包括 `task_id`、`files`、`classes`、`modules`、`assets`、`blueprints`、`maps`、
+`plugins` 和 `system_areas`。`depth` 范围为 `0..3`；节点和边数量分别受 `max_nodes` 与
+`max_edges` 限制。MCP 客户端通过唯一的 `memory_read` 工具调用：
+
+```json
+{
+	"operation": "project_graph",
+	"task_id": "task-123",
+	"active_files": ["src/example.py"],
+	"depth": 2,
+	"max_nodes": 100,
+	"max_edges": 200
+}
+```
+
+该 operation 是显式旁路查询，不会自动注入现有 `memory_read(operation="task_context")`
+响应；未配置 Hub 时返回远端不可用结果，本地记忆读写仍保持离线可用。
+
 ## 验证与运维
 
 ```bash

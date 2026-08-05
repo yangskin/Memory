@@ -64,3 +64,9 @@ def test_facade_schema_exposes_board_operation(tmp_path: Path) -> None:
     assert "board" in write_schema["properties"]["operation"]["enum"]
     assert read_schema["properties"]["action"]["enum"] == ["query", "post", "reply", "resolve"]
     assert write_schema["properties"]["action"]["enum"] == ["query", "post", "reply", "resolve"]
+
+
+def test_facade_schema_exposes_project_graph_operation(tmp_path: Path) -> None:
+    read_schema = _tool_schema(_make_config(tmp_path), "memory_read")
+    assert "project_graph" in read_schema["properties"]["operation"]["enum"]
+    assert read_schema["properties"]["max_nodes"]["maximum"] == 1000
