@@ -52,6 +52,7 @@ from .memory_records import memory_write_record
 from .memory_result import error_result, ok_result
 from .memory_retrieval import memory_get_important_memories, memory_get_latest_memories, memory_retrieve_context
 from .memory_search import memory_search
+from .memory_sync_enqueue import enqueue_shared_record
 from .memory_task_context import (
     apply_task_context,
     attach_task_context,
@@ -1369,37 +1370,48 @@ def _dispatch_memory_read(config: MemoryConfig, args: dict[str, Any]) -> dict[st
 
 
 def _enqueue_shared_event(config: MemoryConfig, args: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
-    if not result.get("ok") or not config.shared_memory.enabled:
-        return result
-    try:
-        from .memory_sync_protocol import build_memory_event
-        from .memory_sync_store import SyncStore
-        canonical: dict[str, Any] = {}
-        record_id = str(result.get("id") or "")
-        record_path = str(result.get("path") or "")
-        if record_id and record_path:
-            from .memory_frontmatter import parse_record_pack_entries
-            from .memory_reader import memory_get
+    return enqueue_shared_record(config, args, result)
 
-            persisted = memory_get(config, record_path)
-            if persisted.get("ok"):
-                for metadata, content in parse_record_pack_entries(str(persisted.get("content") or "")):
-                    if str(metadata.get("id") or "") == record_id:
-                        canonical = {**metadata, "content_markdown": content}
-                        break
-        event = build_memory_event(args, result, canonical)
-        if event["scope"] not in config.shared_memory.sync_scopes:
-            return result
-        queued = SyncStore(config.repo_root / ".ai-memory" / "shared-sync.db").enqueue(event["event_id"], event, event["content_hash"])
-        if queued:
-            from .memory_sync_worker import wake_sync_worker
 
-            wake_sync_worker(config.repo_root)
-        result["shared_sync"] = {"enabled": True, "queued": queued}
-    except Exception as exc:  # synchronization must never change local write success
-        logger.warning("shared event enqueue failed: %s", type(exc).__name__)
-        result["shared_sync"] = {"enabled": True, "queued": False}
-    return result
+def _publish_checkpoint_to_board(
+    config: MemoryConfig,
+    args: dict[str, Any],
+    result: dict[str, Any],
+    phase: str,
+) -> dict[str, Any]:
+    """Publish only decision-relevant checkpoint bodies to the coordination board."""
+    if phase not in {"task_done", "test_failed"}:
+        return {"enabled": True, "published": False, "reason": "phase_not_selected"}
+    body = str(args.get("content_markdown") or args.get("content") or "").strip()
+    if not body:
+        return {"enabled": True, "published": False, "reason": "empty_checkpoint"}
+    record = result.get("persisted_record") if isinstance(result.get("persisted_record"), dict) else {}
+    record_id = str(record.get("id") or "").strip()
+    post = board_post(
+        config,
+        post_type="warning" if phase == "test_failed" else "handoff",
+        content_markdown=body,
+        task_id=_none_if_blank(args.get("task_id")),
+        references_json=[{"record_id": record_id, "phase": phase}] if record_id else [{"phase": phase}],
+        expires_at=None,
+        author_user_id=_none_if_blank(args.get("author") or args.get("user")),
+        author_agent_id=_none_if_blank(args.get("agent_id")),
+        author_agent_instance_id=_none_if_blank(args.get("agent_instance_id") or args.get("task_run_id")),
+    )
+    if not post.get("ok"):
+        return {"enabled": True, "published": False, "reason": str(post.get("error") or "board_write_failed")}
+    local_post = post.get("post") if isinstance(post.get("post"), dict) else {}
+    post_id = str(local_post.get("post_id") or "")
+    mark_board_post_pending(config, post_id)
+    local_post["remote_sync"] = "pending"
+    _schedule_board_sync(config)
+    return {
+        "enabled": True,
+        "published": True,
+        "post_id": post_id,
+        "post_type": local_post.get("post_type"),
+        "board_sync": {"queued": True, "non_blocking": True},
+    }
 
 
 def _dispatch_memory_write(config: MemoryConfig, args: dict[str, Any]) -> dict[str, Any]:
@@ -1560,6 +1572,7 @@ def _dispatch_memory_write(config: MemoryConfig, args: dict[str, Any]) -> dict[s
                 }
         if checkpoint_record is not None:
             result = _enqueue_shared_event(config, args, {**checkpoint_record, **result})
+            result["checkpoint_board"] = _publish_checkpoint_to_board(config, args, result, phase)
         return attach_task_context(_attach_key_document_autorun(config, operation="checkpoint", result=result, phase=phase), args)
     if operation == "record":
         if args.get("content_markdown") is None and args.get("content") is not None:

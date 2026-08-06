@@ -528,6 +528,20 @@ def publish_reflection_proposal(
             distilled_at=datetime.now(timezone.utc).isoformat(),
         )
     if result.get("ok"):
+        from .memory_sync_enqueue import enqueue_shared_record
+
+        enqueue_shared_record(
+            config,
+            {
+                "operation": "background_reflection",
+                "content_markdown": content,
+                "record_kind": kind,
+                "scope": "project_shared",
+                "task_id": task_id,
+                "agent_id": "memory-reflector",
+            },
+            result,
+        )
         result["fingerprint"] = fingerprint
         result["action"] = action
         result["target_record_ids"] = targets

@@ -6,6 +6,7 @@ from typing import Any
 
 from .memory_config import MemoryConfig
 from .memory_records import memory_write_record
+from .memory_sync_enqueue import enqueue_shared_record
 
 
 _TEAM_RECORD_KINDS = {
@@ -360,6 +361,17 @@ def maybe_auto_settle_team_record(
         immutable=False,
         authoritative=False,
         replaceable=True,
+    )
+    enqueue_shared_record(
+        config,
+        {
+            **args,
+            "operation": "auto_team_settlement",
+            "content_markdown": summary,
+            "record_kind": promoted.get("record_kind"),
+            "scope": promoted.get("scope"),
+        },
+        promoted,
     )
     return {
         "enabled": True,

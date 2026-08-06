@@ -11,6 +11,7 @@ Verifies:
 from __future__ import annotations
 
 import inspect
+from dataclasses import replace
 
 from servers.memory_server.memory_config import MemoryConfig
 from servers.memory_server import server as server_module
@@ -149,9 +150,57 @@ def test_dispatch_memory_write_checkpoint_test_phase_defaults_to_validation_resu
             "content_markdown": "# Validation\n\nTests passed.",
         },
     )
-
     assert result["ok"] is True
     assert result["persisted_record"]["record_kind"] == "validation_result"
+
+
+def test_checkpoint_publishes_task_handoff_to_board_without_blocking(tmp_path, monkeypatch):
+    config = _make_config(tmp_path)
+    config = replace(
+        config,
+        shared_memory=replace(
+            config.shared_memory,
+            enabled=True,
+            server_url="https://hub.example",
+            project_id="project",
+            local_token="test-token",
+        ),
+    )
+    monkeypatch.setattr("servers.memory_server.server_dispatch._schedule_board_sync", lambda _config: None)
+
+    result = _dispatch_memory_write(
+        config,
+        {
+            "operation": "checkpoint",
+            "task_phase": "task_done",
+            "task_id": "task-42",
+            "content_markdown": "# 完成\n\n实现并验证了共享沉淀同步。",
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["shared_sync"]["queued"] is True
+    assert result["checkpoint_board"]["published"] is True
+    assert result["checkpoint_board"]["post_type"] == "handoff"
+    assert result["checkpoint_board"]["board_sync"]["non_blocking"] is True
+
+
+def test_checkpoint_does_not_publish_intermediate_phase_to_board(tmp_path, monkeypatch):
+    config = _make_config(tmp_path)
+    monkeypatch.setattr("servers.memory_server.server_dispatch._schedule_board_sync", lambda _config: None)
+
+    result = _dispatch_memory_write(
+        config,
+        {
+            "operation": "checkpoint",
+            "task_phase": "plan_confirmed",
+            "content_markdown": "# 计划\n\n开始实现。",
+        },
+    )
+
+    assert result["ok"] is True
+    assert result["checkpoint_board"]["published"] is False
+    assert result["checkpoint_board"]["reason"] == "phase_not_selected"
 
 
 def test_dispatch_memory_write_checkpoint_content_survives_invalid_metadata(tmp_path):
