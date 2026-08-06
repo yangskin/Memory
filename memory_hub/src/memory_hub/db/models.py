@@ -79,6 +79,7 @@ class BriefJob(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     last_error: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class BriefSnapshot(Base):
@@ -98,6 +99,7 @@ class BriefSnapshot(Base):
     prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     source_event_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, server_default="[]")
+    input_fingerprint: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
@@ -179,4 +181,19 @@ class GraphProjectionState(Base):
 
     project_id: Mapped[str] = mapped_column(String(256), primary_key=True)
     covers_through_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+
+class ContextUsageDaily(Base):
+    __tablename__ = "context_usage_daily"
+
+    project_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    usage_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    returned_event_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    returned_brief_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    user_brief_requests: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    project_brief_requests: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    same_task_requests: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    other_agents_requests: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    other_tasks_requests: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    project_activity_requests: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

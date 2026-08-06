@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from memory_hub.api.main import create_app
 from memory_hub.auth.tokens import create_token
-from memory_hub.db.models import AccessToken, MemoryEvent
+from memory_hub.db.models import AccessToken, ContextUsageDaily, MemoryEvent
 
 
 pytestmark = pytest.mark.skipif(not os.getenv("MEMORY_HUB_DATABASE_URL"), reason="requires PostgreSQL")
@@ -104,3 +104,28 @@ def test_tokens_private_metadata_and_secret_redaction_are_enforced() -> None:
     context = client.post(f"/v1/projects/{project_id}/context", headers={"Authorization": f"Bearer {visible_token}", "X-Memory-User-ID": "bob"}, json={"agent_instance_id": "bob-agent", "include": ["project_activity"]})
     assert context.status_code == 200
     assert context.json()["project_activity"] == []
+
+
+def test_context_usage_counts_requests_and_returned_items() -> None:
+    app = create_app()
+    token_id, raw_token, secret_hash = create_token()
+    project_id = f"usage-{uuid4().hex}"
+    with app.state.session_factory() as session:
+        session.add(AccessToken(token_id=token_id, token_secret_hash=secret_hash, token_prefix=raw_token[:20], user_id="usage-user", project_id=project_id, scopes=["events:write", "context:read"]))
+        session.commit()
+    client = TestClient(app)
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    event = _event(str(uuid4()))
+    event["scope"] = "project_shared"
+    assert client.post(f"/v1/projects/{project_id}/events/batch", headers=headers, json={"events": [event]}).status_code == 200
+    response = client.post(f"/v1/projects/{project_id}/context", headers=headers, json={"agent_instance_id": "usage-reader", "include": ["project_activity", "project_brief"]})
+    assert response.status_code == 200
+
+    usage = client.get(f"/v1/projects/{project_id}/context/usage?days=1", headers=headers)
+    assert usage.status_code == 200
+    row = usage.json()["days"][0]
+    assert row["request_count"] == 1
+    assert row["returned_event_count"] >= 1
+    assert row["include_requests"]["project_activity"] == 1
+    with app.state.session_factory() as session:
+        assert session.query(ContextUsageDaily).filter_by(project_id=project_id).count() == 1

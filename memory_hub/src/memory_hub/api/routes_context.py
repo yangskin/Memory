@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import desc, func, or_, select
+from sqlalchemy.dialects.postgresql import insert
 
 from memory_hub.api.dependencies import effective_user_id, require_principal
 from memory_hub.auth.permissions import Principal
 from memory_hub.db.models import BriefHead, BriefSnapshot, MemoryEvent
+from memory_hub.db.models import BriefHead, BriefSnapshot, ContextUsageDaily, MemoryEvent
 from memory_hub.domain.shared_context import SharedContextRequest
 from memory_hub.domain.shared_feed import SharedFeedRequest
 
@@ -77,6 +79,28 @@ def _brief(session, project_id: str, brief_type: str, subject_user_id: str) -> t
     markdown = snapshot.rendered_markdown or ""
     return {"generated_at": snapshot.generated_at.isoformat(), "covers_through_seq": snapshot.input_seq_to, "markdown": markdown[:4000], "truncated": len(markdown) > 4000}, snapshot.input_seq_to
 
+def _record_context_usage(session, project_id: str, include: list[str], returned_events: int, returned_briefs: int) -> None:
+    usage_date = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    values = {
+        "user_brief_requests": int("user_brief" in include),
+        "project_brief_requests": int("project_brief" in include),
+        "same_task_requests": int("same_task_agents" in include),
+        "other_agents_requests": int("my_other_agents" in include),
+        "other_tasks_requests": int("other_tasks" in include),
+        "project_activity_requests": int("project_activity" in include),
+    }
+    statement = insert(ContextUsageDaily).values(project_id=project_id, usage_date=usage_date, request_count=1, returned_event_count=returned_events, returned_brief_count=returned_briefs, **values)
+    statement = statement.on_conflict_do_update(
+        index_elements=["project_id", "usage_date"],
+        set_={
+            "request_count": ContextUsageDaily.request_count + 1,
+            "returned_event_count": ContextUsageDaily.returned_event_count + returned_events,
+            "returned_brief_count": ContextUsageDaily.returned_brief_count + returned_briefs,
+            **{name: getattr(ContextUsageDaily, name) + value for name, value in values.items()},
+        },
+    )
+    session.execute(statement)
+
 
 @router.post("/v1/projects/{project_id}/context")
 def shared_context(project_id: str, payload: SharedContextRequest, request: Request, principal: Principal = Depends(require_principal("context:read"))) -> dict[str, object]:
@@ -112,7 +136,41 @@ def shared_context(project_id: str, payload: SharedContextRequest, request: Requ
             result["other_tasks"] = [_item(event) for event in _latest_per_workstream([event for event in events if event.task_id != payload.task_id], payload.max_items, task_grouped=True)]
         if "project_activity" in payload.include:
             result["project_activity"] = [_item(event) for event in _latest_per_workstream([event for event in events if event.agent_instance_id != current], payload.max_items, per_user_limit=3)]
+        returned_events = len(result["pending_updates"])
+        returned_events += sum(len(result.get(name, [])) for name in ("same_task_agents", "my_other_agents", "other_tasks", "project_activity"))
+        returned_briefs = int("user_brief" in result) + int("project_brief" in result)
+        _record_context_usage(session, project_id, payload.include, returned_events, returned_briefs)
+        session.commit()
         return result
+
+
+@router.get("/v1/projects/{project_id}/context/usage")
+def context_usage(project_id: str, request: Request, principal: Principal = Depends(require_principal("context:read")), days: int = Query(30, ge=1, le=90)) -> dict[str, object]:
+    if principal.project_id != project_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "project access denied")
+    since = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
+    with request.app.state.session_factory() as session:
+        rows = list(session.scalars(select(ContextUsageDaily).where(ContextUsageDaily.project_id == project_id, ContextUsageDaily.usage_date >= since).order_by(ContextUsageDaily.usage_date)))
+        return {
+            "project_id": project_id,
+            "days": [
+                {
+                    "date": row.usage_date.date().isoformat(),
+                    "request_count": row.request_count,
+                    "returned_event_count": row.returned_event_count,
+                    "returned_brief_count": row.returned_brief_count,
+                    "include_requests": {
+                        "user_brief": row.user_brief_requests,
+                        "project_brief": row.project_brief_requests,
+                        "same_task_agents": row.same_task_requests,
+                        "my_other_agents": row.other_agents_requests,
+                        "other_tasks": row.other_tasks_requests,
+                        "project_activity": row.project_activity_requests,
+                    },
+                }
+                for row in rows
+            ],
+        }
 
 
 @router.post("/v1/shared-feed")

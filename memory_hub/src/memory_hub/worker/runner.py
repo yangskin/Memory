@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -23,6 +25,12 @@ def _visible_event(event: MemoryEvent, brief_type: str) -> dict[str, object]:
     if brief_type == "project_recent" and event.scope not in {"shared", "project_shared", "org_shared"}:
         body = None
     return {"event_id": str(event.event_id), "content_markdown": body, "scope": event.scope, "user_id": event.user_id, "task_id": event.task_id, "agent_instance_id": event.agent_instance_id, "occurred_at": event.occurred_at.isoformat()}
+
+
+def _input_fingerprint(brief_type: str, event_payloads: list[dict[str, object]]) -> str:
+    payload = {"strategy": "recent-v1", "brief_type": brief_type, "events": event_payloads}
+    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _claim_jobs(session: Session, *, max_jobs: int, worker_id: str, lease_seconds: int) -> list[BriefJob]:
@@ -89,6 +97,8 @@ def _schedule_rebases(session: Session, rebase_interval_seconds: int) -> None:
         subject = head.subject_user_id or ""
         key = f"{head.brief_type}:{head.project_id}:{subject or '-'}"
         job = session.get(BriefJob, key)
+        if job is not None and job.last_checked_at is not None and job.last_checked_at >= cutoff:
+            continue
         if job is None:
             session.add(BriefJob(job_key=key, project_id=head.project_id, brief_type=head.brief_type, subject_user_id=subject or None, requested_through_seq=latest, not_before=datetime.now(UTC), status="pending"))
         elif job.status != "running":
@@ -118,7 +128,19 @@ def run_once(session: Session, provider: BriefProvider | None = None, *, worker_
             records.sort(key=lambda event: event.server_seq)
             event_payloads = [_visible_event(event, brief_type) for event in records]
             source_ids = {str(event.event_id) for event in records}
+            input_fingerprint = _input_fingerprint(brief_type, event_payloads)
             input_seq_from = min((event.server_seq for event in records), default=None)
+            head = session.get(BriefHead, (project_id, brief_type, subject_user_id or ""))
+            current_snapshot = session.get(BriefSnapshot, head.current_brief_id) if head is not None else None
+            if current_snapshot is not None and current_snapshot.input_fingerprint == input_fingerprint:
+                job.processed_through_seq = max(job.processed_through_seq, claimed_through_seq)
+                job.status = "completed"
+                job.lease_until = None
+                job.last_error = None
+                job.last_checked_at = datetime.now(UTC)
+                job.updated_at = datetime.now(UTC)
+                session.commit()
+                continue
             session.rollback()
             if brief_type == "user_recent" and subject_user_id:
                 structured = provider.generate_user_brief(UserBriefRequest(project_id=project_id, user_id=subject_user_id, events=event_payloads)).structured_brief
@@ -129,7 +151,7 @@ def run_once(session: Session, provider: BriefProvider | None = None, *, worker_
             validated = _validate_structured(job, structured, source_ids)
             covered_through_seq = claimed_through_seq
             brief_id = uuid4()
-            snapshot = BriefSnapshot(brief_id=brief_id, project_id=project_id, brief_type=brief_type, subject_user_id=subject, input_seq_from=input_seq_from, input_seq_to=covered_through_seq, window_start=window_start, window_end=datetime.now(UTC), structured_brief=validated, rendered_markdown=_render(validated), model=model_name, prompt_version="v1", generated_at=datetime.now(UTC), source_event_ids=validated["source_event_ids"], status="completed")
+            snapshot = BriefSnapshot(brief_id=brief_id, project_id=project_id, brief_type=brief_type, subject_user_id=subject, input_seq_from=input_seq_from, input_seq_to=covered_through_seq, window_start=window_start, window_end=datetime.now(UTC), structured_brief=validated, rendered_markdown=_render(validated), model=model_name, prompt_version="v1", generated_at=datetime.now(UTC), source_event_ids=validated["source_event_ids"], input_fingerprint=input_fingerprint, status="completed")
             session.add(snapshot)
             session.flush()
             live_job = session.scalar(
@@ -149,6 +171,8 @@ def run_once(session: Session, provider: BriefProvider | None = None, *, worker_
                 live_job.status = "completed"
             live_job.lease_until = None
             live_job.last_error = None
+            live_job.last_checked_at = datetime.now(UTC)
+            live_job.updated_at = datetime.now(UTC)
             session.commit()
         except Exception as exc:
             session.rollback()

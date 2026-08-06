@@ -166,3 +166,28 @@ def test_worker_rebases_old_brief_from_raw_events() -> None:
         assert head is not None
         assert head.current_brief_id != old_brief_id
         assert str(event.event_id) in session.get(BriefSnapshot, head.current_brief_id).source_event_ids
+
+
+def test_worker_skips_rebase_when_recent_window_input_is_unchanged() -> None:
+    factory = create_session_factory(load_settings().database_url or "")
+    project_id = f"worker-unchanged-{uuid4().hex}"
+    brief_id = uuid4()
+    event_id = uuid4()
+    with factory() as session:
+        event = MemoryEvent(event_id=event_id, project_id=project_id, user_id="unchanged-user", agent_id="pytest", agent_instance_id="pytest", operation="record", scope="project_shared", content_markdown="unchanged input", metadata_json={}, occurred_at=datetime.now(UTC), content_hash="sha256:" + "8" * 64)
+        session.add(event)
+        session.flush()
+        from memory_hub.worker.runner import _input_fingerprint, _visible_event
+        fingerprint = _input_fingerprint("project_recent", [_visible_event(event, "project_recent")])
+        session.add(BriefSnapshot(brief_id=brief_id, project_id=project_id, brief_type="project_recent", subject_user_id="", input_seq_to=event.server_seq, structured_brief={}, rendered_markdown="existing", prompt_version="v1", generated_at=datetime.now(UTC) - timedelta(hours=2), source_event_ids=[str(event_id)], input_fingerprint=fingerprint, status="completed"))
+        session.add(BriefHead(project_id=project_id, brief_type="project_recent", subject_user_id="", current_brief_id=brief_id))
+        session.add(BriefJob(job_key=f"project_recent:{project_id}:-", project_id=project_id, brief_type="project_recent", subject_user_id=None, requested_through_seq=event.server_seq, processed_through_seq=event.server_seq, not_before=datetime.now(UTC), status="completed", updated_at=datetime.now(UTC) - timedelta(hours=2)))
+        session.commit()
+
+        class UnexpectedProvider(FakeBriefProvider):
+            def generate_project_brief(self, request):
+                raise AssertionError("unchanged input must not call the provider")
+
+        assert run_once(session, UnexpectedProvider(), worker_id="unchanged-worker", rebase_interval_seconds=1, max_jobs=1000) >= 1
+        assert session.get(BriefHead, (project_id, "project_recent", "")).current_brief_id == brief_id
+        assert session.query(BriefSnapshot).filter_by(project_id=project_id).count() == 1
