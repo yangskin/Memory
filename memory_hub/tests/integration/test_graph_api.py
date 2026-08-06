@@ -47,12 +47,14 @@ def test_projector_and_graph_query_are_idempotent_and_private_safe() -> None:
     assert "agent" not in {node["type"] for node in body["nodes"]}
     assert all("metadata" not in node for node in body["nodes"])
     assert all("source_event_ids" not in edge for edge in body["edges"])
+    assert all("evidence_ids" not in edge for edge in body["edges"])
 
     detailed = client.post(
         f"/v1/projects/{project_id}/graph/query",
         headers={"Authorization": f"Bearer {raw_token}"},
-        json={"task_id": "task-graph", "depth": 1, "include_metadata": True, "include_source_event_ids": True},
+        json={"task_id": "task-graph", "depth": 1, "include_metadata": True, "include_source_event_ids": True, "include_evidence_ids": True},
     )
     assert detailed.status_code == 200
     assert all("metadata" in node for node in detailed.json()["nodes"])
     assert all("source_event_ids" in edge for edge in detailed.json()["edges"])
+    assert all("evidence_ids" in edge for edge in detailed.json()["edges"])

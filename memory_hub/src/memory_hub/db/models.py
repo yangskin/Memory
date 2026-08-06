@@ -182,6 +182,7 @@ class GraphEdge(Base):
     relation_type: Mapped[str] = mapped_column(String(64), nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, server_default="1")
     source_event_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, server_default="[]")
+    evidence_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, server_default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 

@@ -929,6 +929,36 @@ def prefilter_record_paths(
     )
 
 
+def record_paths_for_exact_task(
+    config: MemoryConfig,
+    *,
+    task_id: str,
+    include_scopes: list[str],
+) -> dict[str, Any]:
+    """Return indexed record paths whose task and scope match exactly."""
+    task = str(task_id or "").strip()
+    scopes = [str(item).strip() for item in include_scopes if str(item).strip()]
+    if not task or not scopes:
+        return ok_result("task record paths selected", paths=[])
+    db_file = _db_path(config)
+    if not db_file.exists():
+        return error_result("index_missing", "record index does not exist")
+    freshness = ensure_index_fresh(config)
+    if not freshness.get("ok"):
+        return freshness
+    sql = (
+        "SELECT path FROM memory_records WHERE task_id = ? "
+        f"AND scope IN ({_sql_placeholders(scopes)}) ORDER BY path"
+    )
+    try:
+        with _connect(config) as conn:
+            _ensure_schema(conn)
+            rows = conn.execute(sql, [task, *scopes]).fetchall()
+    except sqlite3.Error as exc:
+        return error_result("index_failed", f"failed to select task record paths: {exc}")
+    return ok_result("task record paths selected", paths=[str(row[0]) for row in rows])
+
+
 def memory_search_records(config: MemoryConfig, query: str, *, user: str | None = None, top_k: int | None = None) -> dict[str, Any]:
     query_normalized = query.strip()
     if not query_normalized:

@@ -22,7 +22,24 @@ def build_memory_event(
     identity = load_runtime_identity(repo_root or Path.cwd(), args)
     content = str(canonical.get("content_markdown") or args.get("content_markdown") or args.get("content") or "")
     content_hash = "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
-    metadata = {key: canonical.get(key, args.get(key)) for key in ("branch", "system_area", "module_names", "class_names", "asset_paths", "blueprint_paths", "active_files", "confidence", "validated_by") if canonical.get(key, args.get(key)) is not None}
+    metadata = {
+        key: canonical.get(key, args.get(key))
+        for key in (
+            "branch",
+            "system_area",
+            "module_names",
+            "class_names",
+            "asset_paths",
+            "blueprint_paths",
+            "map_names",
+            "plugin_names",
+            "active_files",
+            "confidence",
+            "validated_by",
+            "graph_delta",
+        )
+        if canonical.get(key, args.get(key)) is not None
+    }
     return {
         "schema_version": "1.0", "event_id": str(uuid.uuid4()),
         "source_node_id": hashlib.sha256(str(result.get("path") or "local").encode()).hexdigest()[:16],

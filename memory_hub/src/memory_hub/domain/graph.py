@@ -19,3 +19,4 @@ class GraphQueryRequest(BaseModel):
     max_edges: int = Field(default=100, ge=1, le=400)
     include_metadata: bool = False
     include_source_event_ids: bool = False
+    include_evidence_ids: bool = False

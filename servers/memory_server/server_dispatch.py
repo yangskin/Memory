@@ -1538,11 +1538,13 @@ def _dispatch_memory_write(config: MemoryConfig, args: dict[str, Any]) -> dict[s
             author=str(args["author"]) if args.get("author") is not None else None,
         )
         task_ctx = args.get("_task_context")
+        checkpoint_task_id: str | None = None
         if isinstance(task_ctx, dict) and task_ctx.get("context_token"):
             try:
                 task_state = mark_task_checkpoint(config, str(task_ctx["context_token"]), phase)
                 if task_state.get("ok"):
                     result["task_state"] = task_state
+                    checkpoint_task_id = str(task_state.get("task_id") or "").strip() or None
                 else:
                     checkpoint_warnings.append(
                         {
@@ -1564,7 +1566,29 @@ def _dispatch_memory_write(config: MemoryConfig, args: dict[str, Any]) -> dict[s
         if isinstance(task_ctx, dict) and task_ctx.get("current_task_path"):
             result["current_task_path"] = task_ctx.get("current_task_path")
         trigger_phases = config.reflection.get("trigger_phases", ["task_done", "test_failed"])
-        task_id = str(args.get("task_id") or "").strip()
+        task_id = str(args.get("task_id") or checkpoint_task_id or "").strip()
+        if phase == "task_done" and task_id:
+            try:
+                from .memory_task_graph_jobs import enqueue_task_graph_settlement
+
+                result["background_task_graph"] = enqueue_task_graph_settlement(
+                    config,
+                    task_id=task_id,
+                    user=(
+                        canonical_identity(str(args.get("user") or args.get("author")))
+                        if args.get("user") or args.get("author")
+                        else None
+                    ),
+                    branch=str(args.get("branch") or "") or None,
+                    trigger=phase,
+                )
+            except Exception as exc:  # noqa: BLE001 - background intent must never fail the checkpoint
+                result["background_task_graph"] = {
+                    "ok": False,
+                    "queued": False,
+                    "error": "background_queue_unavailable",
+                    "message": f"{type(exc).__name__}: {exc}",
+                }
         if (
             config.reflection.get("enabled", False)
             and isinstance(trigger_phases, list)

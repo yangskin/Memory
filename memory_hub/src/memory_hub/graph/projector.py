@@ -14,6 +14,11 @@ from memory_hub.db.models import GraphEdge, GraphNode, GraphProjectionState, Mem
 from .extractor import extract_event_facts
 
 MAX_SOURCE_EVENT_IDS = 256
+MAX_EVIDENCE_IDS = 256
+
+
+def _merge_ids(existing: list[str] | None, incoming: tuple[str, ...], limit: int) -> list[str]:
+    return list(dict.fromkeys([*(existing or []), *incoming]))[-limit:]
 
 def _node_id(project_id: str, node_type: str, node_key: str):
     return uuid5(NAMESPACE_URL, f"memory-hub:graph-node:{project_id}:{node_type}:{node_key}")
@@ -53,12 +58,14 @@ def project_events(session: Session, project_id: str, *, batch_size: int = 500) 
             edge_id = _edge_id(project_id, source_id, target_id, edge.relation_type)
             existing = pending_edges.get(edge_id) or session.get(GraphEdge, edge_id)
             if existing is None:
-                existing = GraphEdge(id=edge_id, project_id=project_id, source_node_id=source_id, target_node_id=target_id, relation_type=edge.relation_type, source_event_ids=[str(event.event_id)], updated_at=datetime.now(UTC))
+                existing = GraphEdge(id=edge_id, project_id=project_id, source_node_id=source_id, target_node_id=target_id, relation_type=edge.relation_type, confidence=edge.confidence, source_event_ids=[str(event.event_id)], evidence_ids=list(edge.evidence_ids), updated_at=datetime.now(UTC))
                 pending_edges[edge_id] = existing
                 session.add(existing)
             elif str(event.event_id) not in (existing.source_event_ids or []):
                 existing.source_event_ids = [*(existing.source_event_ids or []), str(event.event_id)][-MAX_SOURCE_EVENT_IDS:]
+                existing.confidence = max(float(existing.confidence or 0.0), edge.confidence)
                 existing.updated_at = datetime.now(UTC)
+            existing.evidence_ids = _merge_ids(existing.evidence_ids, edge.evidence_ids, MAX_EVIDENCE_IDS)
 
     latest = events[-1].server_seq
     state.covers_through_seq = max(state.covers_through_seq, latest)
