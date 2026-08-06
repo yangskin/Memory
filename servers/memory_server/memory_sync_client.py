@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import json
+import ssl
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .memory_sync_config import SharedMemoryConfig
+
+try:
+    import certifi
+except ImportError:
+    _SSL_CONTEXT = ssl.create_default_context()
+else:
+    _SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 
 class MemoryHubClient:
@@ -22,7 +30,7 @@ class MemoryHubClient:
             headers["X-Memory-User-ID"] = self.config.user_id
         request = Request(f"{self.config.server_url}{path}", data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
         try:
-            with urlopen(request, timeout=timeout_seconds) as response:
+            with urlopen(request, timeout=timeout_seconds, context=_SSL_CONTEXT) as response:
                 return response.status, json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             return exc.code, {"error": f"http_{exc.code}"}

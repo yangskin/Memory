@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from servers.memory_server.memory_sync_client import MemoryHubClient
+from servers.memory_server.memory_sync_client import MemoryHubClient, _SSL_CONTEXT
 from servers.memory_server.memory_sync_config import SharedMemoryConfig
 from servers.memory_server.memory_sync_protocol import build_memory_event
 
@@ -30,12 +30,13 @@ def test_configured_client_uses_https_url_and_environment_token(monkeypatch) -> 
         def __exit__(self, *_args):
             return None
 
-    def fake_urlopen(request, *, timeout):
+    def fake_urlopen(request, *, timeout, context):
         captured["url"] = request.full_url
         captured["authorization"] = request.get_header("Authorization")
         captured["x-memory-user-id"] = request.get_header("X-memory-user-id")
         captured["payload"] = json.loads(request.data.decode("utf-8"))
         captured["timeout"] = timeout
+        captured["context"] = context
         return Response()
 
     monkeypatch.setattr("servers.memory_server.memory_sync_client.urlopen", fake_urlopen)
@@ -57,6 +58,7 @@ def test_configured_client_uses_https_url_and_environment_token(monkeypatch) -> 
         "x-memory-user-id": "alice",
         "payload": {"events": []},
         "timeout": 5.0,
+        "context": _SSL_CONTEXT,
     }
 
 
