@@ -13,6 +13,11 @@ def test_blank_optional_board_values_are_treated_as_omitted() -> None:
         expires_at="",
         author_agent_id="",
         author_agent_instance_id="",
+        runtime_node_id="",
+        source_node_name="",
+        workspace_id="",
+        agent_session_id="",
+        transport_id="",
     )
     assert post.task_id is None
     assert post.post_id is None
@@ -20,6 +25,11 @@ def test_blank_optional_board_values_are_treated_as_omitted() -> None:
     assert post.expires_at is None
     assert post.author_agent_id is None
     assert post.author_agent_instance_id is None
+    assert post.runtime_node_id is None
+    assert post.source_node_name is None
+    assert post.workspace_id is None
+    assert post.agent_session_id is None
+    assert post.transport_id is None
 
     reply = BoardReplyRequest(content="reply", thread_id="", reply_to="")
     assert reply.thread_id is None

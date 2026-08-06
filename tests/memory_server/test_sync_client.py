@@ -70,6 +70,35 @@ def test_event_omits_context_token_and_absolute_paths() -> None:
     assert event["content_hash"].startswith("sha256:")
 
 
+def test_event_identity_is_persisted_and_explicit_agent_is_respected(tmp_path) -> None:
+    args = {"repo_root": tmp_path, "content_markdown": "safe", "scope": "personal"}
+    first = build_memory_event(args, {"id": "mem_1", "path": "record.md"})
+    second = build_memory_event(args, {"id": "mem_2", "path": "record-2.md"})
+    assert first["source_node_id"] == second["source_node_id"]
+    assert first["agent_instance_id"] == second["agent_instance_id"]
+    assert first["agent_session_id"] == second["agent_session_id"]
+    assert first["runtime_node_id"] == first["source_node_id"]
+    assert first["source_node_name"]
+    assert first["workspace_id"].startswith("sha256:")
+    explicit = build_memory_event({**args, "agent_id": "copilot", "agent_instance_id": "copilot-1"}, {"id": "mem_3", "path": "record-3.md"})
+    assert explicit["agent_id"] == "copilot"
+    assert explicit["agent_instance_id"] == "copilot-1"
+
+
+def test_event_identity_recovers_from_corrupt_file_and_bounds_fields(tmp_path) -> None:
+    identity_path = tmp_path / ".ai-memory" / "identity.json"
+    identity_path.parent.mkdir(parents=True)
+    identity_path.write_text("not-json", encoding="utf-8")
+    event = build_memory_event(
+        {"content_markdown": "safe", "scope": "personal", "agent_id": "a" * 300},
+        {"id": "mem_1", "path": "record.md"},
+        repo_root=tmp_path,
+    )
+    assert len(event["agent_id"]) == 256
+    assert event["source_node_id"]
+    assert json.loads(identity_path.read_text(encoding="utf-8"))["source_node_id"] == event["source_node_id"]
+
+
 def test_graph_uses_project_graph_query_endpoint(monkeypatch) -> None:
     client = MemoryHubClient(SharedMemoryConfig(enabled=True, server_url="https://memory.example.com", project_id="project-1"))
     captured = {}

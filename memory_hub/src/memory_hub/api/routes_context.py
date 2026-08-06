@@ -35,7 +35,7 @@ def _item(event: MemoryEvent) -> dict[str, object]:
         for key, value in event.metadata_json.items()
         if key in _SAFE_METADATA_KEYS
     }
-    return {"event_id": str(event.event_id), "user_id": event.user_id, "agent_id": event.agent_id, "agent_instance_id": event.agent_instance_id, "task_id": event.task_id, "task_run_id": event.task_run_id, "record_kind": event.record_kind, "task_phase": event.task_phase, "occurred_at": event.occurred_at.isoformat(), "last_reported_at": event.occurred_at.isoformat(), "metadata": metadata}
+    return {"event_id": str(event.event_id), "user_id": event.user_id, "agent_id": event.agent_id, "agent_instance_id": event.agent_instance_id, "source_node_id": event.source_node_id, "runtime_node_id": event.runtime_node_id, "source_node_name": event.source_node_name, "workspace_id": event.workspace_id, "agent_session_id": event.agent_session_id, "transport_id": event.transport_id, "task_id": event.task_id, "task_run_id": event.task_run_id, "record_kind": event.record_kind, "task_phase": event.task_phase, "occurred_at": event.occurred_at.isoformat(), "last_reported_at": event.occurred_at.isoformat(), "metadata": metadata}
 
 
 def _shared_item(event: MemoryEvent, *, include_content: bool) -> dict[str, object]:

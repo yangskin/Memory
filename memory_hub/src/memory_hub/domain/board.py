@@ -19,6 +19,11 @@ class _BoardRequest(BaseModel):
         "expires_at",
         "author_agent_id",
         "author_agent_instance_id",
+        "runtime_node_id",
+        "source_node_name",
+        "workspace_id",
+        "agent_session_id",
+        "transport_id",
         "user_id",
         "agent_instance_id",
         "status",
@@ -43,6 +48,11 @@ class BoardPostRequest(_BoardRequest):
     expires_at: datetime | None = None
     author_agent_id: str | None = None
     author_agent_instance_id: str | None = None
+    runtime_node_id: str | None = Field(default=None, max_length=256)
+    source_node_name: str | None = Field(default=None, max_length=256)
+    workspace_id: str | None = Field(default=None, max_length=256)
+    agent_session_id: str | None = Field(default=None, max_length=256)
+    transport_id: str | None = Field(default=None, max_length=128)
 
 
 class BoardReplyRequest(_BoardRequest):
@@ -55,6 +65,11 @@ class BoardReplyRequest(_BoardRequest):
     expires_at: datetime | None = None
     author_agent_id: str | None = None
     author_agent_instance_id: str | None = None
+    runtime_node_id: str | None = Field(default=None, max_length=256)
+    source_node_name: str | None = Field(default=None, max_length=256)
+    workspace_id: str | None = Field(default=None, max_length=256)
+    agent_session_id: str | None = Field(default=None, max_length=256)
+    transport_id: str | None = Field(default=None, max_length=128)
 
 
 class BoardResolveRequest(_BoardRequest):

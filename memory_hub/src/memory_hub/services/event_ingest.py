@@ -44,6 +44,11 @@ def ingest_events(session: Session, project_id: str, user_id: str, events: list[
         try:
             with session.begin_nested():
                 model = MemoryEvent(event_id=event.event_id, project_id=project_id, user_id=user_id, source_node_id=event.source_node_id, agent_id=event.agent_id, agent_instance_id=event.agent_instance_id, task_id=event.task_id, task_run_id=event.task_run_id, operation=event.operation, record_kind=event.record_kind, scope=event.scope, task_phase=event.task_phase, content_markdown=content, metadata_json=event.metadata, source_record_id=event.source_record_id, occurred_at=event.occurred_at, content_hash=event.content_hash, content_redacted=redacted)
+                model.source_node_name = event.source_node_name
+                model.runtime_node_id = event.runtime_node_id
+                model.workspace_id = event.workspace_id
+                model.agent_session_id = event.agent_session_id
+                model.transport_id = event.transport_id
                 session.add(model)
                 session.flush()
                 accepted_sequences.append(model.server_seq)

@@ -64,7 +64,7 @@ from .memory_task_context import (
 from .memory_task_brief import build_task_brief
 from .memory_team_settlement import maybe_auto_settle_team_record
 from .memory_events import get_current_user
-from .memory_identity import canonical_identity
+from .memory_identity import canonical_identity, load_runtime_identity
 from .memory_users import is_placeholder_user
 from .memory_writer import memory_write as memory_write_file
 
@@ -80,6 +80,23 @@ def _none_if_blank(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _board_runtime_identity(config: MemoryConfig, args: dict[str, Any]) -> dict[str, str]:
+    identity_args = dict(args)
+    task_context = args.get("_task_context") if isinstance(args.get("_task_context"), dict) else {}
+    if not identity_args.get("agent_id") and task_context.get("agent_id"):
+        identity_args["agent_id"] = task_context["agent_id"]
+    identity = load_runtime_identity(config.repo_root, identity_args)
+    return {
+        "author_agent_id": identity.agent_id,
+        "author_agent_instance_id": identity.agent_instance_id,
+        "runtime_node_id": identity.source_node_id,
+        "source_node_name": identity.source_node_name,
+        "workspace_id": identity.workspace_id,
+        "agent_session_id": identity.session_id,
+        "transport_id": "memory-mcp",
+    }
 
 
 def _sync_pending_board_posts(config: MemoryConfig, *, max_items: int = 20) -> dict[str, int]:
@@ -98,6 +115,11 @@ def _sync_pending_board_posts(config: MemoryConfig, *, max_items: int = 20) -> d
             "expires_at": _none_if_blank(local_post.get("expires_at")),
             "author_agent_id": _none_if_blank(local_post.get("author_agent_id")),
             "author_agent_instance_id": _none_if_blank(local_post.get("author_agent_instance_id")),
+            "runtime_node_id": _none_if_blank(local_post.get("runtime_node_id")),
+            "source_node_name": _none_if_blank(local_post.get("source_node_name")),
+            "workspace_id": _none_if_blank(local_post.get("workspace_id")),
+            "agent_session_id": _none_if_blank(local_post.get("agent_session_id")),
+            "transport_id": _none_if_blank(local_post.get("transport_id")),
         }
         if str(local_post.get("post_type") or "") == "reply":
             payload["reply_to"] = remote_board_post_id(config, _none_if_blank(local_post.get("reply_to")))
@@ -1387,6 +1409,7 @@ def _publish_checkpoint_to_board(
         return {"enabled": True, "published": False, "reason": "empty_checkpoint"}
     record = result.get("persisted_record") if isinstance(result.get("persisted_record"), dict) else {}
     record_id = str(record.get("id") or "").strip()
+    runtime_identity = _board_runtime_identity(config, args)
     post = board_post(
         config,
         post_type="warning" if phase == "test_failed" else "handoff",
@@ -1395,8 +1418,7 @@ def _publish_checkpoint_to_board(
         references_json=[{"record_id": record_id, "phase": phase}] if record_id else [{"phase": phase}],
         expires_at=None,
         author_user_id=_none_if_blank(args.get("author") or args.get("user")),
-        author_agent_id=_none_if_blank(args.get("agent_id")),
-        author_agent_instance_id=_none_if_blank(args.get("agent_instance_id") or args.get("task_run_id")),
+        **runtime_identity,
     )
     if not post.get("ok"):
         return {"enabled": True, "published": False, "reason": str(post.get("error") or "board_write_failed")}
@@ -1724,6 +1746,7 @@ def _dispatch_memory_write(config: MemoryConfig, args: dict[str, Any]) -> dict[s
             err = _check_required({"content_markdown": content}, "content_markdown")
             if err:
                 return err
+            runtime_identity = _board_runtime_identity(config, args)
             result = board_post(
                 config,
                 post_type=str(args.get("post_type") or ""),
@@ -1733,13 +1756,7 @@ def _dispatch_memory_write(config: MemoryConfig, args: dict[str, Any]) -> dict[s
                 references_json=args.get("references_json") if isinstance(args.get("references_json"), list) else None,
                 expires_at=str(args["expires_at"]) if args.get("expires_at") is not None else None,
                 author_user_id=str(args.get("author") or args.get("user") or "") or None,
-                author_agent_id=(
-                    str(args.get("agent_id") or (args.get("_task_context") or {}).get("agent_id") or "")
-                    or None
-                ),
-                author_agent_instance_id=(
-                    str(args.get("agent_instance_id") or args.get("task_run_id") or "") or None
-                ),
+                **runtime_identity,
             )
             if result.get("ok"):
                 local_post = result.get("post") if isinstance(result.get("post"), dict) else {}
@@ -1760,6 +1777,7 @@ def _dispatch_memory_write(config: MemoryConfig, args: dict[str, Any]) -> dict[s
             err = _check_required({"content_markdown": content}, "content_markdown")
             if err:
                 return err
+            runtime_identity = _board_runtime_identity(config, args)
             result = board_reply(
                 config,
                 content_markdown=str(content or ""),
@@ -1769,13 +1787,7 @@ def _dispatch_memory_write(config: MemoryConfig, args: dict[str, Any]) -> dict[s
                 references_json=args.get("references_json") if isinstance(args.get("references_json"), list) else None,
                 expires_at=str(args["expires_at"]) if args.get("expires_at") is not None else None,
                 author_user_id=str(args.get("author") or args.get("user") or "") or None,
-                author_agent_id=(
-                    str(args.get("agent_id") or (args.get("_task_context") or {}).get("agent_id") or "")
-                    or None
-                ),
-                author_agent_instance_id=(
-                    str(args.get("agent_instance_id") or args.get("task_run_id") or "") or None
-                ),
+                **runtime_identity,
             )
             if result.get("ok"):
                 local_post = result.get("post") if isinstance(result.get("post"), dict) else {}

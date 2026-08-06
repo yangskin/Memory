@@ -186,6 +186,13 @@ def test_board_post_normalizes_blank_optional_values_for_remote(repo: Path, monk
     assert captured["thread_id"] is None
     assert captured["task_id"] is None
     assert captured["references_json"] == []
+    assert captured["author_agent_id"] == "unknown-agent"
+    assert captured["author_agent_instance_id"]
+    assert captured["runtime_node_id"]
+    assert captured["source_node_name"]
+    assert captured["workspace_id"].startswith("sha256:")
+    assert captured["agent_session_id"]
+    assert captured["transport_id"] == "memory-mcp"
 
 
 def test_board_falls_back_to_local_when_remote_fails(repo: Path, monkeypatch) -> None:

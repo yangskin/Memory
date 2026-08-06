@@ -21,6 +21,12 @@ def _event(event_id: str) -> dict[str, object]:
         "event_id": event_id,
         "agent_id": "pytest",
         "agent_instance_id": "pytest-1",
+        "source_node_id": "node-1",
+        "runtime_node_id": "node-1",
+        "source_node_name": "test-host",
+        "workspace_id": "sha256:" + "b" * 64,
+        "agent_session_id": "session-1",
+        "transport_id": "memory-mcp",
         "task_id": "task-1",
         "operation": "record",
         "record_kind": "handoff",
@@ -46,7 +52,14 @@ def test_authenticated_event_ingest_is_idempotent_and_project_scoped() -> None:
     assert response.status_code == 200
     assert len(response.json()["accepted"]) == 1
     with app.state.session_factory() as session:
-        assert session.query(MemoryEvent).filter_by(project_id="project-a", event_id=event_id).one().user_id == "alice"
+        stored = session.query(MemoryEvent).filter_by(project_id="project-a", event_id=event_id).one()
+        assert stored.user_id == "alice"
+        assert stored.source_node_id == "node-1"
+        assert stored.runtime_node_id == "node-1"
+        assert stored.source_node_name == "test-host"
+        assert stored.workspace_id == "sha256:" + "b" * 64
+        assert stored.agent_session_id == "session-1"
+        assert stored.transport_id == "memory-mcp"
     forged = {"events": [{**_event(str(uuid4())), "user_id": "forged-user"}]}
     assert client.post("/v1/projects/project-a/events/batch", headers=headers, json=forged).status_code == 422
     duplicate = client.post("/v1/projects/project-a/events/batch", headers=headers, json=payload)
@@ -58,6 +71,8 @@ def test_authenticated_event_ingest_is_idempotent_and_project_scoped() -> None:
     context = client.post("/v1/projects/project-a/context", headers=headers, json={"agent_instance_id": "other-agent", "task_id": "task-1", "include": ["my_other_agents", "same_task_agents"], "max_items": 10})
     assert context.status_code == 200
     assert context.json()["my_other_agents"][0]["task_id"] == "task-1"
+    assert context.json()["my_other_agents"][0]["runtime_node_id"] == "node-1"
+    assert context.json()["my_other_agents"][0]["workspace_id"] == "sha256:" + "b" * 64
     bob_context = client.post("/v1/projects/project-a/context", headers={**headers, "X-Memory-User-ID": "bob"}, json={"agent_instance_id": "bob-agent", "include": ["project_activity"], "max_items": 10})
     assert bob_context.status_code == 200
     assert bob_context.json()["project_activity"] == []

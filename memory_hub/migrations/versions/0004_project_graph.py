@@ -7,6 +7,7 @@ Create Date: 2026-08-05
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 
@@ -17,7 +18,10 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    if not inspector.has_table("graph_nodes"):
+        op.create_table(
             "graph_nodes",
             sa.Column("id", UUID(as_uuid=True), primary_key=True),
             sa.Column("project_id", sa.String(256), nullable=False),
@@ -30,8 +34,11 @@ def upgrade() -> None:
             sa.UniqueConstraint("project_id", "node_type", "node_key", name="uq_graph_nodes_project_type_key"),
             sa.UniqueConstraint("project_id", "id", name="uq_graph_nodes_project_id"),
         )
-    op.create_index("idx_graph_nodes_project_type", "graph_nodes", ["project_id", "node_type"])
-    op.create_table(
+    inspector = inspect(bind)
+    if "idx_graph_nodes_project_type" not in {item["name"] for item in inspector.get_indexes("graph_nodes")}:
+        op.create_index("idx_graph_nodes_project_type", "graph_nodes", ["project_id", "node_type"])
+    if not inspector.has_table("graph_edges"):
+        op.create_table(
             "graph_edges",
             sa.Column("id", UUID(as_uuid=True), primary_key=True),
             sa.Column("project_id", sa.String(256), nullable=False),
@@ -46,9 +53,14 @@ def upgrade() -> None:
             sa.ForeignKeyConstraint(["project_id", "source_node_id"], ["graph_nodes.project_id", "graph_nodes.id"], ondelete="CASCADE", name="fk_graph_edges_source_project_node"),
             sa.ForeignKeyConstraint(["project_id", "target_node_id"], ["graph_nodes.project_id", "graph_nodes.id"], ondelete="CASCADE", name="fk_graph_edges_target_project_node"),
         )
-    op.create_index("idx_graph_edges_project_source", "graph_edges", ["project_id", "source_node_id"])
-    op.create_index("idx_graph_edges_project_target", "graph_edges", ["project_id", "target_node_id"])
-    op.create_table(
+    inspector = inspect(bind)
+    edge_indexes = {item["name"] for item in inspector.get_indexes("graph_edges")}
+    if "idx_graph_edges_project_source" not in edge_indexes:
+        op.create_index("idx_graph_edges_project_source", "graph_edges", ["project_id", "source_node_id"])
+    if "idx_graph_edges_project_target" not in edge_indexes:
+        op.create_index("idx_graph_edges_project_target", "graph_edges", ["project_id", "target_node_id"])
+    if not inspector.has_table("graph_projection_states"):
+        op.create_table(
             "graph_projection_states",
             sa.Column("project_id", sa.String(256), primary_key=True),
             sa.Column("covers_through_seq", sa.BigInteger(), nullable=False, server_default="0"),

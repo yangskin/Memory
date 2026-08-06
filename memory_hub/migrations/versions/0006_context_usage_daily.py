@@ -6,6 +6,7 @@ Revises: 0005_brief_input_fingerprint
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 
 
 revision = "0006_context_usage_daily"
@@ -15,6 +16,8 @@ depends_on = None
 
 
 def upgrade() -> None:
+    if inspect(op.get_bind()).has_table("context_usage_daily"):
+        return
     op.create_table(
         "context_usage_daily",
         sa.Column("project_id", sa.String(256), primary_key=True),

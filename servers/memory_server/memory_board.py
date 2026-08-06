@@ -233,6 +233,11 @@ def _new_post(
     author_user_id: str,
     author_agent_id: str | None,
     author_agent_instance_id: str | None,
+    runtime_node_id: str | None,
+    source_node_name: str | None,
+    workspace_id: str | None,
+    agent_session_id: str | None,
+    transport_id: str | None,
 ) -> dict[str, Any]:
     now = _now_text()
     post_id = str(uuid.uuid4())
@@ -242,6 +247,11 @@ def _new_post(
         "author_user_id": author_user_id,
         "author_agent_id": str(author_agent_id or "").strip() or None,
         "author_agent_instance_id": str(author_agent_instance_id or "").strip() or None,
+        "runtime_node_id": str(runtime_node_id or "").strip() or None,
+        "source_node_name": str(source_node_name or "").strip() or None,
+        "workspace_id": str(workspace_id or "").strip() or None,
+        "agent_session_id": str(agent_session_id or "").strip() or None,
+        "transport_id": str(transport_id or "").strip() or None,
         "post_type": post_type,
         "content": content,
         "task_id": str(task_id or "").strip() or None,
@@ -267,6 +277,11 @@ def board_post(
     author_user_id: str | None = None,
     author_agent_id: str | None = None,
     author_agent_instance_id: str | None = None,
+    runtime_node_id: str | None = None,
+    source_node_name: str | None = None,
+    workspace_id: str | None = None,
+    agent_session_id: str | None = None,
+    transport_id: str | None = None,
 ) -> dict[str, Any]:
     normalized_type = str(post_type or "").strip().lower()
     if normalized_type not in (ALLOWED_POST_TYPES - {"reply"}):
@@ -295,6 +310,11 @@ def board_post(
         author_user_id=user_id,
         author_agent_id=author_agent_id,
         author_agent_instance_id=author_agent_instance_id,
+        runtime_node_id=runtime_node_id,
+        source_node_name=source_node_name,
+        workspace_id=workspace_id,
+        agent_session_id=agent_session_id,
+        transport_id=transport_id,
     )
     if not post["thread_id"]:
         post["thread_id"] = post["post_id"]
@@ -317,6 +337,11 @@ def board_reply(
     author_user_id: str | None = None,
     author_agent_id: str | None = None,
     author_agent_instance_id: str | None = None,
+    runtime_node_id: str | None = None,
+    source_node_name: str | None = None,
+    workspace_id: str | None = None,
+    agent_session_id: str | None = None,
+    transport_id: str | None = None,
 ) -> dict[str, Any]:
     content = _normalize_content(content_markdown)
     if not content:
@@ -363,6 +388,11 @@ def board_reply(
         author_user_id=user_id,
         author_agent_id=author_agent_id,
         author_agent_instance_id=author_agent_instance_id,
+        runtime_node_id=runtime_node_id,
+        source_node_name=source_node_name,
+        workspace_id=workspace_id,
+        agent_session_id=agent_session_id,
+        transport_id=transport_id,
     )
     write_error = _append_post(path, post)
     if write_error is not None:

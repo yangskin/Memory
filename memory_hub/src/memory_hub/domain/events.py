@@ -13,6 +13,11 @@ class EventPayload(BaseModel):
     schema_version: str = Field(pattern=r"^1\.0$")
     event_id: UUID
     source_node_id: str | None = None
+    runtime_node_id: str | None = None
+    source_node_name: str | None = None
+    workspace_id: str | None = None
+    agent_session_id: str | None = None
+    transport_id: str | None = None
     agent_id: str
     agent_instance_id: str
     task_id: str | None = None

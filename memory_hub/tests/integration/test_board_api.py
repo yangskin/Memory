@@ -47,12 +47,22 @@ def test_board_post_query_reply_resolve_roundtrip() -> None:
             "task_id": "network",
             "author_agent_id": "pytest",
             "author_agent_instance_id": "pytest-1",
+            "runtime_node_id": "node-1",
+            "source_node_name": "test-host",
+            "workspace_id": "sha256:" + "c" * 64,
+            "agent_session_id": "session-1",
+            "transport_id": "memory-mcp",
         },
     )
     assert post_resp.status_code == 200
     root = post_resp.json()["post"]
     assert root["post_type"] == "question"
     assert root["author_user_id"] == "alice"
+    assert root["runtime_node_id"] == "node-1"
+    assert root["source_node_name"] == "test-host"
+    assert root["workspace_id"] == "sha256:" + "c" * 64
+    assert root["agent_session_id"] == "session-1"
+    assert root["transport_id"] == "memory-mcp"
 
     reply_resp = client.post(
         f"/v1/projects/{project_id}/board/reply",
@@ -64,12 +74,19 @@ def test_board_post_query_reply_resolve_roundtrip() -> None:
             "task_id": "network",
             "author_agent_id": "pytest",
             "author_agent_instance_id": "pytest-1",
+            "runtime_node_id": "node-1",
+            "source_node_name": "test-host",
+            "workspace_id": "sha256:" + "c" * 64,
+            "agent_session_id": "session-1",
+            "transport_id": "memory-mcp",
         },
     )
     assert reply_resp.status_code == 200
     reply = reply_resp.json()["post"]
     assert reply["post_type"] == "reply"
     assert reply["thread_id"] == root["thread_id"]
+    assert reply["runtime_node_id"] == "node-1"
+    assert reply["agent_session_id"] == "session-1"
 
     unresolved = client.post(
         f"/v1/projects/{project_id}/board/query",

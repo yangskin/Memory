@@ -9,6 +9,7 @@ def test_required_tables_and_event_idempotency_constraint_are_declared() -> None
         "brief_jobs",
         "brief_snapshots",
         "brief_heads",
+        "context_usage_daily",
         "graph_nodes",
         "graph_edges",
         "graph_projection_states",

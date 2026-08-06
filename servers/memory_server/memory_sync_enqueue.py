@@ -33,7 +33,7 @@ def enqueue_shared_record(
                     if str(metadata.get("id") or "") == record_id:
                         canonical = {**metadata, "content_markdown": content}
                         break
-        event = build_memory_event(args, result, canonical)
+        event = build_memory_event(args, result, canonical, repo_root=config.repo_root)
         if event["scope"] not in config.shared_memory.sync_scopes:
             return result
         queued = SyncStore(config.repo_root / ".ai-memory" / "shared-sync.db").enqueue(
