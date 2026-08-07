@@ -74,6 +74,9 @@ LLM_CAPABILITY_MATRIX: dict[str, Owner] = {
     # 每次任务启动的上下文简报。LLM 只压缩和重组确定性证据，最终槽位、
     # 来源、预算和降级路径仍由确定性层控制。
     "generate_task_brief": "hybrid",
+    # Task settlement knowledge graph. The LLM may propose semantic nodes and
+    # inferred edges; deterministic evidence gates validate and seal the delta.
+    "generate_task_graph_delta": "hybrid",
     # Background project reflection: the LLM extracts/reviews proposals, then
     # deterministic evidence gates decide whether anything may be persisted.
     "project_reflection": "hybrid",

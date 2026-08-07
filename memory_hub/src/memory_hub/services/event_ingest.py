@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from memory_hub.db.models import MemoryEvent
 from memory_hub.db.repositories import event_by_id, mark_brief_jobs_dirty
 from memory_hub.domain.events import EventBatchResponse, EventPayload, RejectedEvent
+from memory_hub.graph.extractor import InvalidGraphDelta, validate_graph_delta
 
 _SECRET = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
@@ -36,6 +37,14 @@ def ingest_events(session: Session, project_id: str, user_id: str, events: list[
             else:
                 response.rejected.append(RejectedEvent(event_id=event.event_id, code="event_id_conflict", message="event_id already exists with different content"))
             continue
+        if isinstance(event.metadata, dict) and "graph_delta" in event.metadata:
+            try:
+                validate_graph_delta(event.metadata, event.task_id or "")
+            except InvalidGraphDelta as exc:
+                response.rejected.append(
+                    RejectedEvent(event_id=event.event_id, code="invalid_graph_delta", message=str(exc))
+                )
+                continue
         content = event.content_markdown
         redacted = bool(content and _SECRET.search(content))
         if redacted:

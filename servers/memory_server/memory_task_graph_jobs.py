@@ -10,7 +10,7 @@ from .memory_config import MemoryConfig
 from .memory_durable_jobs import DurableJobQueue, DurableQueueCorruption, default_worker_id
 from .memory_identity import canonical_identity
 from .memory_result import error_result, ok_result
-from .memory_task_graph import build_task_graph_delta
+from .memory_task_graph import build_task_knowledge_graph_delta
 
 _STATE_REL = Path(".ai-memory") / "jobs" / "task-graph-settlement.json"
 
@@ -109,7 +109,7 @@ def drain_task_graph_settlement_jobs(
         token = str(job.get("lease_token") or "")
         try:
             with queue.lease_guard(str(job.get("job_id")), token, lease_seconds=lease_seconds) as lease_state:
-                built = build_task_graph_delta(config, task_id=task_id)
+                built = build_task_knowledge_graph_delta(config, task_id=task_id)
                 upload = _upload_delta(config, payload, built["graph_delta"]) if built.get("ok") else built
             result = upload if upload.get("ok") else upload
             if built.get("ok"):

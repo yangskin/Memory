@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from servers.memory_server.memory_task_graph import build_task_graph_delta
+from servers.memory_server.memory_task_graph import build_task_graph_delta, build_task_knowledge_graph_delta
 from servers.memory_server.memory_task_graph_jobs import (
     drain_task_graph_settlement_jobs,
     enqueue_task_graph_settlement,
@@ -183,6 +183,51 @@ def test_build_task_graph_delta_uses_exact_task_index_paths(monkeypatch) -> None
     assert captured["paths"] == {"memory-bank/records/task-7.md"}
 
 
+def test_build_task_knowledge_graph_accepts_evidence_bounded_inferences(monkeypatch) -> None:
+    _disable_record_index(monkeypatch)
+    records = [
+        SimpleNamespace(
+            metadata={"id": "rec-1", "task_id": "task-7", "scope": "project_shared", "class_names": ["SyncStore"], "module_names": ["outbox"]},
+            body="SyncStore implements the durable outbox module.",
+        )
+    ]
+    monkeypatch.setattr(
+        "servers.memory_server.memory_task_graph.iter_parsed_records",
+        lambda _config, **_kwargs: (records, {"parsed": 1}),
+    )
+
+    class Client:
+        def chat(self, _messages, **_kwargs):
+            return {"choices": [{"message": {"content": '{"nodes":[],"edges":[{"source":{"type":"class","key":"SyncStore"},"target":{"type":"module","key":"outbox"},"relation":"implements","origin":"observed","confidence":0.9,"evidence_ids":["rec-1"]}]}'}}]}
+
+    config = SimpleNamespace(repo_root=None, llm_defaults={"capabilities": {"generate_task_graph_delta": {"enabled": True}}})
+    result = build_task_knowledge_graph_delta(config, task_id="task-7", client_factory=lambda _profile: Client())
+
+    assert result["generation_mode"] == "llm_evaluated"
+    semantic = next(edge for edge in result["graph_delta"]["edges"] if edge["relation"] == "implements")
+    assert semantic["origin"] == "inferred"
+    assert semantic["evidence_ids"] == ["rec-1"]
+
+
+def test_build_task_knowledge_graph_rejects_unknown_evidence(monkeypatch) -> None:
+    _disable_record_index(monkeypatch)
+    records = [SimpleNamespace(metadata={"id": "rec-1", "task_id": "task-7", "scope": "project_shared", "module_names": ["core"]}, body="Core depends on storage.")]
+    monkeypatch.setattr(
+        "servers.memory_server.memory_task_graph.iter_parsed_records",
+        lambda _config, **_kwargs: (records, {"parsed": 1}),
+    )
+
+    class Client:
+        def chat(self, _messages, **_kwargs):
+            return {"choices": [{"message": {"content": '{"nodes":[{"type":"module","key":"storage","name":"storage"}],"edges":[{"source":{"type":"module","key":"core"},"target":{"type":"module","key":"storage"},"relation":"depends_on","confidence":0.9,"evidence_ids":["invented"]}]}'}}]}
+
+    config = SimpleNamespace(repo_root=None, llm_defaults={"capabilities": {"generate_task_graph_delta": {"enabled": True}}})
+    result = build_task_knowledge_graph_delta(config, task_id="task-7", client_factory=lambda _profile: Client())
+
+    assert {edge["relation"] for edge in result["graph_delta"]["edges"]} == {"affects"}
+    assert "storage" not in {node["key"] for node in result["graph_delta"]["nodes"]}
+
+
 def test_task_graph_jobs_coalesce_and_finish_without_shared_hub(tmp_path, monkeypatch) -> None:
     config = SimpleNamespace(
         repo_root=tmp_path,
@@ -198,7 +243,7 @@ def test_task_graph_jobs_coalesce_and_finish_without_shared_hub(tmp_path, monkey
         config, task_id="task-7", user="alice", branch="main", trigger="task_done"
     )
     monkeypatch.setattr(
-        "servers.memory_server.memory_task_graph_jobs.build_task_graph_delta",
+        "servers.memory_server.memory_task_graph_jobs.build_task_knowledge_graph_delta",
         lambda _config, task_id: {
             "ok": True,
             "graph_delta": {"version": "1.0", "delta_id": "sha256:test", "task_id": task_id, "nodes": [], "edges": []},

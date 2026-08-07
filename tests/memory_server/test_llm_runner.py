@@ -67,6 +67,7 @@ def test_default_profiles_cover_all_v010_capabilities() -> None:
         "auto_memory_gate",
         "query_rewrite",
         "snapshot_narrative",
+        "generate_task_graph_delta",
     }
     assert expected.issubset(DEFAULT_CAPABILITY_PROFILES.keys())
     for cap in expected:

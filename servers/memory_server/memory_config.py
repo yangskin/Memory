@@ -203,6 +203,7 @@ DEFAULT_CONFIG_CONTENT: dict[str, Any] = {
             # "rebuild_key_document": {"enabled": True, "timeout": 90},
             # "query_rewrite": {"enabled": True, "timeout": 30, "max_tokens": 256},
             # "snapshot_narrative": {"enabled": True, "timeout": 60},
+            # "generate_task_graph_delta": {"enabled": True, "timeout": 30, "max_tokens": 1024},
         },
     },
     "shared_memory": {

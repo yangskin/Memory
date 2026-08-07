@@ -3,7 +3,9 @@ import hashlib
 import json
 from types import SimpleNamespace
 
-from memory_hub.graph.extractor import extract_event_facts
+import pytest
+
+from memory_hub.graph.extractor import InvalidGraphDelta, extract_event_facts, validate_graph_delta
 
 
 def _seal(delta):
@@ -93,6 +95,18 @@ def test_extract_event_facts_falls_back_when_graph_delta_is_invalid() -> None:
 
     assert [(node.node_type, node.node_key) for node in facts.nodes] == [("file", "legacy.py"), ("task", "task-1")]
     assert [edge.relation_type for edge in facts.edges] == ["affects"]
+
+
+def test_validate_graph_delta_strictly_rejects_invalid_submission() -> None:
+    invalid = {
+        "version": "1.0",
+        "task_id": "another-task",
+        "nodes": [],
+        "edges": [],
+    }
+
+    with pytest.raises(InvalidGraphDelta):
+        validate_graph_delta({"graph_delta": invalid}, "task-1")
 
 
 def test_extract_event_facts_rejects_non_finite_confidence_and_unbounded_evidence() -> None:

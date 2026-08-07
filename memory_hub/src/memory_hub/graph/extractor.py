@@ -35,6 +35,10 @@ class GraphFacts:
     edges: tuple[EdgeFact, ...]
 
 
+class InvalidGraphDelta(ValueError):
+    """Raised when an explicitly submitted graph delta fails validation."""
+
+
 _ENTITY_FIELDS = (
     ("active_files", "file"),
     ("class_names", "class"),
@@ -128,6 +132,17 @@ def _delta_facts(metadata: dict[str, Any], task_id: str) -> GraphFacts | None:
         normalized_evidence = tuple(dict.fromkeys(item.strip() for item in evidence_ids))
         edges.add(EdgeFact(source_key, target_key, relation, confidence, normalized_evidence))
     return GraphFacts(tuple(nodes[key] for key in sorted(nodes)), tuple(sorted(edges, key=lambda item: (item.source, item.target, item.relation_type))))
+
+
+def validate_graph_delta(metadata: dict[str, Any], task_id: str) -> GraphFacts:
+    """Strictly validate an explicitly submitted graph delta."""
+
+    if "graph_delta" not in metadata:
+        raise InvalidGraphDelta("graph_delta is missing")
+    facts = _delta_facts(metadata, str(task_id or "").strip())
+    if facts is None:
+        raise InvalidGraphDelta("graph_delta failed schema, identity, bounds, evidence, or integrity validation")
+    return facts
 
 
 def extract_event_facts(event: Any) -> GraphFacts:
