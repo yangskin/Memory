@@ -35,7 +35,11 @@ def _post(config: MemoryConfig, path: str, payload: dict[str, Any], timeout: flo
         return ok_result("remote board call succeeded", remote=body, http_status=status)
     if status == 0:
         return error_result("remote_unavailable", str(body.get("error") or "remote_unavailable"), http_status=0)
-    return error_result("remote_http_error", str(body.get("error") or f"http_{status}"), http_status=status)
+    message = str(body.get("detail") or body.get("error") or f"http_{status}")
+    result = error_result("remote_http_error", message, http_status=status, remote=body)
+    if body.get("retry_after_seconds") is not None:
+        result["retry_after_seconds"] = body["retry_after_seconds"]
+    return result
 
 
 def remote_board_query(config: MemoryConfig, payload: dict[str, Any]) -> dict[str, Any]:

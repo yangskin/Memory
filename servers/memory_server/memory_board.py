@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +16,8 @@ from .memory_result import error_result, ok_result
 ALLOWED_POST_TYPES = {"note", "question", "request", "warning", "handoff", "proposal", "reply"}
 ALLOWED_STATUSES = {"open", "resolved"}
 MAX_CONTENT_CHARS = 64 * 1024
+BOARD_SYNC_CLAIM_TTL_SECONDS = 60
+BOARD_SYNC_MAX_BACKOFF_SECONDS = 300
 
 _SECRET_PATTERNS = (
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", re.IGNORECASE),
@@ -27,6 +29,16 @@ _SECRET_PATTERNS = (
 
 def _now_text() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_time(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value or ""))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _board_path(config: MemoryConfig) -> Path:
@@ -126,6 +138,8 @@ def mark_board_post_synced(
                 item["remote_post_id"] = str(remote_post.get("post_id") or "") or None
                 item["remote_thread_id"] = str(remote_post.get("thread_id") or "") or None
                 item["remote_sync_updated_at"] = _now_text()
+                item["remote_sync_last_error"] = None
+                item["remote_sync_next_retry_at"] = None
                 return _rewrite_posts_locked(path, posts)
     return error_result("not_found", f"post not found: {target}")
 
@@ -140,6 +154,65 @@ def pending_board_posts(config: MemoryConfig, *, max_items: int = 20) -> list[di
     ]
     pending.sort(key=lambda item: str(item.get("created_at") or ""))
     return pending[: max(1, min(100, int(max_items or 20)))]
+
+
+def claim_pending_board_posts(config: MemoryConfig, *, max_items: int = 20) -> list[dict[str, Any]]:
+    path = _board_path(config)
+    project_id = _project_id(config)
+    now = datetime.now(timezone.utc)
+    claim_before = now - timedelta(seconds=BOARD_SYNC_CLAIM_TTL_SECONDS)
+    claimed: list[dict[str, Any]] = []
+    with file_lock(config.repo_root, path):
+        posts = _load_posts(path)
+        for item in posts:
+            if len(claimed) >= max(1, min(100, int(max_items or 20))):
+                break
+            if str(item.get("project_id") or "") != project_id:
+                continue
+            state = str(item.get("remote_sync") or "")
+            claim_time = _parse_time(item.get("remote_sync_claimed_at"))
+            if state == "syncing" and claim_time is not None and claim_time > claim_before:
+                continue
+            if state not in {"pending", "syncing"}:
+                continue
+            next_retry = _parse_time(item.get("remote_sync_next_retry_at"))
+            if next_retry is not None and next_retry > now:
+                continue
+            item["remote_sync"] = "syncing"
+            item["remote_sync_claimed_at"] = now.isoformat()
+            item["remote_sync_updated_at"] = now.isoformat()
+            claimed.append(dict(item))
+        if claimed:
+            _rewrite_posts_locked(path, posts)
+    return claimed
+
+
+def mark_board_post_sync_failed(
+    config: MemoryConfig,
+    post_id: str,
+    error: str,
+    *,
+    retry_after_seconds: float | None = None,
+) -> dict[str, Any] | None:
+    path = _board_path(config)
+    target = str(post_id or "").strip()
+    now = datetime.now(timezone.utc)
+    with file_lock(config.repo_root, path):
+        posts = _load_posts(path)
+        for item in posts:
+            if str(item.get("post_id") or "") != target:
+                continue
+            attempts = int(item.get("remote_sync_attempts") or 0) + 1
+            delay = retry_after_seconds if retry_after_seconds is not None else min(
+                BOARD_SYNC_MAX_BACKOFF_SECONDS, 2 ** min(attempts, 8)
+            )
+            item["remote_sync"] = "pending"
+            item["remote_sync_attempts"] = attempts
+            item["remote_sync_last_error"] = str(error or "remote_sync_failed")[:1000]
+            item["remote_sync_next_retry_at"] = (now + timedelta(seconds=max(1.0, float(delay)))).isoformat()
+            item["remote_sync_updated_at"] = now.isoformat()
+            return _rewrite_posts_locked(path, posts)
+    return error_result("not_found", f"post not found: {target}")
 
 
 def remote_board_post_id(config: MemoryConfig, local_post_id: str | None) -> str | None:
@@ -175,6 +248,8 @@ def mark_board_resolve_synced(config: MemoryConfig, post_id: str) -> dict[str, A
             if str(item.get("post_id") or "") == target:
                 item["remote_resolve_sync"] = "synced"
                 item["remote_sync_updated_at"] = _now_text()
+                item["remote_resolve_last_error"] = None
+                item["remote_resolve_next_retry_at"] = None
                 return _rewrite_posts_locked(path, posts)
     return error_result("not_found", f"post not found: {target}")
 
@@ -188,6 +263,65 @@ def pending_board_resolves(config: MemoryConfig, *, max_items: int = 20) -> list
         and str(item.get("remote_resolve_sync") or "") == "pending"
     ]
     return items[: max(1, min(100, int(max_items or 20)))]
+
+
+def claim_pending_board_resolves(config: MemoryConfig, *, max_items: int = 20) -> list[dict[str, Any]]:
+    path = _board_path(config)
+    project_id = _project_id(config)
+    now = datetime.now(timezone.utc)
+    claim_before = now - timedelta(seconds=BOARD_SYNC_CLAIM_TTL_SECONDS)
+    claimed: list[dict[str, Any]] = []
+    with file_lock(config.repo_root, path):
+        posts = _load_posts(path)
+        for item in posts:
+            if len(claimed) >= max(1, min(100, int(max_items or 20))):
+                break
+            if str(item.get("project_id") or "") != project_id:
+                continue
+            state = str(item.get("remote_resolve_sync") or "")
+            claim_time = _parse_time(item.get("remote_resolve_claimed_at"))
+            if state == "syncing" and claim_time is not None and claim_time > claim_before:
+                continue
+            if state not in {"pending", "syncing"}:
+                continue
+            next_retry = _parse_time(item.get("remote_resolve_next_retry_at"))
+            if next_retry is not None and next_retry > now:
+                continue
+            item["remote_resolve_sync"] = "syncing"
+            item["remote_resolve_claimed_at"] = now.isoformat()
+            item["remote_sync_updated_at"] = now.isoformat()
+            claimed.append(dict(item))
+        if claimed:
+            _rewrite_posts_locked(path, posts)
+    return claimed
+
+
+def mark_board_resolve_sync_failed(
+    config: MemoryConfig,
+    post_id: str,
+    error: str,
+    *,
+    retry_after_seconds: float | None = None,
+) -> dict[str, Any] | None:
+    path = _board_path(config)
+    target = str(post_id or "").strip()
+    now = datetime.now(timezone.utc)
+    with file_lock(config.repo_root, path):
+        posts = _load_posts(path)
+        for item in posts:
+            if str(item.get("post_id") or "") != target:
+                continue
+            attempts = int(item.get("remote_resolve_attempts") or 0) + 1
+            delay = retry_after_seconds if retry_after_seconds is not None else min(
+                BOARD_SYNC_MAX_BACKOFF_SECONDS, 2 ** min(attempts, 8)
+            )
+            item["remote_resolve_sync"] = "pending"
+            item["remote_resolve_attempts"] = attempts
+            item["remote_resolve_last_error"] = str(error or "remote_sync_failed")[:1000]
+            item["remote_resolve_next_retry_at"] = (now + timedelta(seconds=max(1.0, float(delay)))).isoformat()
+            item["remote_sync_updated_at"] = now.isoformat()
+            return _rewrite_posts_locked(path, posts)
+    return error_result("not_found", f"post not found: {target}")
 
 
 def cache_remote_board_items(config: MemoryConfig, items: list[dict[str, Any]]) -> None:

@@ -11,6 +11,7 @@ import logging
 import re
 import threading
 from typing import Any
+from weakref import WeakValueDictionary
 
 from .memory_backup import backup_files
 from .memory_board import (
@@ -19,12 +20,14 @@ from .memory_board import (
     board_reply,
     board_resolve,
     cache_remote_board_items,
+    claim_pending_board_posts,
+    claim_pending_board_resolves,
+    mark_board_post_sync_failed,
     mark_board_resolve_pending,
+    mark_board_resolve_sync_failed,
     mark_board_resolve_synced,
     mark_board_post_pending,
     mark_board_post_synced,
-    pending_board_posts,
-    pending_board_resolves,
     remote_board_post_id,
 )
 from .memory_board_client import (
@@ -70,6 +73,9 @@ from .memory_writer import memory_write as memory_write_file
 
 logger = logging.getLogger(__name__)
 
+_board_sync_threads_lock = threading.Lock()
+_board_sync_threads: WeakValueDictionary[str, threading.Thread] = WeakValueDictionary()
+
 
 def _estimate_tokens(text: str) -> int:
     return max(1, (len(text) + 3) // 4)
@@ -102,7 +108,7 @@ def _board_runtime_identity(config: MemoryConfig, args: dict[str, Any]) -> dict[
 def _sync_pending_board_posts(config: MemoryConfig, *, max_items: int = 20) -> dict[str, int]:
     attempted = 0
     synced = 0
-    for local_post in pending_board_posts(config, max_items=max_items):
+    for local_post in claim_pending_board_posts(config, max_items=max_items):
         attempted += 1
         local_post_id = str(local_post.get("post_id") or "")
         local_thread_id = _none_if_blank(local_post.get("thread_id"))
@@ -128,18 +134,30 @@ def _sync_pending_board_posts(config: MemoryConfig, *, max_items: int = 20) -> d
             payload["post_type"] = str(local_post.get("post_type") or "note")
             remote = remote_board_post(config, payload)
         if not remote.get("ok"):
+            mark_board_post_sync_failed(
+                config,
+                local_post_id,
+                str(remote.get("message") or remote.get("error") or "remote_sync_failed"),
+                retry_after_seconds=remote.get("retry_after_seconds"),
+            )
             continue
         body = remote.get("remote") if isinstance(remote.get("remote"), dict) else {}
         remote_post = body.get("post") if isinstance(body.get("post"), dict) else {}
         mark_board_post_synced(config, local_post_id, remote_post)
         synced += 1
 
-    for local_post in pending_board_resolves(config, max_items=max_items):
+    for local_post in claim_pending_board_resolves(config, max_items=max_items):
         attempted += 1
         local_post_id = str(local_post.get("post_id") or "")
         remote_id = remote_board_post_id(config, local_post_id)
         remote = remote_board_resolve(config, {"post_id": remote_id})
         if not remote.get("ok"):
+            mark_board_resolve_sync_failed(
+                config,
+                local_post_id,
+                str(remote.get("message") or remote.get("error") or "remote_sync_failed"),
+                retry_after_seconds=remote.get("retry_after_seconds"),
+            )
             continue
         mark_board_resolve_synced(config, local_post_id)
         synced += 1
@@ -147,14 +165,20 @@ def _sync_pending_board_posts(config: MemoryConfig, *, max_items: int = 20) -> d
 
 
 def _schedule_board_sync(config: MemoryConfig) -> None:
-    thread = threading.Thread(
-        target=_sync_pending_board_posts,
-        args=(config,),
-        kwargs={"max_items": 20},
-        name="memory-board-sync",
-        daemon=True,
-    )
-    thread.start()
+    key = str(config.repo_root.resolve())
+    with _board_sync_threads_lock:
+        current = _board_sync_threads.get(key)
+        if current is not None and current.is_alive():
+            return
+        thread = threading.Thread(
+            target=_sync_pending_board_posts,
+            args=(config,),
+            kwargs={"max_items": 20},
+            name="memory-board-sync",
+            daemon=True,
+        )
+        _board_sync_threads[key] = thread
+        thread.start()
 
 
 def _merge_board_items(

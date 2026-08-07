@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+from email.message import Message
+from io import BytesIO
+from urllib.error import HTTPError
 
 from servers.memory_server.memory_sync_client import MemoryHubClient, _SSL_CONTEXT
 from servers.memory_server.memory_sync_config import SharedMemoryConfig
@@ -59,6 +62,38 @@ def test_configured_client_uses_https_url_and_environment_token(monkeypatch) -> 
         "payload": {"events": []},
         "timeout": 5.0,
         "context": _SSL_CONTEXT,
+    }
+
+
+def test_http_error_preserves_json_body_and_retry_after(monkeypatch) -> None:
+    monkeypatch.setenv("TEST_MEMORY_HUB_TOKEN", "mem_v1.test.secret")
+    headers = Message()
+    headers["Retry-After"] = "17"
+
+    def fake_urlopen(*_args, **_kwargs):
+        raise HTTPError(
+            "https://memory.example.com/board/post",
+            429,
+            "Too Many Requests",
+            headers,
+            BytesIO(b'{"detail":"rate limit exceeded"}'),
+        )
+
+    monkeypatch.setattr("servers.memory_server.memory_sync_client.urlopen", fake_urlopen)
+    client = MemoryHubClient(
+        SharedMemoryConfig(
+            enabled=True,
+            server_url="https://memory.example.com",
+            project_id="project-1",
+            token_env="TEST_MEMORY_HUB_TOKEN",
+        )
+    )
+    status, response = client.post("/board/post", {}, 1.0)
+    assert status == 429
+    assert response == {
+        "detail": "rate limit exceeded",
+        "error": "http_429",
+        "retry_after_seconds": 17.0,
     }
 
 

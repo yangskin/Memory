@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from servers.memory_server.memory_config import load_config
+from servers.memory_server.memory_board import (
+    claim_pending_board_posts,
+    mark_board_post_pending,
+    mark_board_post_sync_failed,
+)
 from servers.memory_server.server import _dispatch_tool
 from servers.memory_server import server_dispatch as dispatch_module
 
@@ -225,6 +231,48 @@ def test_board_falls_back_to_local_when_remote_fails(repo: Path, monkeypatch) ->
     assert result["board_sync"]["queued"] is True
     assert result["board_sync"]["non_blocking"] is True
     assert result["post"]["remote_sync"] == "pending"
+
+
+def test_board_claim_is_atomic_and_failure_is_backed_off(repo: Path, monkeypatch) -> None:
+    config = load_config(repo)
+    monkeypatch.setattr(dispatch_module, "_schedule_board_sync", lambda _config: None)
+    posted = _dispatch_tool(
+        config,
+        "memory_write",
+        {"operation": "board", "action": "post", "post_type": "note", "content_markdown": "claim once"},
+    )
+    post_id = posted["post"]["post_id"]
+
+    assert [item["post_id"] for item in claim_pending_board_posts(config)] == [post_id]
+    assert claim_pending_board_posts(config) == []
+
+    mark_board_post_sync_failed(config, post_id, "http_429", retry_after_seconds=30)
+    assert claim_pending_board_posts(config) == []
+    local = dispatch_module.board_query(config, max_items=20)["items"][0]
+    assert local["remote_sync"] == "pending"
+    assert local["remote_sync_attempts"] == 1
+    assert local["remote_sync_last_error"] == "http_429"
+    assert local["remote_sync_next_retry_at"]
+
+
+def test_board_sync_schedule_is_single_flight_per_repo(repo: Path, monkeypatch) -> None:
+    config = load_config(repo)
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def blocking_sync(_config, *, max_items):
+        calls.append(max_items)
+        started.set()
+        release.wait(timeout=2)
+        return {"attempted": 0, "synced": 0}
+
+    monkeypatch.setattr(dispatch_module, "_sync_pending_board_posts", blocking_sync)
+    dispatch_module._schedule_board_sync(config)
+    assert started.wait(timeout=1)
+    dispatch_module._schedule_board_sync(config)
+    assert calls == [20]
+    release.set()
 
 
 def test_board_query_retries_pending_local_post_to_remote(repo: Path, monkeypatch) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import math
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -38,6 +39,17 @@ def _ensure_board_content_safe(content: str) -> None:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "board content appears to include secret material")
 
 
+def _enforce_rate_limit(request: Request, principal: Principal, category: str, limit: int) -> None:
+    decision = request.app.state.rate_limiter.check(principal.token_id, category, limit)
+    if not decision.allowed:
+        retry_after = max(1, math.ceil(decision.retry_after_seconds))
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "rate limit exceeded",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
 def _item(post: BoardPost, *, include_content: bool = False, include_references: bool = False) -> dict[str, object]:
     result: dict[str, object] = {
         "post_id": str(post.post_id),
@@ -69,8 +81,7 @@ def _item(post: BoardPost, *, include_content: bool = False, include_references:
 @router.post("/v1/projects/{project_id}/board/query")
 def board_query(project_id: str, payload: BoardQueryRequest, request: Request, principal: Principal = Depends(require_principal("context:read"))) -> dict[str, object]:
     _assert_project(principal, project_id)
-    if not request.app.state.rate_limiter.allow(principal.token_id, "board_read", 120):
-        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "rate limit exceeded")
+    _enforce_rate_limit(request, principal, "board_read", 120)
     factory = request.app.state.session_factory
     with factory() as session:
         items = list_board_posts(
@@ -98,8 +109,6 @@ def board_query(project_id: str, payload: BoardQueryRequest, request: Request, p
 @router.post("/v1/projects/{project_id}/board/post")
 def board_post(project_id: str, payload: BoardPostRequest, request: Request, principal: Principal = Depends(require_principal("events:write"))) -> dict[str, object]:
     _assert_project(principal, project_id)
-    if not request.app.state.rate_limiter.allow(principal.token_id, "board_write", 60):
-        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "rate limit exceeded")
     _ensure_board_content_safe(payload.content)
 
     now = datetime.now(UTC)
@@ -111,6 +120,7 @@ def board_post(project_id: str, payload: BoardPostRequest, request: Request, pri
         if existing is not None:
             _assert_project(principal, existing.project_id)
             return {"ok": True, "operation": "board", "action": "post", "post": _item(existing)}
+        _enforce_rate_limit(request, principal, "board_write", 60)
         item = BoardPost(
             post_id=post_id,
             project_id=project_id,
@@ -142,8 +152,6 @@ def board_post(project_id: str, payload: BoardPostRequest, request: Request, pri
 @router.post("/v1/projects/{project_id}/board/reply")
 def board_reply(project_id: str, payload: BoardReplyRequest, request: Request, principal: Principal = Depends(require_principal("events:write"))) -> dict[str, object]:
     _assert_project(principal, project_id)
-    if not request.app.state.rate_limiter.allow(principal.token_id, "board_write", 60):
-        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "rate limit exceeded")
     _ensure_board_content_safe(payload.content)
 
     factory = request.app.state.session_factory
@@ -153,6 +161,7 @@ def board_reply(project_id: str, payload: BoardReplyRequest, request: Request, p
             if existing is not None:
                 _assert_project(principal, existing.project_id)
                 return {"ok": True, "operation": "board", "action": "reply", "post": _item(existing)}
+        _enforce_rate_limit(request, principal, "board_write", 60)
         reply_to = payload.reply_to
         thread_id = payload.thread_id
         if reply_to is not None:
@@ -198,14 +207,14 @@ def board_reply(project_id: str, payload: BoardReplyRequest, request: Request, p
 @router.post("/v1/projects/{project_id}/board/resolve")
 def board_resolve(project_id: str, payload: BoardResolveRequest, request: Request, principal: Principal = Depends(require_principal("events:write"))) -> dict[str, object]:
     _assert_project(principal, project_id)
-    if not request.app.state.rate_limiter.allow(principal.token_id, "board_write", 60):
-        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "rate limit exceeded")
-
     factory = request.app.state.session_factory
     with factory() as session:
         item = board_post_by_id(session, project_id, payload.post_id)
         if item is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "post not found")
+        if item.status == "resolved":
+            return {"ok": True, "operation": "board", "action": "resolve", "post": _item(item)}
+        _enforce_rate_limit(request, principal, "board_write", 60)
         item.status = "resolved"
         item.updated_at = datetime.now(UTC)
         session.commit()
@@ -221,8 +230,7 @@ def shared_board(payload: BoardQueryRequest, request: Request, principal: Princi
     body. Returns the newest bounded set of open and resolved posts; full
     content and references require explicit request flags.
     """
-    if not request.app.state.rate_limiter.allow(principal.token_id, "board_read", 120):
-        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "rate limit exceeded")
+    _enforce_rate_limit(request, principal, "board_read", 120)
     project_id = principal.project_id
     factory = request.app.state.session_factory
     with factory() as session:
