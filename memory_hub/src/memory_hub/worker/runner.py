@@ -125,6 +125,8 @@ def run_once(session: Session, provider: BriefProvider | None = None, *, worker_
             if brief_type == "user_recent" and subject_user_id:
                 visibility = (or_(MemoryEvent.user_id == subject_user_id, MemoryEvent.scope.in_({"shared", "project_shared", "org_shared"})),)
             records = list(session.scalars(select(MemoryEvent).where(MemoryEvent.project_id == project_id, MemoryEvent.occurred_at >= window_start, MemoryEvent.server_seq <= claimed_through_seq, *visibility).order_by(MemoryEvent.occurred_at.desc(), MemoryEvent.server_seq.desc()).limit(500)))
+            if brief_type == "project_recent" and not records:
+                records = list(session.scalars(select(MemoryEvent).where(MemoryEvent.project_id == project_id, MemoryEvent.server_seq <= claimed_through_seq, *visibility).order_by(MemoryEvent.occurred_at.desc(), MemoryEvent.server_seq.desc()).limit(500)))
             records.sort(key=lambda event: event.server_seq)
             event_payloads = [_visible_event(event, brief_type) for event in records]
             source_ids = {str(event.event_id) for event in records}

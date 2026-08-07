@@ -27,12 +27,33 @@ def test_worker_creates_project_brief_snapshot_and_head() -> None:
         session.flush()
         session.add(BriefJob(job_key=f"project_recent:{project_id}:-", project_id=project_id, brief_type="project_recent", subject_user_id=None, requested_through_seq=event.server_seq, not_before=datetime.now(UTC) - timedelta(seconds=1), status="pending"))
         session.commit()
-        assert run_once(session, worker_id="integration-worker") >= 1
+        assert run_once(session, worker_id="integration-worker", max_jobs=1000) >= 1
         head = session.get(BriefHead, (project_id, "project_recent", ""))
         assert head is not None
         snapshot = session.get(BriefSnapshot, head.current_brief_id)
         assert snapshot is not None
         assert str(event_id) in snapshot.source_event_ids
+
+
+def test_worker_falls_back_to_latest_shared_events_when_project_window_is_empty() -> None:
+    factory = create_session_factory(load_settings().database_url or "")
+    project_id = f"worker-project-fallback-{uuid4().hex}"
+    shared_event_id = uuid4()
+    personal_event_id = uuid4()
+    with factory() as session:
+        occurred_at = datetime.now(UTC) - timedelta(hours=25)
+        shared_event = MemoryEvent(event_id=shared_event_id, project_id=project_id, user_id="worker-user", agent_id="pytest", agent_instance_id="pytest-1", operation="record", scope="project_shared", content_markdown="recent shared fallback", metadata_json={}, occurred_at=occurred_at, content_hash="sha256:" + "9" * 64)
+        personal_event = MemoryEvent(event_id=personal_event_id, project_id=project_id, user_id="worker-user", agent_id="pytest", agent_instance_id="pytest-1", operation="record", scope="personal", content_markdown="private event", metadata_json={}, occurred_at=occurred_at, content_hash="sha256:" + "a" * 64)
+        session.add_all([shared_event, personal_event])
+        session.flush()
+        session.add(BriefJob(job_key=f"project_recent:{project_id}:-", project_id=project_id, brief_type="project_recent", subject_user_id=None, requested_through_seq=personal_event.server_seq, not_before=datetime.now(UTC) - timedelta(seconds=1), status="pending"))
+        session.commit()
+        assert run_once(session, worker_id="fallback-worker", max_jobs=1000) >= 1
+        head = session.get(BriefHead, (project_id, "project_recent", ""))
+        assert head is not None
+        snapshot = session.get(BriefSnapshot, head.current_brief_id)
+        assert snapshot is not None
+        assert snapshot.source_event_ids == [str(shared_event_id)]
 
 
 def test_worker_keeps_dirty_job_when_event_arrives_during_generation() -> None:
