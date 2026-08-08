@@ -35,12 +35,15 @@ def test_shared_page_serves_graph_renderer() -> None:
     assert "cytoscape" in script_response.text[:500].lower()
     assert 'layout: { name: "cose"' in page_response.text
     assert "projectGraphDetails(nodes, edges)" in page_response.text
-    assert 'node.type === "task" || degree[node.id] !== 1' in page_response.text
+    assert 'if (degree[node.id] !== 1) return;' in page_response.text
+    assert 'node.type === "task"' not in page_response.text
     assert "members.length < 2 || expandedGraphGroups[key]" in page_response.text
     assert 'expandedGraphGroups[selected.data("key")] = true' in page_response.text
     assert 'selected.removeClass("faded").addClass("focused")' in page_response.text
     assert 'selected.connectedEdges().removeClass("faded").addClass("context")' in page_response.text
     assert "selected.closedNeighborhood()" not in page_response.text
-    assert 'data-graph-mode="core"' in page_response.text
-    assert 'data-graph-mode="context"' in page_response.text
-    assert 'edge.origin === "client_delta" || edge.origin === "mixed"' in page_response.text
+    assert "共同记忆补充" not in page_response.text
+    assert "graph-mode-btn" not in page_response.text
+    assert "共同记忆来源" in page_response.text
+    assert "edge[relation = 'documents']" in page_response.text
+    assert "暂无带实体标注的共同记忆。" in page_response.text

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from .base import ProjectBriefRequest, ProjectBriefResult, UserBriefRequest, UserBriefResult
+from .base import ProjectBriefRequest, ProjectBriefResult, ProjectGraphRequest, ProjectGraphResult, UserBriefRequest, UserBriefResult
 
 
 def _event_ids(events: list[dict[str, object]]) -> list[str]:
@@ -44,5 +44,16 @@ class FakeBriefProvider:
                 "build_and_test_status": [],
                 "recent_decisions": [],
                 "source_event_ids": source_ids,
+            }
+        )
+
+    def generate_project_graph(self, request: ProjectGraphRequest) -> ProjectGraphResult:
+        return ProjectGraphResult(
+            structured_graph={
+                "schema_version": "1.0",
+                "as_of": datetime.now(UTC).isoformat(),
+                "nodes": [],
+                "edges": [],
+                "source_event_ids": [],
             }
         )

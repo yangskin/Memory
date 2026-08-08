@@ -38,7 +38,7 @@ def main() -> None:
     lease_seconds = max(90, int(settings.llm_timeout_seconds) + 30)
     while True:
         with factory() as session:
-            processed = run_once(session, provider, worker_id=worker_id, lease_seconds=lease_seconds, model_name=model_name, rebase_interval_seconds=settings.brief_rebase_interval_seconds)
+            processed = run_once(session, provider, worker_id=worker_id, lease_seconds=lease_seconds, model_name=model_name, rebase_interval_seconds=settings.brief_rebase_interval_seconds, project_graph_semantic_enabled=settings.project_graph_semantic_enabled)
         try:
             with factory() as session:
                 projected = project_pending(session)

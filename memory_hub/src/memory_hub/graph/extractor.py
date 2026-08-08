@@ -1,4 +1,4 @@
-"""Extract graph facts only from structured event fields."""
+"""Extract semantic graph facts from explicit client graph deltas."""
 
 from __future__ import annotations
 
@@ -39,31 +39,14 @@ class InvalidGraphDelta(ValueError):
     """Raised when an explicitly submitted graph delta fails validation."""
 
 
-_ENTITY_FIELDS = (
-    ("active_files", "file"),
-    ("class_names", "class"),
-    ("module_names", "module"),
-    ("asset_paths", "asset"),
-    ("blueprint_paths", "blueprint"),
-    ("map_names", "map"),
-    ("plugin_names", "plugin"),
-)
-
+# Accept legacy task anchors for delta compatibility, but do not project them into
+# the human-facing graph.
 _ALLOWED_NODE_TYPES = frozenset({"task", "system", "file", "class", "module", "asset", "blueprint", "map", "plugin"})
 _ALLOWED_RELATIONS = frozenset({"affects", "depends_on", "implements", "validates", "caused_by", "supersedes"})
 _MAX_DELTA_NODES = 30
 _MAX_DELTA_EDGES = 50
 _MAX_EDGE_EVIDENCE_IDS = 16
 _MAX_EVIDENCE_ID_LENGTH = 256
-
-
-def _values(metadata: dict[str, Any], field: str) -> list[str]:
-    value = metadata.get(field)
-    if isinstance(value, str):
-        value = [value]
-    if not isinstance(value, list):
-        return []
-    return sorted({text for item in value if (text := str(item).strip()) and len(text) <= MAX_NODE_KEY_LENGTH})
 
 
 def _delta_facts(metadata: dict[str, Any], task_id: str) -> GraphFacts | None:
@@ -145,33 +128,20 @@ def validate_graph_delta(metadata: dict[str, Any], task_id: str) -> GraphFacts:
     return facts
 
 
+def _semantic_facts(facts: GraphFacts) -> GraphFacts:
+    edges = tuple(edge for edge in facts.edges if edge.source[0] != "task" and edge.target[0] != "task")
+    referenced_nodes = {identity for edge in edges for identity in (edge.source, edge.target)}
+    nodes = tuple(node for node in facts.nodes if (node.node_type, node.node_key) in referenced_nodes)
+    return GraphFacts(nodes, edges)
+
+
 def extract_event_facts(event: Any) -> GraphFacts:
     if event.scope not in PROJECT_VISIBLE_SCOPES:
         return GraphFacts((), ())
 
-    nodes: dict[tuple[str, str], NodeFact] = {}
-    edges: set[EdgeFact] = set()
-
-    def add_node(node_type: str, name: str, **metadata: Any) -> tuple[str, str]:
-        key = name.strip()
-        identity = (node_type, key)
-        nodes[identity] = NodeFact(node_type, key, key, metadata)
-        return identity
-
     task_name = str(event.task_id or "").strip()
-    task = add_node("task", task_name, task_run_id=event.task_run_id) if task_name else None
-
-    entities: list[tuple[str, str]] = []
     metadata = event.metadata_json if isinstance(event.metadata_json, dict) else {}
     delta = _delta_facts(metadata, task_name)
     if delta is not None:
-        return delta
-    system_area = str(metadata.get("system_area") or "").strip()
-    if system_area and len(system_area) <= MAX_NODE_KEY_LENGTH:
-        entities.append(add_node("system", system_area))
-    for field, node_type in _ENTITY_FIELDS:
-        entities.extend(add_node(node_type, value) for value in _values(metadata, field))
-
-    if task:
-        edges.update(EdgeFact(task, entity, "affects") for entity in entities)
-    return GraphFacts(tuple(nodes[key] for key in sorted(nodes)), tuple(sorted(edges, key=lambda item: (item.source, item.target, item.relation_type))))
+        return _semantic_facts(delta)
+    return GraphFacts((), ())

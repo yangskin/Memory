@@ -58,20 +58,27 @@ Brief 是可重建的派生视图，不是事件真源。Worker 失败时保留�
 
 ### 3.1 Project Graph 旁路
 
-Project Graph 是从 `MemoryEvent` 结构化 metadata 确定性提取的项目级派生视图，不调用
-LLM，也不参与事件 ingest、Brief、Board 或 `shared_context` 的默认返回路径。只有
-`shared`、`project_shared` 和 `org_shared` 事件会进入 Graph；`personal`、`session`、
-`user_private` 等范围在投影前直接跳过。
+Project Graph 是从 `MemoryEvent` 和当前 `project_graph` 快照重建的项目级派生视图，不参与
+事件 ingest、Brief、Board 或 `shared_context` 的默认返回路径。只有 `shared`、
+`project_shared` 和 `org_shared` 事件会进入 Graph；`personal`、`session`、`user_private`
+等范围在投影前直接跳过。
 
-当前节点类型包括 `agent`、`task`、`file`、`class`、`module`、`asset`、`blueprint`、
-`map`、`plugin` 和 `system`。Agent 与 Task 通过 `performed` 关联，Task/Agent 与事件
-metadata 中的项目实体通过 `affects` 关联。节点和边使用项目限定的确定性 UUID，因此重复
-投影不会生成重复图数据；边最多保留最近 256 个来源事件 ID，避免单行派生数据无限膨胀。
+共同记忆正文只有在 metadata 含明确的 `file`、`class`、`module`、`asset`、`blueprint`、
+`map` 或 `plugin` 实体时才会形成来源图：事件 ID 形成 `source` 节点，并通过确定性的
+`documents` 边连接它列出的实体。该关系仅表示“此来源记录了该实体”。`task_id`、任务标题、
+`system_area`、报告标题和 metadata 共现不会产生实体或关系。
+
+实体间的 `depends_on`、`implements`、`validates`、`caused_by`、`supersedes` 只接受明确的
+客户端 `graph_delta` 或可选服务端 LLM 提议；服务端提议必须引用一条同时列出两个端点的真实
+事件。任务锚点与 `affects` 兼容接收但不投影。`PROJECT_GRAPH_SEMANTIC_ENABLED=false` 是默认
+值，因此来源图无需模型调用；只在项目已有稳定实体标注及可信关系时才开启语义补充。节点和边
+使用项目限定的确定性 UUID，因此重复投影不会生成重复图数据；边最多保留最近 256 个来源
+事件 ID，避免单行派生数据无限膨胀。
 
 Hub 接口：
 
 - `GET /v1/projects/{project_id}/graph`：读取最多 200 节点、400 边的有界快照。
-- `POST /v1/projects/{project_id}/graph/query`：按 task、文件、类、模块、资产、Blueprint、Map、Plugin 或 system area 查询；默认 `depth=1`、50 节点、100 边，最大 `depth=2`、200 节点、400 边。
+- `POST /v1/projects/{project_id}/graph/query`：按 task、文件、类、模块、资产、Blueprint、Map 或 Plugin 查询；默认 `depth=1`、50 节点、100 边，最大 `depth=2`、200 节点、400 边。
 
 两个接口都需要 Token 的 `context:read` scope，项目身份只取自 Token；路径项目不匹配时返回
 `403`。响应中的 `freshness` 包含已投影的 `covers_through_seq`、项目最新事件序号和

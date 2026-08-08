@@ -51,20 +51,11 @@ def test_build_task_graph_delta_is_bounded_and_observed(monkeypatch) -> None:
     assert delta["version"] == "1.0"
     assert delta["delta_id"].startswith("sha256:")
     assert {node["key"] for node in delta["nodes"]} == {
-        "task-7",
         "sync",
         "outbox",
         "servers/memory_server/memory_sync_store.py",
     }
-    outbox_edge = next(edge for edge in delta["edges"] if edge["target"]["key"] == "outbox")
-    assert outbox_edge == {
-        "source": {"type": "task", "key": "task-7"},
-        "target": {"type": "module", "key": "outbox"},
-        "relation": "affects",
-        "origin": "observed",
-        "confidence": 1.0,
-        "evidence_ids": ["rec-1", "rec-2"],
-    }
+    assert delta["edges"] == []
 
 
 def test_build_task_graph_delta_rejects_missing_task_id() -> None:
@@ -88,11 +79,11 @@ def test_build_task_graph_delta_excludes_private_and_evidence_free_records(monke
 
     delta = build_task_graph_delta(SimpleNamespace(), task_id="task-7")["graph_delta"]
 
-    assert {node["key"] for node in delta["nodes"]} == {"task-7", "public"}
-    assert delta["edges"][0]["evidence_ids"] == ["shared"]
+    assert {node["key"] for node in delta["nodes"]} == {"public"}
+    assert delta["edges"] == []
 
 
-def test_build_task_graph_delta_always_retains_task_node_at_limit(monkeypatch) -> None:
+def test_build_task_graph_delta_retains_real_entity_nodes_at_limit(monkeypatch) -> None:
     _disable_record_index(monkeypatch)
     records = [
         SimpleNamespace(
@@ -112,12 +103,12 @@ def test_build_task_graph_delta_always_retains_task_node_at_limit(monkeypatch) -
 
     delta = build_task_graph_delta(SimpleNamespace(), task_id="zz-task")["graph_delta"]
 
-    assert delta["nodes"][0] == {"type": "task", "key": "zz-task", "name": "zz-task"}
+    assert all(node["type"] != "task" for node in delta["nodes"])
     assert len(delta["nodes"]) == 30
-    assert len(delta["edges"]) == 29
+    assert delta["edges"] == []
 
 
-def test_build_task_graph_delta_caps_evidence_per_edge(monkeypatch) -> None:
+def test_build_task_graph_delta_does_not_make_observed_task_edges(monkeypatch) -> None:
     _disable_record_index(monkeypatch)
     records = [
         SimpleNamespace(
@@ -137,10 +128,11 @@ def test_build_task_graph_delta_caps_evidence_per_edge(monkeypatch) -> None:
 
     delta = build_task_graph_delta(SimpleNamespace(), task_id="task-7")["graph_delta"]
 
-    assert delta["edges"][0]["evidence_ids"] == [f"rec-{index:03}" for index in range(16)]
+    assert {node["key"] for node in delta["nodes"]} == {"core"}
+    assert delta["edges"] == []
 
 
-def test_build_task_graph_delta_id_changes_with_evidence(monkeypatch) -> None:
+def test_build_task_graph_delta_ignores_record_ids_without_semantic_edges(monkeypatch) -> None:
     _disable_record_index(monkeypatch)
     records = [
         SimpleNamespace(
@@ -161,7 +153,7 @@ def test_build_task_graph_delta_id_changes_with_evidence(monkeypatch) -> None:
 
     second = build_task_graph_delta(SimpleNamespace(), task_id="task-7")["graph_delta"]
 
-    assert first["delta_id"] != second["delta_id"]
+    assert first["delta_id"] == second["delta_id"]
 
 
 def test_build_task_graph_delta_uses_exact_task_index_paths(monkeypatch) -> None:
@@ -207,6 +199,7 @@ def test_build_task_knowledge_graph_accepts_evidence_bounded_inferences(monkeypa
     semantic = next(edge for edge in result["graph_delta"]["edges"] if edge["relation"] == "implements")
     assert semantic["origin"] == "inferred"
     assert semantic["evidence_ids"] == ["rec-1"]
+    assert all(node["type"] != "task" for node in result["graph_delta"]["nodes"])
 
 
 def test_build_task_knowledge_graph_rejects_unknown_evidence(monkeypatch) -> None:
@@ -224,7 +217,7 @@ def test_build_task_knowledge_graph_rejects_unknown_evidence(monkeypatch) -> Non
     config = SimpleNamespace(repo_root=None, llm_defaults={"capabilities": {"generate_task_graph_delta": {"enabled": True}}})
     result = build_task_knowledge_graph_delta(config, task_id="task-7", client_factory=lambda _profile: Client())
 
-    assert {edge["relation"] for edge in result["graph_delta"]["edges"]} == {"affects"}
+    assert result["graph_delta"]["edges"] == []
     assert "storage" not in {node["key"] for node in result["graph_delta"]["nodes"]}
 
 

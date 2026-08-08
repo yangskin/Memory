@@ -90,10 +90,6 @@
   [data-theme="dark"] .board-post .body pre, [data-theme="dark"] .board-post .body code { background: #111827; }
   .graph-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; color: var(--muted); font-size: 13px; }
   .graph-toolbar input { min-width: 240px; flex: 1; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--card-soft); color: var(--ink); }
-  .graph-mode { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-  .graph-mode button { border-radius: 0; padding: 7px 10px; background: var(--card-soft); color: var(--muted); }
-  .graph-mode button + button { border-left: 1px solid var(--line); }
-  .graph-mode button.active { background: var(--brand); color: #fff; }
   .graph-canvas { height: min(68vh, 680px); min-height: 520px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background-color: var(--card-soft); background-image: radial-gradient(var(--graph-grid) 1px, transparent 1px); background-size: 18px 18px; }
   .graph-canvas .empty, .graph-canvas .errorbox { margin: 18px; }
   .graph-legend { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; color: var(--muted); font-size: 12px; }
@@ -240,16 +236,12 @@
   <section class="card" style="grid-column:1 / -1">
     <h2>项目 Graph <span class="source-badge" id="graphFreshness">未连接</span></h2>
     <div class="graph-toolbar">
-      <div class="graph-mode" role="group" aria-label="Graph 视图">
-        <button class="graph-mode-btn active" data-graph-mode="core" title="客户端确认的关系">核心关系</button>
-        <button class="graph-mode-btn" data-graph-mode="context" title="加入共同记忆的结构化上下文">共同记忆补充</button>
-      </div>
       <input id="graphSearch" type="search" placeholder="输入节点关键词，例如文件、类或模块" autocomplete="off">
       <button id="graphRefreshBtn" disabled>刷新 Graph</button>
       <span id="graphStats">—</span>
     </div>
     <div class="graph-canvas" id="graphArea"><div class="empty">连接后加载项目 Graph。</div></div>
-    <div class="graph-legend"><span><i class="legend-dot" style="background:#4f6ef7"></i>任务</span><span><i class="legend-dot" style="background:#0e9f9f"></i>文件</span><span><i class="legend-dot" style="background:#d9822b"></i>类 / 模块</span><span><i class="legend-dot" style="background:#b06ad4"></i>资源</span></div>
+    <div class="graph-legend"><span><i class="legend-dot" style="background:#6b7590"></i>共同记忆来源</span><span><i class="legend-dot" style="background:#0e9f9f"></i>文件</span><span><i class="legend-dot" style="background:#d9822b"></i>类 / 模块</span><span><i class="legend-dot" style="background:#b06ad4"></i>资源</span></div>
   </section>
   </div>
 
@@ -283,7 +275,6 @@
   var lastUpdated = document.getElementById("lastUpdated");
   var projectId = document.getElementById("projectId");
   var graph = null;
-  var graphMode = "core";
   var hasBriefContent = false;
   var hasFeedContent = false;
 
@@ -542,8 +533,8 @@
     });
     area.innerHTML = html;
   }
-  var GRAPH_COLORS = { task: "#4f6ef7", file: "#0e9f9f", "class": "#d9822b", module: "#d9822b", asset: "#b06ad4", blueprint: "#b06ad4", map: "#b06ad4", plugin: "#7a5af5", system: "#6b7590" };
-  var GRAPH_TYPE_LABELS = { task: "任务", file: "文件", "class": "类", module: "模块", asset: "资源", blueprint: "蓝图", map: "地图", plugin: "插件", system: "系统区域" };
+  var GRAPH_COLORS = { source: "#6b7590", file: "#0e9f9f", "class": "#d9822b", module: "#d9822b", asset: "#b06ad4", blueprint: "#b06ad4", map: "#b06ad4", plugin: "#7a5af5", system: "#6b7590" };
+  var GRAPH_TYPE_LABELS = { source: "共同记忆", file: "文件", "class": "类", module: "模块", asset: "资源", blueprint: "蓝图", map: "地图", plugin: "插件", system: "显式系统" };
   var expandedGraphGroups = {};
   function graphNodeLabel(node) {
     var value = node.name || node.key || node.type;
@@ -562,7 +553,7 @@
     });
     var groups = {};
     nodes.forEach(function (node) {
-      if (node.type === "task" || degree[node.id] !== 1) return;
+      if (degree[node.id] !== 1) return;
       var edge = incident[node.id][0];
       var outgoing = edge.source === node.id;
       var neighbor = outgoing ? edge.target : edge.source;
@@ -597,13 +588,6 @@
       edges: edges.filter(function (edge) { return !hidden[edge.source] && !hidden[edge.target]; }).concat(aggregateEdges)
     };
   }
-  function selectGraphMode(nodes, edges) {
-    if (graphMode === "context") return { nodes: nodes, edges: edges };
-    var coreEdges = edges.filter(function (edge) { return edge.origin === "client_delta" || edge.origin === "mixed"; });
-    var connected = {};
-    coreEdges.forEach(function (edge) { connected[edge.source] = true; connected[edge.target] = true; });
-    return { nodes: nodes.filter(function (node) { return connected[node.id]; }), edges: coreEdges };
-  }
   function destroyGraph() {
     if (graph) { graph.destroy(); graph = null; }
   }
@@ -611,9 +595,6 @@
     var area = document.getElementById("graphArea");
     var nodes = (data && data.nodes) || [];
     var edges = (data && data.edges) || [];
-    var selected = selectGraphMode(nodes, edges);
-    nodes = selected.nodes;
-    edges = selected.edges;
     var query = document.getElementById("graphSearch").value.trim().toLowerCase();
     if (query) {
       var matched = {};
@@ -631,18 +612,21 @@
     var projected = projectGraphDetails(nodes, edges);
     nodes = projected.nodes;
     edges = projected.edges;
-    document.getElementById("graphStats").textContent = (graphMode === "core" ? "核心 · " : "补充 · ") + nodes.length + " 个节点 · " + edges.length + " 条关系";
+    var sourceCount = nodes.filter(function (node) { return node.type === "source"; }).length;
+    var provenanceCount = edges.filter(function (edge) { return edge.relation_type === "documents"; }).length;
+    var semanticCount = edges.length - provenanceCount;
+    document.getElementById("graphStats").textContent = nodes.length + " 个节点 · " + sourceCount + " 个来源 · " + provenanceCount + " 条来源链路 · " + semanticCount + " 条实体关系";
     var freshness = (data && data.freshness) || {};
     var freshEl = document.getElementById("graphFreshness");
     freshEl.textContent = freshness.stale ? "投影整理中" : "已同步";
     destroyGraph();
-    if (!nodes.length) { area.innerHTML = '<div class="empty">' + (graphMode === "core" ? "暂无客户端确认的核心关系。" : "当前查询没有匹配的节点。") + "</div>"; return; }
+    if (!nodes.length) { area.innerHTML = '<div class="empty">暂无带实体标注的共同记忆。</div>'; return; }
     area.innerHTML = "";
     var elements = nodes.map(function (node) {
-      return { data: { id: node.id, label: graphNodeLabel(node), color: GRAPH_COLORS[node.type] || "#6b7590", type: GRAPH_TYPE_LABELS[node.type] || node.type, key: node.key, aggregate: node.aggregate ? 1 : 0, memberCount: node.member_count || 0 } };
+      return { data: { id: node.id, label: graphNodeLabel(node), color: GRAPH_COLORS[node.type] || "#6b7590", type: GRAPH_TYPE_LABELS[node.type] || node.type, key: node.key, aggregate: node.aggregate ? 1 : 0, memberCount: node.member_count || 0, source: node.type === "source" ? 1 : 0 } };
     });
     edges.forEach(function (edge, index) {
-      elements.push({ data: { id: "edge-" + index, source: edge.source, target: edge.target, relation: edge.relation_type, count: edge.source_event_count || 1 } });
+      elements.push({ data: { id: "edge-" + index, source: edge.source, target: edge.target, relation: edge.relation_type, count: edge.source_event_count || 1, origin: edge.origin || "" } });
     });
     var styles = getComputedStyle(document.documentElement);
     graph = cytoscape({
@@ -652,8 +636,10 @@
       maxZoom: 2.5,
       style: [
         { selector: "node", style: { "background-color": "data(color)", "border-color": styles.getPropertyValue("--card").trim(), "border-width": 2, "color": "#fff", "font-size": 11, "font-weight": 600, "height": 42, "label": "data(label)", "shape": "round-rectangle", "text-halign": "center", "text-valign": "center", "text-wrap": "ellipsis", "text-max-width": 116, "width": 138 } },
+        { selector: "node[source = 1]", style: { "border-style": "dashed", "border-width": 3, "font-size": 10, "height": 48, "text-max-width": 154, "width": 176 } },
         { selector: "node[aggregate = 1]", style: { "border-style": "dashed", "border-width": 3 } },
         { selector: "edge", style: { "curve-style": "bezier", "line-color": styles.getPropertyValue("--graph-edge").trim(), "opacity": 0.58, "target-arrow-color": styles.getPropertyValue("--graph-edge").trim(), "target-arrow-shape": "triangle", "arrow-scale": 0.75, "width": 1.4 } },
+        { selector: "edge[relation = 'documents']", style: { "line-style": "dashed", "opacity": 0.42, "target-arrow-shape": "none", "width": 1.2 } },
         { selector: ".faded", style: { "opacity": 0.12 } },
         { selector: "node.focused", style: { "border-color": styles.getPropertyValue("--ink").trim(), "border-width": 4, "z-index": 10 } },
         { selector: "edge.context", style: { "opacity": 0.34, "width": 1.8 } }
@@ -775,13 +761,6 @@
   document.getElementById("graphRefreshBtn").addEventListener("click", fetchGraph);
   document.getElementById("graphSearch").addEventListener("input", function () {
     if (window.__graphCache) renderGraph(window.__graphCache);
-  });
-  document.querySelectorAll(".graph-mode-btn").forEach(function (button) {
-    button.addEventListener("click", function () {
-      graphMode = button.dataset.graphMode;
-      document.querySelectorAll(".graph-mode-btn").forEach(function (item) { item.classList.toggle("active", item === button); });
-      if (window.__graphCache) renderGraph(window.__graphCache);
-    });
   });
   document.querySelectorAll(".tab").forEach(function (tab) {
     tab.addEventListener("click", function () {

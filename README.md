@@ -163,8 +163,10 @@ Hub 管理员的服务器部署、运维、备份和 Token 签发方式见
 }
 ```
 
-也支持 `blueprint_paths`、`map_names`、`plugin_names` 和 `system_area` 过滤。Graph 只从
-项目可见事件生成，返回节点、边和 `freshness`；它是最终一致的派生视图，不是新的记忆真源。
+也支持 `blueprint_paths`、`map_names` 和 `plugin_names` 过滤。Graph 只从项目可见事件生成，
+返回节点、边和 `freshness`；它是最终一致的派生视图，不是新的记忆真源。共同记忆的报告标题
+和 `system_area` 仅作来源标签，不能形成实体节点；带稳定实体标注的共同记忆会以来源节点和
+`documents` 证据边出现在同一张 Graph 中。
 该 operation 不改变 `task_context` 的默认响应，也不改变本地离线读写、Brief、Board 或
 `shared_context` 的既有语义。详细接口和部署侧说明见 [`memory_hub/README.md`](memory_hub/README.md)。
 
@@ -232,7 +234,7 @@ python scripts/check_public_tree.py
 生成采用双通路：
 
 - `.ai-memory/config.json` 启用 `llm_defaults.capabilities.generate_task_brief` 且 provider 配置可用时，LLM 生成意图摘要，并把确定性层已经筛选的稳定/情景经验合并成最多 5 条带 record id 的可追溯摘要；路径、规则、符号、验证状态与来源仍只能由确定性层发现和校验。提示词使用固定指令前缀与 `<current_task>` / `<authority_index>` / `<historical_memory>` 数据围栏，历史摘要按不可信证据处理，开放问题会回流 `missing_context`。Memory MCP 不发现或生成 Skill，也不把历史经验写成自我指令；其目标是提炼真正利于当前任务的决策、根因、验证结果、约束和未解决问题。
-- `.ai-memory/config.json` 启用 `llm_defaults.capabilities.generate_task_graph_delta` 后，任务完成结算 worker 会把项目可见记录作为有界、不可信证据交给 LLM 评估语义关系。LLM 只能提议带真实 record id 的 `inferred` 边；本地确定性层校验节点类型、关系、置信度和 evidence 白名单，重新封印 delta 后异步上报 Hub。模型禁用、超时、输出无效或没有证据时自动回退到 observed `task -> entity` 图，不阻断本地写入或任务完成。
+- `.ai-memory/config.json` 启用 `llm_defaults.capabilities.generate_task_graph_delta` 后，任务完成结算 worker 会把项目可见记录作为有界、不可信证据交给 LLM 评估语义关系。LLM 只能提议带真实 record id 的 `inferred` 实体关系边；本地确定性层校验节点类型、关系、置信度和 evidence 白名单，重新封印 delta 后异步上报 Hub。模型禁用、超时、输出无效或没有证据时不会构造 `task -> entity` 星图；`task_id` 仍保留为事件溯源，等待有证据的实体语义关系出现，不阻断本地写入或任务完成。
 - capability 关闭、provider 缺失、超时、超预算、网络失败、结构协议非法或引用不存在的 record id 时，自动回退到确定性线路。确定性线路校验活动文件、源代码符号、规则入口、仓库 Skill 元数据与历史线索，隔离个人范围，并排除重复、乱码、疑似密钥、越界路径与冲突记录。
 - LLM 失败只体现在 `task_brief.generation`，不能改变 `task_context.ok`、`current_task` 或 `active_context`。调用方可用 `brief_use_llm=false` 强制确定性生成。
 - 同一 `context_token + task_id + 参数` 的简报持久化到 `.ai-memory/temp/task-brief-cache.sqlite`，因此 MCP 随时退出、重启后仍读取同一快照；`brief_refresh=true` 才显式重建。缓存只保存可再生派生视图，不影响基础记忆读写。

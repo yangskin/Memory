@@ -27,22 +27,17 @@ def _event(**overrides):
     return SimpleNamespace(**values)
 
 
-def test_extract_event_facts_is_deterministic_and_deduplicated() -> None:
+def test_extract_event_facts_ignores_metadata_cooccurrence() -> None:
     first = extract_event_facts(_event())
     second = extract_event_facts(_event())
     assert first == second
-    assert [(node.node_type, node.node_key) for node in first.nodes] == [
-        ("class", "Thing"),
-        ("file", "a.py"),
-        ("module", "core"),
-        ("task", "task-1"),
-    ]
-    assert len(first.edges) == 3
+    assert first.nodes == ()
+    assert first.edges == ()
 
 
-def test_extract_event_facts_does_not_project_agent_instances() -> None:
+def test_extract_event_facts_does_not_project_metadata_entities() -> None:
     facts = extract_event_facts(_event(task_id="", metadata_json={"active_files": ["a.py"]}))
-    assert [(node.node_type, node.node_key) for node in facts.nodes] == [("file", "a.py")]
+    assert facts.nodes == ()
     assert facts.edges == ()
 
 
@@ -51,9 +46,9 @@ def test_extract_event_facts_excludes_private_events() -> None:
     assert extract_event_facts(_event(scope="user_private")).edges == ()
 
 
-def test_extract_event_facts_skips_oversized_node_keys() -> None:
+def test_extract_event_facts_ignores_metadata_with_oversized_node_keys() -> None:
     facts = extract_event_facts(_event(metadata_json={"active_files": ["x" * 1025, "ok.py"]}))
-    assert [(node.node_type, node.node_key) for node in facts.nodes if node.node_type == "file"] == [("file", "ok.py")]
+    assert facts.nodes == ()
 
 
 def test_extract_event_facts_prefers_valid_graph_delta() -> None:
@@ -61,12 +56,12 @@ def test_extract_event_facts_prefers_valid_graph_delta() -> None:
         "version": "1.0",
         "task_id": "task-1",
         "nodes": [
-            {"type": "task", "key": "task-1", "name": "task-1"},
+            {"type": "class", "key": "OutboxWorker", "name": "OutboxWorker"},
             {"type": "module", "key": "outbox", "name": "outbox"},
         ],
         "edges": [
             {
-                "source": {"type": "task", "key": "task-1"},
+                "source": {"type": "class", "key": "OutboxWorker"},
                 "target": {"type": "module", "key": "outbox"},
                 "relation": "implements",
                 "origin": "observed",
@@ -78,12 +73,12 @@ def test_extract_event_facts_prefers_valid_graph_delta() -> None:
 
     facts = extract_event_facts(_event(metadata_json={"active_files": ["legacy.py"], "graph_delta": delta}))
 
-    assert [(node.node_type, node.node_key) for node in facts.nodes] == [("module", "outbox"), ("task", "task-1")]
+    assert [(node.node_type, node.node_key) for node in facts.nodes] == [("class", "OutboxWorker"), ("module", "outbox")]
     assert [(edge.relation_type, edge.confidence) for edge in facts.edges] == [("implements", 1.0)]
     assert facts.edges[0].evidence_ids == ("rec-1",)
 
 
-def test_extract_event_facts_falls_back_when_graph_delta_is_invalid() -> None:
+def test_extract_event_facts_does_not_fall_back_to_task_stars_when_graph_delta_is_invalid() -> None:
     invalid = {
         "version": "1.0",
         "task_id": "another-task",
@@ -93,8 +88,8 @@ def test_extract_event_facts_falls_back_when_graph_delta_is_invalid() -> None:
 
     facts = extract_event_facts(_event(metadata_json={"active_files": ["legacy.py"], "graph_delta": invalid}))
 
-    assert [(node.node_type, node.node_key) for node in facts.nodes] == [("file", "legacy.py"), ("task", "task-1")]
-    assert [edge.relation_type for edge in facts.edges] == ["affects"]
+    assert facts.nodes == ()
+    assert facts.edges == ()
 
 
 def test_validate_graph_delta_strictly_rejects_invalid_submission() -> None:
@@ -139,9 +134,9 @@ def test_extract_event_facts_rejects_non_finite_confidence_and_unbounded_evidenc
     unbounded_facts = extract_event_facts(_event(metadata_json={"active_files": ["legacy.py"], "graph_delta": _seal(unbounded)}))
     non_string_facts = extract_event_facts(_event(metadata_json={"active_files": ["legacy.py"], "graph_delta": _seal(non_string)}))
 
-    assert [node.node_key for node in nan_facts.nodes] == ["legacy.py", "task-1"]
-    assert [node.node_key for node in unbounded_facts.nodes] == ["legacy.py", "task-1"]
-    assert [node.node_key for node in non_string_facts.nodes] == ["legacy.py", "task-1"]
+    assert nan_facts.nodes == ()
+    assert unbounded_facts.nodes == ()
+    assert non_string_facts.nodes == ()
 
 
 def test_extract_event_facts_rejects_tampered_delta_and_duplicate_nodes() -> None:
@@ -162,5 +157,42 @@ def test_extract_event_facts_rejects_tampered_delta_and_duplicate_nodes() -> Non
     tampered_facts = extract_event_facts(_event(metadata_json={"active_files": ["legacy.py"], "graph_delta": tampered}))
     duplicate_facts = extract_event_facts(_event(metadata_json={"active_files": ["legacy.py"], "graph_delta": _seal(duplicate)}))
 
-    assert [node.node_key for node in tampered_facts.nodes] == ["legacy.py", "task-1"]
-    assert [node.node_key for node in duplicate_facts.nodes] == ["legacy.py", "task-1"]
+    assert tampered_facts.nodes == ()
+    assert duplicate_facts.nodes == ()
+
+
+def test_extract_event_facts_discards_legacy_task_stars_but_keeps_semantic_edges() -> None:
+    delta = _seal({
+        "version": "1.0",
+        "task_id": "task-1",
+        "nodes": [
+            {"type": "task", "key": "task-1", "name": "task-1"},
+            {"type": "class", "key": "OutboxWorker", "name": "OutboxWorker"},
+            {"type": "module", "key": "outbox", "name": "outbox"},
+        ],
+        "edges": [
+            {
+                "source": {"type": "task", "key": "task-1"},
+                "target": {"type": "class", "key": "OutboxWorker"},
+                "relation": "affects",
+                "origin": "observed",
+                "confidence": 1.0,
+                "evidence_ids": ["rec-1"],
+            },
+            {
+                "source": {"type": "class", "key": "OutboxWorker"},
+                "target": {"type": "module", "key": "outbox"},
+                "relation": "implements",
+                "origin": "observed",
+                "confidence": 1.0,
+                "evidence_ids": ["rec-1"],
+            },
+        ],
+    })
+
+    facts = extract_event_facts(_event(metadata_json={"graph_delta": delta}))
+
+    assert [(node.node_type, node.node_key) for node in facts.nodes] == [("class", "OutboxWorker"), ("module", "outbox")]
+    assert [(edge.source, edge.target, edge.relation_type) for edge in facts.edges] == [
+        (("class", "OutboxWorker"), ("module", "outbox"), "implements")
+    ]

@@ -88,8 +88,14 @@ Hub 提供轻量协作看板接口，用于跨 Agent/成员同步「待处理事
 
 ## Project Graph 查询
 
-Project Graph 是从项目可见事件的结构化 metadata 生成的确定性派生视图。它不会读取或展示
-个人 scope 事件，也不会改变 Brief、Board、`shared_context` 或旧事件 ingest 的默认行为。
+Project Graph 是从项目可见事件生成的可重建派生视图。共同记忆正文只在事件已经显式标注
+文件、类、模块、资源、蓝图、地图或插件时参与：每条合格事件成为稳定的 `source` 节点，
+再通过确定性的 `documents` 边连接到它明确提及的实体。该边表示证据来源，不表示依赖。
+
+实体间的 `depends_on`、`implements`、`validates`、`caused_by` 与 `supersedes` 只来自
+显式客户端 `graph_delta` 或可选的服务端语义提取，且都需要事件证据。`task_id`、任务标题、
+`system_area` 和报告标题只可作为事件溯源或来源标签，绝不作为 Graph 实体端点。它不会读取或
+展示个人 scope 事件，也不会改变 Brief、Board、`shared_context` 或旧事件 ingest 的默认行为。
 投影由 Worker 旁路执行，查询结果可能暂时落后于最新事件，可通过响应中的 `freshness.stale`
 判断。
 
@@ -102,8 +108,8 @@ curl --fail -X POST "https://memory.example.com/v1/projects/<project-id>/graph/q
 	-d '{"task_id":"task-123","files":["src/example.py"],"depth":2,"max_nodes":100,"max_edges":200}'
 ```
 
-查询过滤器包括 `task_id`、`files`、`classes`、`modules`、`assets`、`blueprints`、`maps`、
-`plugins` 和 `system_areas`。`depth` 范围为 `0..2`；默认返回 50 节点、100 边，最大
+查询过滤器包括 `task_id`、`files`、`classes`、`modules`、`assets`、`blueprints`、`maps` 和
+`plugins`。`depth` 范围为 `0..2`；默认返回 50 节点、100 边，最大
 200 节点、400 边。默认节点省略 metadata，边只返回 `source_event_count`；Hub API 只有
 显式传入 `include_metadata=true` / `include_source_event_ids=true` 才返回完整详情。MCP
 客户端始终请求紧凑 Graph，并通过唯一的 `memory_read` 工具调用：
@@ -121,6 +127,9 @@ curl --fail -X POST "https://memory.example.com/v1/projects/<project-id>/graph/q
 
 该 operation 是显式旁路查询，不会自动注入现有 `memory_read(operation="task_context")`
 响应；未配置 Hub 时返回远端不可用结果，本地记忆读写仍保持离线可用。
+
+`PROJECT_GRAPH_SEMANTIC_ENABLED` 默认是 `false`。来源图不依赖 LLM；只有在确认项目拥有
+稳定实体标注和足够明确的实体关系后，才应显式设为 `true` 以补充受证据约束的语义边。
 
 ## 响应大小治理
 

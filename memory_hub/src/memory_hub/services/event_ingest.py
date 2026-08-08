@@ -11,6 +11,7 @@ from memory_hub.db.models import MemoryEvent
 from memory_hub.db.repositories import event_by_id, mark_brief_jobs_dirty
 from memory_hub.domain.events import EventBatchResponse, EventPayload, RejectedEvent
 from memory_hub.graph.extractor import InvalidGraphDelta, validate_graph_delta
+from memory_hub.graph.semantic import has_project_graph_entities
 
 _SECRET = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
@@ -24,6 +25,7 @@ _SECRET = re.compile(
     r"|\"type\"\s*:\s*\"service_account\"",
     re.I,
 )
+_PROJECT_VISIBLE_SCOPES = frozenset({"shared", "project_shared", "org_shared"})
 
 
 def ingest_events(session: Session, project_id: str, user_id: str, events: list[EventPayload], *, user_debounce_seconds: int = 20, project_debounce_seconds: int = 45) -> EventBatchResponse:
@@ -62,7 +64,15 @@ def ingest_events(session: Session, project_id: str, user_id: str, events: list[
                 session.flush()
                 accepted_sequences.append(model.server_seq)
                 response.accepted.append(event.event_id)
-                mark_brief_jobs_dirty(session, project_id, user_id, model.server_seq, user_debounce_seconds=user_debounce_seconds, project_debounce_seconds=project_debounce_seconds)
+                mark_brief_jobs_dirty(
+                    session,
+                    project_id,
+                    user_id,
+                    model.server_seq,
+                    user_debounce_seconds=user_debounce_seconds,
+                    project_debounce_seconds=project_debounce_seconds,
+                    include_project_graph=model.scope in _PROJECT_VISIBLE_SCOPES and bool(content and content.strip()) and has_project_graph_entities(event.metadata),
+                )
         except IntegrityError:
             existing = event_by_id(session, project_id, event.event_id)
             if existing is not None and existing.content_hash == event.content_hash:
