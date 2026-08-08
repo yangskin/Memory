@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import desc, func, or_, select
+from sqlalchemy import and_, desc, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 
 from memory_hub.api.dependencies import effective_user_id, require_principal
@@ -27,6 +27,19 @@ _SAFE_METADATA_KEYS = frozenset({
     "validated_by",
 })
 _PROJECT_VISIBLE_SCOPES = frozenset({"shared", "project_shared", "org_shared"})
+
+
+def _project_visible_content() -> object:
+    """Restrict dashboard and brief inputs to events with a displayable body.
+
+    Empty project-shared checkpoints carry graph-projection metadata only. They
+    remain in the event log, but must not crowd out substantive shared memory.
+    """
+    return and_(
+        MemoryEvent.scope.in_(_PROJECT_VISIBLE_SCOPES),
+        MemoryEvent.content_markdown.is_not(None),
+        func.btrim(MemoryEvent.content_markdown) != "",
+    )
 
 
 def _item(event: MemoryEvent) -> dict[str, object]:
@@ -113,10 +126,14 @@ def shared_context(project_id: str, payload: SharedContextRequest, request: Requ
     with factory() as session:
         user_id = effective_user_id(request, principal)
         visibility = or_(MemoryEvent.user_id == user_id, MemoryEvent.scope.in_(_PROJECT_VISIBLE_SCOPES))
-        events = list(session.scalars(select(MemoryEvent).where(MemoryEvent.project_id == project_id, MemoryEvent.occurred_at >= since, visibility).order_by(desc(MemoryEvent.occurred_at)).limit(500)))
+        displayable = or_(
+            MemoryEvent.user_id == user_id,
+            _project_visible_content(),
+        )
+        events = list(session.scalars(select(MemoryEvent).where(MemoryEvent.project_id == project_id, MemoryEvent.occurred_at >= since, visibility, displayable).order_by(desc(MemoryEvent.occurred_at)).limit(500)))
         current = payload.agent_instance_id
         latest_seq = max((event.server_seq for event in events), default=0)
-        project_latest_seq = int(session.scalar(select(func.coalesce(func.max(MemoryEvent.server_seq), 0)).where(MemoryEvent.project_id == project_id, MemoryEvent.occurred_at >= since, MemoryEvent.scope.in_(_PROJECT_VISIBLE_SCOPES))) or 0)
+        project_latest_seq = int(session.scalar(select(func.coalesce(func.max(MemoryEvent.server_seq), 0)).where(MemoryEvent.project_id == project_id, MemoryEvent.occurred_at >= since, _project_visible_content())) or 0)
         user_brief, user_watermark = _brief(session, project_id, "user_recent", user_id)
         project_brief, project_watermark = _brief(session, project_id, "project_recent", "")
         def is_pending(event: MemoryEvent) -> bool:
@@ -188,8 +205,12 @@ def shared_feed(payload: SharedFeedRequest, request: Request, principal: Princip
     since = datetime.now(UTC) - timedelta(minutes=payload.max_age_minutes)
     factory = request.app.state.session_factory
     with factory() as session:
-        visible = MemoryEvent.scope.in_(_PROJECT_VISIBLE_SCOPES)
+        visible = _project_visible_content()
         events = list(session.scalars(select(MemoryEvent).where(MemoryEvent.project_id == project_id, MemoryEvent.occurred_at >= since, visible).order_by(desc(MemoryEvent.occurred_at)).limit(payload.max_items)))
+        events_from_history = False
+        if not events:
+            events = list(session.scalars(select(MemoryEvent).where(MemoryEvent.project_id == project_id, visible).order_by(desc(MemoryEvent.occurred_at)).limit(payload.max_items)))
+            events_from_history = bool(events)
         latest_seq = max((event.server_seq for event in events), default=0)
         project_latest_seq = int(session.scalar(select(func.coalesce(func.max(MemoryEvent.server_seq), 0)).where(MemoryEvent.project_id == project_id, MemoryEvent.occurred_at >= since, visible)) or 0)
 
@@ -217,5 +238,6 @@ def shared_feed(payload: SharedFeedRequest, request: Request, principal: Princip
                 "project_brief_lag_events": max(0, project_latest_seq - watermark),
             },
             "brief": brief,
+            "events_from_history": events_from_history,
             "events": [_shared_item(event, include_content=payload.include_content) for event in events],
         }

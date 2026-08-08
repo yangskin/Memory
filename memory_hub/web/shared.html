@@ -90,12 +90,17 @@
   [data-theme="dark"] .board-post .body pre, [data-theme="dark"] .board-post .body code { background: #111827; }
   .graph-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; color: var(--muted); font-size: 13px; }
   .graph-toolbar input { min-width: 240px; flex: 1; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--card-soft); color: var(--ink); }
+  .graph-mode { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .graph-mode button { border-radius: 0; padding: 7px 10px; background: var(--card-soft); color: var(--muted); }
+  .graph-mode button + button { border-left: 1px solid var(--line); }
+  .graph-mode button.active { background: var(--brand); color: #fff; }
   .graph-canvas { height: min(68vh, 680px); min-height: 520px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background-color: var(--card-soft); background-image: radial-gradient(var(--graph-grid) 1px, transparent 1px); background-size: 18px 18px; }
   .graph-canvas .empty, .graph-canvas .errorbox { margin: 18px; }
   .graph-legend { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; color: var(--muted); font-size: 12px; }
   .legend-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; }
   .card h2 { margin: 0 0 12px; font-size: 15px; color: var(--muted); font-weight: 600; letter-spacing: .3px; }
   .empty { color: var(--muted); text-align: center; padding: 26px 0; font-size: 13px; }
+  .stale-note { color: var(--warn); font-size: 12px; padding: 4px 0 10px; }
   .brief-summary {
     background: var(--brand-soft); border: 1px solid #dde3ff; border-radius: 10px;
     padding: 12px 14px; margin-bottom: 14px;
@@ -235,6 +240,10 @@
   <section class="card" style="grid-column:1 / -1">
     <h2>项目 Graph <span class="source-badge" id="graphFreshness">未连接</span></h2>
     <div class="graph-toolbar">
+      <div class="graph-mode" role="group" aria-label="Graph 视图">
+        <button class="graph-mode-btn active" data-graph-mode="core" title="客户端确认的关系">核心关系</button>
+        <button class="graph-mode-btn" data-graph-mode="context" title="加入共同记忆的结构化上下文">共同记忆补充</button>
+      </div>
       <input id="graphSearch" type="search" placeholder="输入节点关键词，例如文件、类或模块" autocomplete="off">
       <button id="graphRefreshBtn" disabled>刷新 Graph</button>
       <span id="graphStats">—</span>
@@ -263,6 +272,7 @@
 (function () {
   "use strict";
   var STORE_KEY = "memory_hub_shared_token";
+  var FEED_CACHE_KEY = "memory_hub_shared_feed_cache";
   var POLL_MS = 30000;
   var timer = null;
   var tokenEl = document.getElementById("token");
@@ -273,6 +283,44 @@
   var lastUpdated = document.getElementById("lastUpdated");
   var projectId = document.getElementById("projectId");
   var graph = null;
+  var graphMode = "core";
+  var hasBriefContent = false;
+  var hasFeedContent = false;
+
+  function hasFeedBrief(feed) {
+    var brief = feed && feed.brief;
+    return Boolean(brief && (
+      (typeof brief.markdown === "string" && brief.markdown.trim()) ||
+      (brief.structured && typeof brief.structured === "object" && Object.keys(brief.structured).length)
+    ));
+  }
+  function hasFeedEvents(feed) {
+    return Boolean(feed && Array.isArray(feed.events) && feed.events.length);
+  }
+  function loadFeedCache(project) {
+    try {
+      var cached = JSON.parse(sessionStorage.getItem(FEED_CACHE_KEY) || "null");
+      return cached && cached.project_id === project && cached.feed ? cached.feed : null;
+    } catch (e) {
+      try { sessionStorage.removeItem(FEED_CACHE_KEY); } catch (ignored) {}
+      return null;
+    }
+  }
+  function saveFeedCache(feed) {
+    if (!feed || !feed.project_id || (!hasFeedBrief(feed) && !hasFeedEvents(feed))) return;
+    var cached = loadFeedCache(feed.project_id) || {};
+    var merged = {
+      project_id: feed.project_id,
+      brief: hasFeedBrief(feed) ? feed.brief : (cached.brief || null),
+      events: hasFeedEvents(feed) ? feed.events : (cached.events || [])
+    };
+    try { sessionStorage.setItem(FEED_CACHE_KEY, JSON.stringify({ project_id: feed.project_id, feed: merged })); } catch (e) {}
+  }
+  function showStaleFeedNote(area) {
+    if (!area.querySelector(".stale-note")) {
+      area.insertAdjacentHTML("afterbegin", '<div class="stale-note">当前时间窗内暂无新共同事件 · 显示最近保留内容</div>');
+    }
+  }
 
   function setPill(state, text) {
     pill.className = "pill";
@@ -349,11 +397,15 @@
   function renderBrief(structured, markdown) {
     var area = document.getElementById("briefArea");
     if (!structured) {
-      area.innerHTML = markdown
-        ? '<div class="brief-summary">' + renderMarkdown(markdown) + "</div>"
-        : '<div class="empty">暂无简报（尚未有共同事件或 Worker 未生成）。</div>';
+      if (markdown) {
+        hasBriefContent = true;
+        area.innerHTML = '<div class="brief-summary">' + renderMarkdown(markdown) + "</div>";
+      } else if (!hasBriefContent) {
+        area.innerHTML = '<div class="empty">暂无简报（尚未有共同事件或 Worker 未生成）。</div>';
+      }
       return;
     }
+    hasBriefContent = true;
     var html = "";
     if (structured.summary) html += '<div class="brief-summary">' + renderMarkdown(String(structured.summary)) + "</div>";
     SECTION_LABELS.forEach(function (pair) {
@@ -389,14 +441,24 @@
     projectId.textContent = feed.project_id ? "· " + feed.project_id : "—";
     var f = feed.freshness || {};
     var lag = f.project_brief_lag_events || 0;
-    var brief = feed.brief || null;
+    var cached = loadFeedCache(feed.project_id);
+    var brief = hasFeedBrief(feed) ? feed.brief : (cached ? cached.brief : null);
     renderBrief(brief ? brief.structured : null, brief ? brief.markdown : null);
     var feedArea = document.getElementById("feedArea");
-    if (feed.events && feed.events.length) {
+    if (hasFeedEvents(feed)) {
+      hasFeedContent = true;
       feedArea.innerHTML = feed.events.map(renderEvent).join("");
+      if (feed.events_from_history) showStaleFeedNote(feedArea);
+    } else if (!hasFeedContent && cached && hasFeedEvents(cached)) {
+      hasFeedContent = true;
+      feedArea.innerHTML = cached.events.map(renderEvent).join("");
+      showStaleFeedNote(feedArea);
+    } else if (hasFeedContent) {
+      showStaleFeedNote(feedArea);
     } else {
       feedArea.innerHTML = '<div class="empty">当前时间窗内暂无共同可见事件。</div>';
     }
+    saveFeedCache(feed);
     var freshnessEl = document.getElementById("freshness");
     freshnessEl.style.display = "grid";
     freshnessEl.innerHTML =
@@ -535,6 +597,13 @@
       edges: edges.filter(function (edge) { return !hidden[edge.source] && !hidden[edge.target]; }).concat(aggregateEdges)
     };
   }
+  function selectGraphMode(nodes, edges) {
+    if (graphMode === "context") return { nodes: nodes, edges: edges };
+    var coreEdges = edges.filter(function (edge) { return edge.origin === "client_delta" || edge.origin === "mixed"; });
+    var connected = {};
+    coreEdges.forEach(function (edge) { connected[edge.source] = true; connected[edge.target] = true; });
+    return { nodes: nodes.filter(function (node) { return connected[node.id]; }), edges: coreEdges };
+  }
   function destroyGraph() {
     if (graph) { graph.destroy(); graph = null; }
   }
@@ -542,6 +611,9 @@
     var area = document.getElementById("graphArea");
     var nodes = (data && data.nodes) || [];
     var edges = (data && data.edges) || [];
+    var selected = selectGraphMode(nodes, edges);
+    nodes = selected.nodes;
+    edges = selected.edges;
     var query = document.getElementById("graphSearch").value.trim().toLowerCase();
     if (query) {
       var matched = {};
@@ -559,12 +631,12 @@
     var projected = projectGraphDetails(nodes, edges);
     nodes = projected.nodes;
     edges = projected.edges;
-    document.getElementById("graphStats").textContent = nodes.length + " 个节点 · " + edges.length + " 条关系";
+    document.getElementById("graphStats").textContent = (graphMode === "core" ? "核心 · " : "补充 · ") + nodes.length + " 个节点 · " + edges.length + " 条关系";
     var freshness = (data && data.freshness) || {};
     var freshEl = document.getElementById("graphFreshness");
     freshEl.textContent = freshness.stale ? "投影整理中" : "已同步";
     destroyGraph();
-    if (!nodes.length) { area.innerHTML = '<div class="empty">当前查询没有匹配的节点。</div>'; return; }
+    if (!nodes.length) { area.innerHTML = '<div class="empty">' + (graphMode === "core" ? "暂无客户端确认的核心关系。" : "当前查询没有匹配的节点。") + "</div>"; return; }
     area.innerHTML = "";
     var elements = nodes.map(function (node) {
       return { data: { id: node.id, label: graphNodeLabel(node), color: GRAPH_COLORS[node.type] || "#6b7590", type: GRAPH_TYPE_LABELS[node.type] || node.type, key: node.key, aggregate: node.aggregate ? 1 : 0, memberCount: node.member_count || 0 } };
@@ -673,7 +745,12 @@
     refreshAll();
   }
   function clearAll() {
-    try { sessionStorage.removeItem(STORE_KEY); } catch (e) {}
+    try {
+      sessionStorage.removeItem(STORE_KEY);
+      sessionStorage.removeItem(FEED_CACHE_KEY);
+    } catch (e) {}
+    hasBriefContent = false;
+    hasFeedContent = false;
     tokenEl.value = "";
     if (timer) { clearInterval(timer); timer = null; }
     refreshBtn.disabled = true;
@@ -698,6 +775,13 @@
   document.getElementById("graphRefreshBtn").addEventListener("click", fetchGraph);
   document.getElementById("graphSearch").addEventListener("input", function () {
     if (window.__graphCache) renderGraph(window.__graphCache);
+  });
+  document.querySelectorAll(".graph-mode-btn").forEach(function (button) {
+    button.addEventListener("click", function () {
+      graphMode = button.dataset.graphMode;
+      document.querySelectorAll(".graph-mode-btn").forEach(function (item) { item.classList.toggle("active", item === button); });
+      if (window.__graphCache) renderGraph(window.__graphCache);
+    });
   });
   document.querySelectorAll(".tab").forEach(function (tab) {
     tab.addEventListener("click", function () {

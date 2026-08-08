@@ -58,7 +58,11 @@ def create_app() -> FastAPI:
     def shared_page() -> FileResponse:
         if not _WEB_SHARED_PAGE.is_file():
             raise HTTPException(status.HTTP_404_NOT_FOUND, "shared page not found")
-        return FileResponse(_WEB_SHARED_PAGE, media_type="text/html")
+        return FileResponse(
+            _WEB_SHARED_PAGE,
+            media_type="text/html",
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
 
     @app.get("/assets/cytoscape.min.js", include_in_schema=False)
     def cytoscape_script() -> FileResponse:

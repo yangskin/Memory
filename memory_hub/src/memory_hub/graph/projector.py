@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import NAMESPACE_URL, uuid5
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -72,6 +72,25 @@ def project_events(session: Session, project_id: str, *, batch_size: int = 500) 
     state.updated_at = datetime.now(UTC)
     session.commit()
     return latest
+
+
+def rebuild_project(session: Session, project_id: str, *, batch_size: int = 500) -> int:
+    """Replace a project's derived graph from its immutable event history."""
+    session.execute(insert(GraphProjectionState).values(project_id=project_id).on_conflict_do_nothing(index_elements=[GraphProjectionState.project_id]))
+    state = session.get(GraphProjectionState, project_id, with_for_update=True)
+    session.execute(delete(GraphEdge).where(GraphEdge.project_id == project_id))
+    session.execute(delete(GraphNode).where(GraphNode.project_id == project_id))
+    if state is not None:
+        state.covers_through_seq = 0
+        state.updated_at = datetime.now(UTC)
+    session.commit()
+
+    while True:
+        before = session.get(GraphProjectionState, project_id)
+        before_seq = int(before.covers_through_seq if before else 0)
+        after_seq = project_events(session, project_id, batch_size=batch_size)
+        if after_seq <= before_seq:
+            return after_seq
 
 
 def project_pending(session: Session, *, batch_size: int = 500) -> int:

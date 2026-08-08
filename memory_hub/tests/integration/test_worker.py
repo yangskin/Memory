@@ -56,6 +56,26 @@ def test_worker_falls_back_to_latest_shared_events_when_project_window_is_empty(
         assert snapshot.source_event_ids == [str(shared_event_id)]
 
 
+def test_worker_ignores_empty_shared_checkpoints_when_rebuilding_project_brief() -> None:
+    factory = create_session_factory(load_settings().database_url or "")
+    project_id = f"worker-checkpoint-filter-{uuid4().hex}"
+    shared_event_id = uuid4()
+    with factory() as session:
+        old_shared_event = MemoryEvent(event_id=shared_event_id, project_id=project_id, user_id="worker-user", agent_id="pytest", agent_instance_id="pytest-1", operation="record", scope="project_shared", content_markdown="retained project memory", metadata_json={}, occurred_at=datetime.now(UTC) - timedelta(hours=25), content_hash="sha256:" + "b" * 64)
+        checkpoint = MemoryEvent(event_id=uuid4(), project_id=project_id, user_id="worker-user", agent_id="pytest", agent_instance_id="pytest-1", operation="checkpoint", scope="project_shared", content_markdown="", metadata_json={"graph_delta": {}}, occurred_at=datetime.now(UTC), content_hash="sha256:" + "c" * 64)
+        session.add_all([old_shared_event, checkpoint])
+        session.flush()
+        session.add(BriefJob(job_key=f"project_recent:{project_id}:-", project_id=project_id, brief_type="project_recent", subject_user_id=None, requested_through_seq=checkpoint.server_seq, not_before=datetime.now(UTC) - timedelta(seconds=1), status="pending"))
+        session.commit()
+
+        assert run_once(session, worker_id="checkpoint-filter-worker", max_jobs=1000) >= 1
+        head = session.get(BriefHead, (project_id, "project_recent", ""))
+        assert head is not None
+        snapshot = session.get(BriefSnapshot, head.current_brief_id)
+        assert snapshot is not None
+        assert snapshot.source_event_ids == [str(shared_event_id)]
+
+
 def test_worker_keeps_dirty_job_when_event_arrives_during_generation() -> None:
     factory = create_session_factory(load_settings().database_url or "")
     project_id = f"worker-race-{uuid4().hex}"

@@ -132,6 +132,54 @@ def test_shared_feed_excludes_other_users_private_events() -> None:
     assert all(event["content_markdown"] != "bob private note" for event in events)
 
 
+def test_shared_feed_returns_latest_shared_events_when_current_window_is_empty() -> None:
+    app = create_app()
+    project_id = f"project-{uuid4().hex}"
+    raw_token = _seed_token(app, project_id=project_id)
+    old_time = datetime.now(UTC) - timedelta(hours=13)
+    with app.state.session_factory() as session:
+        session.add_all([
+            MemoryEvent(event_id=uuid4(), project_id=project_id, user_id="alice", agent_id="pytest", agent_instance_id="pytest-1", operation="record", scope="project_shared", content_markdown="retained shared note", metadata_json={}, occurred_at=old_time, content_hash="sha256:" + "1" * 64),
+            MemoryEvent(event_id=uuid4(), project_id=project_id, user_id="alice", agent_id="pytest", agent_instance_id="pytest-1", operation="record", scope="personal", content_markdown="private old note", metadata_json={}, occurred_at=old_time, content_hash="sha256:" + "2" * 64),
+        ])
+        session.commit()
+
+    response = TestClient(app).post(
+        "/v1/shared-feed",
+        headers={"Authorization": f"Bearer {raw_token}"},
+        json={"max_age_minutes": 60, "include_content": True},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["events_from_history"] is True
+    assert [event["content_markdown"] for event in body["events"]] == ["retained shared note"]
+
+
+def test_shared_feed_ignores_empty_shared_checkpoints() -> None:
+    app = create_app()
+    project_id = f"project-{uuid4().hex}"
+    raw_token = _seed_token(app, project_id=project_id)
+    now = datetime.now(UTC)
+    with app.state.session_factory() as session:
+        session.add_all([
+            MemoryEvent(event_id=uuid4(), project_id=project_id, user_id="alice", agent_id="pytest", agent_instance_id="pytest-1", operation="record", scope="project_shared", content_markdown="retained shared note", metadata_json={}, occurred_at=now - timedelta(hours=13), content_hash="sha256:" + "3" * 64),
+            MemoryEvent(event_id=uuid4(), project_id=project_id, user_id="alice", agent_id="pytest", agent_instance_id="pytest-1", operation="checkpoint", scope="project_shared", content_markdown="", metadata_json={"graph_delta": {}}, occurred_at=now, content_hash="sha256:" + "4" * 64),
+        ])
+        session.commit()
+
+    response = TestClient(app).post(
+        "/v1/shared-feed",
+        headers={"Authorization": f"Bearer {raw_token}"},
+        json={"max_age_minutes": 60, "include_content": True},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["events_from_history"] is True
+    assert [event["content_markdown"] for event in body["events"]] == ["retained shared note"]
+
+
 def test_shared_feed_includes_project_brief() -> None:
     app = create_app()
     project_id = f"project-{uuid4().hex}"
