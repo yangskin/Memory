@@ -47,3 +47,7 @@ def test_shared_page_serves_graph_renderer() -> None:
     assert "共同记忆来源" in page_response.text
     assert "edge[relation = 'documents']" in page_response.text
     assert "暂无带实体标注的共同记忆。" in page_response.text
+    assert 'id="graphSelection"' in page_response.text
+    assert "function renderGraphSelection(node)" in page_response.text
+    assert "完整节点信息" in page_response.text
+    assert "fullName: node.name || node.key || node.type" in page_response.text

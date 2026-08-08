@@ -92,6 +92,14 @@
   .graph-toolbar input { min-width: 240px; flex: 1; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--card-soft); color: var(--ink); }
   .graph-canvas { height: min(68vh, 680px); min-height: 520px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background-color: var(--card-soft); background-image: radial-gradient(var(--graph-grid) 1px, transparent 1px); background-size: 18px 18px; }
   .graph-canvas .empty, .graph-canvas .errorbox { margin: 18px; }
+  .graph-selection { min-height: 66px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+  .graph-selection-title { margin-bottom: 6px; font-size: 12px; font-weight: 700; color: var(--muted); }
+  .graph-selection-empty { color: var(--muted); font-size: 13px; }
+  .graph-selection-details { display: grid; gap: 5px; margin: 0; }
+  .graph-selection-details > div { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 10px; }
+  .graph-selection-details dt { color: var(--muted); font-size: 12px; }
+  .graph-selection-details dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+  .graph-selection-details .node-key { font-family: var(--mono); font-size: 12px; }
   .graph-legend { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; color: var(--muted); font-size: 12px; }
   .legend-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; }
   .card h2 { margin: 0 0 12px; font-size: 15px; color: var(--muted); font-weight: 600; letter-spacing: .3px; }
@@ -241,6 +249,7 @@
       <span id="graphStats">—</span>
     </div>
     <div class="graph-canvas" id="graphArea"><div class="empty">连接后加载项目 Graph。</div></div>
+    <div class="graph-selection" id="graphSelection" aria-live="polite"><div class="graph-selection-empty">选择一个节点查看完整名称和标识。</div></div>
     <div class="graph-legend"><span><i class="legend-dot" style="background:#6b7590"></i>共同记忆来源</span><span><i class="legend-dot" style="background:#0e9f9f"></i>文件</span><span><i class="legend-dot" style="background:#d9822b"></i>类 / 模块</span><span><i class="legend-dot" style="background:#b06ad4"></i>资源</span></div>
   </section>
   </div>
@@ -591,6 +600,22 @@
   function destroyGraph() {
     if (graph) { graph.destroy(); graph = null; }
   }
+  function resetGraphSelection() {
+    document.getElementById("graphSelection").innerHTML = '<div class="graph-selection-empty">选择一个节点查看完整名称和标识。</div>';
+  }
+  function renderGraphSelection(node) {
+    var data = node.data();
+    var nodeName = data.fullName || data.key || data.type || "—";
+    var nodeType = data.type || "—";
+    var nodeKey = data.key || "—";
+    document.getElementById("graphSelection").innerHTML =
+      '<div class="graph-selection-title">完整节点信息</div>' +
+      '<dl class="graph-selection-details">' +
+        '<div><dt>类型</dt><dd>' + esc(nodeType) + '</dd></div>' +
+        '<div><dt>完整名称</dt><dd>' + esc(nodeName) + '</dd></div>' +
+        '<div><dt>标识</dt><dd class="node-key">' + esc(nodeKey) + '</dd></div>' +
+      '</dl>';
+  }
   function renderGraph(data) {
     var area = document.getElementById("graphArea");
     var nodes = (data && data.nodes) || [];
@@ -620,10 +645,11 @@
     var freshEl = document.getElementById("graphFreshness");
     freshEl.textContent = freshness.stale ? "投影整理中" : "已同步";
     destroyGraph();
+    resetGraphSelection();
     if (!nodes.length) { area.innerHTML = '<div class="empty">暂无带实体标注的共同记忆。</div>'; return; }
     area.innerHTML = "";
     var elements = nodes.map(function (node) {
-      return { data: { id: node.id, label: graphNodeLabel(node), color: GRAPH_COLORS[node.type] || "#6b7590", type: GRAPH_TYPE_LABELS[node.type] || node.type, key: node.key, aggregate: node.aggregate ? 1 : 0, memberCount: node.member_count || 0, source: node.type === "source" ? 1 : 0 } };
+      return { data: { id: node.id, label: graphNodeLabel(node), fullName: node.name || node.key || node.type, color: GRAPH_COLORS[node.type] || "#6b7590", type: GRAPH_TYPE_LABELS[node.type] || node.type, key: node.key, aggregate: node.aggregate ? 1 : 0, memberCount: node.member_count || 0, source: node.type === "source" ? 1 : 0 } };
     });
     edges.forEach(function (edge, index) {
       elements.push({ data: { id: "edge-" + index, source: edge.source, target: edge.target, relation: edge.relation_type, count: edge.source_event_count || 1, origin: edge.origin || "" } });
@@ -657,10 +683,12 @@
       graph.elements().removeClass("focused context");
       selected.removeClass("faded").addClass("focused");
       selected.connectedEdges().removeClass("faded").addClass("context");
+      renderGraphSelection(selected);
     });
     graph.on("tap", function (event) {
       if (event.target !== graph) return;
       graph.elements().removeClass("faded focused context");
+      resetGraphSelection();
     });
   }
   function fetchGraph() {
@@ -669,7 +697,11 @@
     fetch("/v1/projects/" + encodeURIComponent(currentProject) + "/graph?include_metadata=true", { headers: { "Authorization": "Bearer " + token } })
       .then(function (resp) { if (resp.status === 200) return resp.json(); throw new Error("Graph 请求失败（HTTP " + resp.status + "）。"); })
       .then(function (data) { window.__graphCache = data; renderGraph(data); })
-      .catch(function (err) { document.getElementById("graphArea").innerHTML = '<div class="errorbox">Graph 加载失败：' + esc(err.message || err) + "</div>"; });
+      .catch(function (err) {
+        destroyGraph();
+        resetGraphSelection();
+        document.getElementById("graphArea").innerHTML = '<div class="errorbox">Graph 加载失败：' + esc(err.message || err) + "</div>";
+      });
   }
   function fetchBoard() {
     var token = tokenEl.value.trim();
@@ -751,6 +783,7 @@
     document.getElementById("boardOpen").textContent = "0";
     document.getElementById("boardResolved").textContent = "0";
     destroyGraph();
+    resetGraphSelection();
     document.getElementById("graphArea").innerHTML = '<div class="empty">连接后加载项目 Graph。</div>';
     document.getElementById("graphStats").textContent = "—";
     document.getElementById("graphFreshness").textContent = "未连接";
