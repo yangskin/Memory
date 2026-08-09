@@ -16,8 +16,9 @@ from memory_hub.llm.base import BriefProvider, ProjectBriefDocument, ProjectBrie
 from memory_hub.llm.fake import FakeBriefProvider
 
 
-def _contentful_event_clauses() -> tuple[object, object]:
+def _contentful_event_clauses() -> tuple[object, ...]:
     return (
+        MemoryEvent.operation != "task_sync",
         MemoryEvent.content_markdown.is_not(None),
         func.btrim(MemoryEvent.content_markdown) != "",
     )

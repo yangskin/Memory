@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from servers.memory_server import memory_task_sync as task_sync_module
@@ -849,5 +850,7 @@ def test_completed_task_command_is_queued_for_hub_without_waiting(tmp_path) -> N
     assert first_sync == {"enabled": True, "queued": True}
     assert replayed["shared_sync"] == {"enabled": True, "queued": False}
     assert len(rows) == 1
-    assert '"operation":"task_sync"' in rows[0]["payload_json"]
-    assert '"command_id":"outbox-create"' in rows[0]["payload_json"]
+    event = json.loads(rows[0]["payload_json"])
+    assert event["operation"] == "task_sync"
+    assert event["content_markdown"] == ""
+    assert event["metadata"]["task_event"]["command_id"] == "outbox-create"

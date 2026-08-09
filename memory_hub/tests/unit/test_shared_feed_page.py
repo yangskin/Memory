@@ -18,7 +18,7 @@ def test_shared_page_is_served_without_database() -> None:
     assert "/v1/shared-feed" in body
     assert "sessionStorage" in body
     assert "Bearer " in body
-    assert "memory_hub_shared_feed_cache" in body
+    assert 'FEED_CACHE_KEY = "memory_hub_shared_feed_cache_v2"' in body
     assert "loadFeedCache(feed.project_id)" in body
     assert "sessionStorage.removeItem(FEED_CACHE_KEY)" in body
     assert "events_from_history" in body

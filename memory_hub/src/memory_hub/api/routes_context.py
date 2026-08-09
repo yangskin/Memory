@@ -34,9 +34,12 @@ def _project_visible_content() -> object:
 
     Empty project-shared checkpoints carry graph-projection metadata only. They
     remain in the event log, but must not crowd out substantive shared memory.
+    Task-sync events are also graph-projection metadata, including historical
+    uploads that incorrectly carried a serialized event body.
     """
     return and_(
         MemoryEvent.scope.in_(_PROJECT_VISIBLE_SCOPES),
+        MemoryEvent.operation != "task_sync",
         MemoryEvent.content_markdown.is_not(None),
         func.btrim(MemoryEvent.content_markdown) != "",
     )

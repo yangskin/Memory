@@ -180,6 +180,28 @@ def test_shared_feed_ignores_empty_shared_checkpoints() -> None:
     assert [event["content_markdown"] for event in body["events"]] == ["retained shared note"]
 
 
+def test_shared_feed_ignores_task_sync_event_bodies() -> None:
+    app = create_app()
+    project_id = f"project-{uuid4().hex}"
+    raw_token = _seed_token(app, project_id=project_id)
+    now = datetime.now(UTC)
+    with app.state.session_factory() as session:
+        session.add_all([
+            MemoryEvent(event_id=uuid4(), project_id=project_id, user_id="alice", agent_id="pytest", agent_instance_id="pytest-1", operation="record", scope="project_shared", content_markdown="retained shared note", metadata_json={}, occurred_at=now, content_hash="sha256:" + "5" * 64),
+            MemoryEvent(event_id=uuid4(), project_id=project_id, user_id="alice", agent_id="agent:reviewer", agent_instance_id="pytest-1", task_id="task-graph-lifecycle-02", operation="task_sync", scope="project_shared", content_markdown='{"event_type":"TaskReviewed","payload":{"summary":"approved"}}', metadata_json={}, occurred_at=now, content_hash="sha256:" + "6" * 64),
+        ])
+        session.commit()
+
+    response = TestClient(app).post(
+        "/v1/shared-feed",
+        headers={"Authorization": f"Bearer {raw_token}"},
+        json={"max_age_minutes": 60, "include_content": True},
+    )
+
+    assert response.status_code == 200
+    assert [event["content_markdown"] for event in response.json()["events"]] == ["retained shared note"]
+
+
 def test_shared_feed_includes_project_brief() -> None:
     app = create_app()
     project_id = f"project-{uuid4().hex}"

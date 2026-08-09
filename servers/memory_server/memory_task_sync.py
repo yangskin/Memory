@@ -1199,14 +1199,13 @@ def _task_sync_memory_event(config: MemoryConfig, task_event: dict[str, Any]) ->
     task_id = str(task_event.get("task_id") or "")
     command_id = str(task_event.get("command_id") or "")
     actor_id = str(task_event.get("actor_id") or "")
-    stable_content = _json({key: value for key, value in task_event.items() if key != "occurred_at"})
     event = build_memory_event(
         {
             "operation": "task_sync",
             "scope": "project_shared",
             "task_id": task_id,
             "agent_id": actor_id,
-            "content_markdown": stable_content,
+            "content_markdown": "",
             "task_event": task_event,
         },
         {"ok": True, "task_id": task_id},
