@@ -22,7 +22,7 @@ class EventPayload(BaseModel):
     agent_instance_id: str
     task_id: str | None = None
     task_run_id: str | None = None
-    operation: str = Field(pattern=r"^(record|observation|checkpoint)$")
+    operation: str = Field(pattern=r"^(record|observation|checkpoint|task_sync)$")
     record_kind: str | None = None
     scope: str = Field(pattern=r"^(personal|session|user_private|shared|project_shared|org_shared)$")
     task_phase: str | None = None

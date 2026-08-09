@@ -27,6 +27,12 @@ def test_shared_memory_activates_only_with_complete_configuration(monkeypatch) -
     assert config.server_url == "https://memory.example.com"
 
 
+def test_shared_memory_bounds_the_authoritative_task_command_timeout() -> None:
+    config = parse_shared_memory_config({"task_command_timeout_seconds": 0})
+
+    assert config.task_command_timeout_seconds == 0.1
+
+
 def test_local_user_config_supplies_private_hub_connection(repo, monkeypatch, tmp_path) -> None:
     local_config = tmp_path / "user_config.local.json"
     local_config.write_text(

@@ -1,11 +1,12 @@
 """
 Generic Memory MCP Server (Phase 1) — powered by mcp SDK.
 
-Exposes 4 default MCP tools:
+Exposes 5 default MCP tools:
     1. memory_read    — task context bootstrap, reads, search, recall
     2. memory_write   — structured memory records, observations, checkpoints
     3. memory_board_read  — dedicated Project Board queries
     4. memory_board_write — dedicated Project Board post/reply/resolve actions
+    5. memory_task_sync — Graph Agent task lifecycle and Graph Bundle reads
 
 Admin/sync/rebuild/diagnose/lineage/LLM-enhance flows are CLI/internal only.
 
@@ -41,6 +42,7 @@ from .server_dispatch import (  # noqa: F401
     _check_required,
     _dispatch_memory_context,
     _dispatch_memory_read,
+    _dispatch_memory_task_sync,
     _dispatch_memory_write,
     _dispatch_tool,
 )

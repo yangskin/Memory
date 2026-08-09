@@ -51,3 +51,12 @@ def test_shared_page_serves_graph_renderer() -> None:
     assert "function renderGraphSelection(node)" in page_response.text
     assert "完整节点信息" in page_response.text
     assert "fullName: node.name || node.key || node.type" in page_response.text
+    assert 'data-tab="taskPanel"' in page_response.text
+    assert 'id="taskGraphArea"' in page_response.text
+    assert 'id="taskCurrentCount"' in page_response.text
+    assert 'id="taskAgents"' in page_response.text
+    assert 'id="taskEvents"' in page_response.text
+    assert "function fetchTaskWorkspace()" in page_response.text
+    assert '"/task-graph?max_nodes=200&max_edges=400"' in page_response.text
+    assert '"/task-events?max_items=100"' in page_response.text
+    assert "TASK_SHAPES" in page_response.text

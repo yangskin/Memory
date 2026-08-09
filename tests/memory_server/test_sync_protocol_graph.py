@@ -18,6 +18,19 @@ def test_build_memory_event_preserves_graph_and_all_entity_fields(tmp_path, monk
         ),
     )
     delta = {"version": "1.0", "delta_id": "sha256:test", "task_id": "task-1", "nodes": [], "edges": []}
+    task_event = {
+        "version": "1.0",
+        "command_id": "command-1",
+        "event_type": "TaskCreated",
+        "task_id": "task-1",
+        "actor_id": "agent:test",
+        "expected_version": 0,
+        "expected_assignment_epoch": None,
+        "task_version": 1,
+        "assignment_epoch": 0,
+        "payload": {"title": "Task"},
+        "occurred_at": "2026-08-09T00:00:00+00:00",
+    }
 
     event = build_memory_event(
         {
@@ -25,6 +38,7 @@ def test_build_memory_event_preserves_graph_and_all_entity_fields(tmp_path, monk
             "scope": "project_shared",
             "task_id": "task-1",
             "graph_delta": delta,
+            "task_event": task_event,
             "map_names": ["Main"],
             "plugin_names": ["Memory"],
         },
@@ -33,5 +47,6 @@ def test_build_memory_event_preserves_graph_and_all_entity_fields(tmp_path, monk
     )
 
     assert event["metadata"]["graph_delta"] == delta
+    assert event["metadata"]["task_event"] == task_event
     assert event["metadata"]["map_names"] == ["Main"]
     assert event["metadata"]["plugin_names"] == ["Memory"]

@@ -51,6 +51,7 @@ def test_public_reexports_present():
     assert isinstance(SERVER_VERSION, str) and SERVER_VERSION
     assert "memory_read" in _BASE_DESCRIPTIONS
     assert "memory_write" in _BASE_DESCRIPTIONS
+    assert "memory_task_sync" in _BASE_DESCRIPTIONS
     assert "memory_context" in _BASE_DESCRIPTIONS
     assert "memory_enhance" in _BASE_DESCRIPTIONS
     # Tests still import these from the top-level server module.
@@ -61,6 +62,7 @@ def test_public_reexports_present():
         "_dispatch_tool",
         "_dispatch_memory_read",
         "_dispatch_memory_write",
+        "_dispatch_memory_task_sync",
         "_dispatch_memory_context",
         "create_server",
     ):
@@ -71,14 +73,14 @@ def test_default_facade_exposes_memory_and_board_tools(tmp_path):
     config = _make_config(tmp_path)
     tools = _build_tools(config)
     names = [t.name for t in tools]
-    assert names == ["memory_read", "memory_write", "memory_board_read", "memory_board_write"]
+    assert names == ["memory_read", "memory_write", "memory_board_read", "memory_board_write", "memory_task_sync"]
 
 
 def test_admin_flows_are_not_configurable_through_mcp_surface(tmp_path):
     config = _make_config(tmp_path)
     tools = _build_tools(config)
     names = [t.name for t in tools]
-    assert names == ["memory_read", "memory_write", "memory_board_read", "memory_board_write"]
+    assert names == ["memory_read", "memory_write", "memory_board_read", "memory_board_write", "memory_task_sync"]
 
 
 def test_check_required_returns_error_for_missing(tmp_path):

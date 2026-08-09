@@ -61,7 +61,7 @@ def test_mcp_list_tools_default_facade(repo: Path) -> None:
     server = create_server(config)
     tools = _run(_list_tools(server))
     names = sorted(t.name for t in tools)
-    assert names == ["memory_board_read", "memory_board_write", "memory_read", "memory_write"]
+    assert names == ["memory_board_read", "memory_board_write", "memory_read", "memory_task_sync", "memory_write"]
 
 
 def test_mcp_list_tools_excludes_admin_flows(repo: Path) -> None:
@@ -70,7 +70,7 @@ def test_mcp_list_tools_excludes_admin_flows(repo: Path) -> None:
     server = create_server(config)
     tools = _run(_list_tools(server))
     names = [t.name for t in tools]
-    assert names == ["memory_read", "memory_write", "memory_board_read", "memory_board_write"]
+    assert names == ["memory_read", "memory_write", "memory_board_read", "memory_board_write", "memory_task_sync"]
 
 
 def test_mcp_call_memory_read_get(repo: Path) -> None:
@@ -116,6 +116,27 @@ def test_mcp_call_dedicated_board_tools(repo: Path) -> None:
     }))
     assert queried["ok"] is True, queried
     assert any(item["post_id"] == posted["post"]["post_id"] for item in queried["items"])
+
+
+def test_mcp_call_memory_task_sync(repo: Path) -> None:
+    config = load_config(repo)
+    server = create_server(config)
+    created = _run(_call_tool(server, "memory_task_sync", {
+        "action": "create",
+        "command_id": "mcp-task-create",
+        "expected_version": 0,
+        "task_id": "mcp-task",
+        "actor_id": "agent:pytest",
+        "title": "MCP task sync",
+    }))
+    bundle = _run(_call_tool(server, "memory_task_sync", {
+        "action": "sync",
+        "task_id": "mcp-task",
+    }))
+
+    assert created["ok"] is True, created
+    assert bundle["ok"] is True, bundle
+    assert bundle["bundle"]["nodes"][0]["id"] == "task:mcp-task"
 
 
 def test_mcp_call_memory_read_task_context(repo: Path) -> None:

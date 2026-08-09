@@ -131,6 +131,36 @@ curl --fail -X POST "https://memory.example.com/v1/projects/<project-id>/graph/q
 `PROJECT_GRAPH_SEMANTIC_ENABLED` 默认是 `false`。来源图不依赖 LLM；只有在确认项目拥有
 稳定实体标注和足够明确的实体关系后，才应显式设为 `true` 以补充受证据约束的语义边。
 
+## Graph Agent Task System
+
+Task Graph 不复用共同记忆实体图的语义；它使用独立的 append-only `task_events` 与
+`tasks`、`task_agents`、`task_attempts`、`task_submissions`、`task_reviews` Projection 表，
+并将 Task/Agent/Attempt/Submission/Review 作为有类型的 `graph_nodes` / `graph_edges` 投影。
+`0010_task_graph` Alembic 迁移创建这些表。规范化 Task Event 同时保留
+`expected_version` / `expected_assignment_epoch` 与实际 `task_version` /
+`assignment_epoch`，因此同一 `command_id` 的内容、版本或 epoch 变形重放会被拒绝。
+
+本地 MCP 的 `memory_task_sync` 是唯一写入入口。它以 `task_sync` 外层 Memory Event 包装
+内层 Task Event，Hub 在写入 `memory_events`、Task Event 和 Projection 的同一事务中验证
+并应用。内层 `actor_id` 必须匹配外层 Agent ID；这是事件封装一致性校验，不替代 Token 级的
+Agent 身份认证。生命周期命令为 `create`、`assign`、
+`claim`、`decline`、`report`、`block`、`resume`、`submit`、`review`、`reassign`、`cancel`；
+每个命令都需要 `command_id` 与 `expected_version`，执行者动作还需要
+`expected_assignment_epoch`。
+
+只读端点均需要 `context:read`：
+
+- `GET /v1/projects/{project_id}/task-graph`：返回 `{roots,nodes,edges,cursor}` Graph Bundle；`task_id` 可缩小到单任务，`agent_id` 仅返回当前 Attempt 分配给该 Agent 的任务。
+- `GET /v1/projects/{project_id}/task-events`：读取 append-only Timeline，可用 `task_id` 和 `cursor` 分页；每条事件返回预期与实际 version/epoch。
+
+启用且可访问 Hub 的共享模式下，本地 MCP 先同步提交 Task Graph 命令到
+`POST /v1/projects/{project_id}/events/batch`；Hub 接受后才写本地 SQLite，避免本地 Agent
+伪造 claim/review/reassign。Hub 不可用时，`report` 与 `submit` 仍可本地记录并进入 Outbox，
+其他协调状态变更明确拒绝。未启用 Hub 的独立本地模式不需要网络。
+
+`/shared` 中的“任务工作区”读取上述两个端点，提供 roots Dashboard、Cytoscape Task Graph、
+Agent 汇总、节点详情和 Timeline；页面只使用 Token 所在项目的共享任务数据。
+
 ## 响应大小治理
 
 - `POST /v1/shared-feed` 默认最多 20 项、最大 50 项；事件正文默认 512 字符预览，

@@ -120,6 +120,10 @@ def rebuild_project(session: Session, project_id: str, *, batch_size: int = 500)
         after_seq = project_events(session, project_id, batch_size=batch_size)
         if after_seq <= before_seq:
             project_current_project_graph(session, project_id)
+            from memory_hub.tasks.projector import rebuild_task_graph
+
+            rebuild_task_graph(session, project_id)
+            session.commit()
             return after_seq
 
 

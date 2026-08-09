@@ -8,7 +8,15 @@
 
 ## 0. 当前基线（一句话总结）
 
-仓库已具备：4 个默认 MCP tool（通用 `memory_read` / `memory_write`，专用 `memory_board_read` / `memory_board_write`）+ CLI 维护/同步/诊断/重建/谱系/LLM enhance 入口 + 三层目录（`memory-bank/` / `.ai-context/` / `.ai-memory/`）+ 路径安全 + 原子写入 + 跨进程文件锁 + SQLite FTS（含 CJK bigram/trigram）+ schema v2 + 时间快照 + lineage + importance scoring + budget-first retrieval + dao/fa/shu 视图 + LLM map-reduce pipeline + 6 项 read-only LLM 增强能力 + verified embedding presets + gated 真 LLM smoke。普通 agent 的心智模型固定为：读取上下文/检索用 `memory_read`，写入记忆/任务 checkpoint 用 `memory_write`，跨 Agent 留言使用专用 Board 工具。详细历史见 DEVLOG。
+仓库已具备：5 个默认 MCP tool（通用 `memory_read` / `memory_write`，专用 `memory_board_read` / `memory_board_write` / `memory_task_sync`）+ CLI 维护/同步/诊断/重建/谱系/LLM enhance 入口 + 三层目录（`memory-bank/` / `.ai-context/` / `.ai-memory/`）+ 路径安全 + 原子写入 + 跨进程文件锁 + SQLite FTS（含 CJK bigram/trigram）+ schema v2 + 时间快照 + lineage + importance scoring + budget-first retrieval + dao/fa/shu 视图 + LLM map-reduce pipeline + 6 项 read-only LLM 增强能力 + verified embedding presets + gated 真 LLM smoke。普通 agent 的心智模型固定为：读取上下文/检索用 `memory_read`，写入记忆/任务 checkpoint 用 `memory_write`，跨 Agent 留言使用专用 Board 工具，协作任务生命周期使用 `memory_task_sync`。详细历史见 DEVLOG。
+
+### 0.1 Graph Agent Task System（当前增量）
+
+`memory_task_sync` 独立于既有 Memory 知识图：本地 SQLite 保存 append-only Task Event、
+Task/Agent/Attempt/Submission/Review Projection 与 Graph Bundle；Hub 使用同构的规范化事件表和
+投影。每次命令以 `command_id + expected_version + expected_assignment_epoch` 防止重复与旧执行者
+迟到提交。共享 Hub 启用时，协调命令先由 Hub 同步裁决再落本地；Hub 离线时只允许 `report` /
+`submit` 留作待同步记录。Memory 的普通本地写入继续完全不等待远端。
 
 ## 1. 文档目标
 

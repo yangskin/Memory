@@ -914,7 +914,7 @@ def test_allowed_tools_constant_matches_public_agent_surface() -> None:
     from servers.memory_server.server_dispatch import ALLOWED_TOOLS
 
     assert ALLOWED_TOOLS == frozenset(
-        {"memory_read", "memory_write", "memory_board_read", "memory_board_write"}
+        {"memory_read", "memory_write", "memory_board_read", "memory_board_write", "memory_task_sync"}
     )
 
 

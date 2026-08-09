@@ -10,8 +10,10 @@ from sqlalchemy.orm import Session
 from memory_hub.db.models import MemoryEvent
 from memory_hub.db.repositories import event_by_id, mark_brief_jobs_dirty
 from memory_hub.domain.events import EventBatchResponse, EventPayload, RejectedEvent
+from memory_hub.domain.tasks import task_event_from_metadata
 from memory_hub.graph.extractor import InvalidGraphDelta, validate_graph_delta
 from memory_hub.graph.semantic import has_project_graph_entities
+from memory_hub.tasks.projector import TaskProjectionError, project_task_event
 
 _SECRET = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
@@ -47,6 +49,25 @@ def ingest_events(session: Session, project_id: str, user_id: str, events: list[
                     RejectedEvent(event_id=event.event_id, code="invalid_graph_delta", message=str(exc))
                 )
                 continue
+        task_event = None
+        if event.operation == "task_sync":
+            if event.scope not in _PROJECT_VISIBLE_SCOPES:
+                response.rejected.append(
+                    RejectedEvent(event_id=event.event_id, code="invalid_task_scope", message="task_sync events require a project-visible scope")
+                )
+                continue
+            try:
+                task_event = task_event_from_metadata(event.metadata, event.task_id)
+            except Exception as exc:
+                response.rejected.append(
+                    RejectedEvent(event_id=event.event_id, code="invalid_task_event", message=str(exc))
+                )
+                continue
+            if task_event.actor_id != event.agent_id:
+                response.rejected.append(
+                    RejectedEvent(event_id=event.event_id, code="invalid_task_actor", message="task_event.actor_id must match the outer event agent_id")
+                )
+                continue
         content = event.content_markdown
         redacted = bool(content and _SECRET.search(content))
         if redacted:
@@ -62,6 +83,8 @@ def ingest_events(session: Session, project_id: str, user_id: str, events: list[
                 model.transport_id = event.transport_id
                 session.add(model)
                 session.flush()
+                if task_event is not None:
+                    project_task_event(session, project_id, model, task_event)
                 accepted_sequences.append(model.server_seq)
                 response.accepted.append(event.event_id)
                 mark_brief_jobs_dirty(
@@ -73,6 +96,8 @@ def ingest_events(session: Session, project_id: str, user_id: str, events: list[
                     project_debounce_seconds=project_debounce_seconds,
                     include_project_graph=model.scope in _PROJECT_VISIBLE_SCOPES and bool(content and content.strip()) and has_project_graph_entities(event.metadata),
                 )
+        except TaskProjectionError as exc:
+            response.rejected.append(RejectedEvent(event_id=event.event_id, code=exc.code, message=str(exc)))
         except IntegrityError:
             existing = event_by_id(session, project_id, event.event_id)
             if existing is not None and existing.content_hash == event.content_hash:

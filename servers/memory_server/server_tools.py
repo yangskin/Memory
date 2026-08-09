@@ -915,8 +915,61 @@ def _build_tools(config: MemoryConfig) -> list[Tool]:
     target_paths = [t.path for t in config.guard_targets]
     path_hint = ", ".join(target_paths) if target_paths else "memory-bank/*.md, .ai-context/*.md"
     facade_tools = _build_facade_tools(file_roles, path_hint, config.tag_allowed_tags)
+    task_sync_tool = Tool(
+        name="memory_task_sync",
+        description=_BASE_DESCRIPTIONS["memory_task_sync"],
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "sync",
+                        "history",
+                        "create",
+                        "assign",
+                        "claim",
+                        "decline",
+                        "report",
+                        "block",
+                        "resume",
+                        "submit",
+                        "review",
+                        "reassign",
+                        "cancel",
+                    ],
+                    "default": "sync",
+                },
+                "command_id": {"type": "string", "description": "Idempotency key for each mutation."},
+                "expected_version": {"type": "integer", "minimum": 0},
+                "expected_assignment_epoch": {"type": "integer", "minimum": 0},
+                "task_id": {"type": "string"},
+                "actor_id": {"type": "string", "description": "Optional local actor override; context_token supplies this when omitted."},
+                "agent_id": {"type": "string", "description": "Agent filter for reads; also accepted as the local actor alias."},
+                "context_token": {"type": "string", "description": "Optional task-context token used to derive the local actor identity."},
+                "cursor": {"type": "integer", "minimum": 0},
+                "max_items": {"type": "integer", "minimum": 1, "maximum": 200},
+                "title": {"type": "string"},
+                "objective": {"type": "string"},
+                "acceptance": {"type": "string"},
+                "priority": {"type": "string"},
+                "depends_on": {"type": "array", "items": {"type": "string"}},
+                "parent_task_id": {"type": "string"},
+                "produced_memory": {"type": "array", "items": {"type": "string"}},
+                "assignee": {"type": "string"},
+                "attempt_id": {"type": "string"},
+                "summary": {"type": "string"},
+                "reason": {"type": "string"},
+                "evidence": {"type": "array", "items": {"type": "string"}},
+                "submission_id": {"type": "string"},
+                "review_id": {"type": "string"},
+                "decision": {"type": "string", "enum": ["approved", "changes_requested"]},
+            },
+            "additionalProperties": False,
+        },
+    )
     allowed_tools = {"memory_read", "memory_write", "memory_board_read", "memory_board_write"}
-    return [tool for tool in facade_tools if tool.name in allowed_tools]
+    return [*([tool for tool in facade_tools if tool.name in allowed_tools]), task_sync_tool]
 
 
 __all__ = ["_build_file_roles", "_build_facade_tools", "_build_legacy_tools", "_build_tools"]

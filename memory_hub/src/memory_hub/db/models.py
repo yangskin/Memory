@@ -193,6 +193,122 @@ class GraphProjectionState(Base):
     project_id: Mapped[str] = mapped_column(String(256), primary_key=True)
     covers_through_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
 
+
+class TaskEvent(Base):
+    __tablename__ = "task_events"
+    __table_args__ = (
+        UniqueConstraint("project_id", "command_id", name="uq_task_events_project_command"),
+        UniqueConstraint("project_id", "source_event_id", name="uq_task_events_project_source_event"),
+        Index("idx_task_events_project_task_seq", "project_id", "task_id", "task_event_seq"),
+        Index("idx_task_events_project_time", "project_id", "occurred_at"),
+    )
+
+    task_event_seq: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    project_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    source_event_id: Mapped[UUID] = mapped_column(nullable=False)
+    command_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    task_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    expected_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    expected_assignment_epoch: Mapped[int | None] = mapped_column(Integer)
+    task_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    assignment_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column("payload", JSONB, nullable=False, server_default="{}")
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class Task(Base):
+    __tablename__ = "tasks"
+    __table_args__ = (
+        Index("idx_tasks_project_state", "project_id", "state", "updated_at"),
+        Index("idx_tasks_project_updated", "project_id", "updated_at"),
+    )
+
+    project_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    title: Mapped[str] = mapped_column(String(1024), nullable=False)
+    objective: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    acceptance: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    priority: Mapped[str] = mapped_column(String(64), nullable=False, server_default="normal")
+    state: Mapped[str] = mapped_column(String(64), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    assignment_epoch: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    current_attempt_id: Mapped[str | None] = mapped_column(String(256))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TaskAgent(Base):
+    __tablename__ = "task_agents"
+    __table_args__ = (Index("idx_task_agents_project_status", "project_id", "status"),)
+
+    project_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    agent_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    role: Mapped[str] = mapped_column(String(256), nullable=False, server_default="")
+    capabilities_json: Mapped[list[str]] = mapped_column("capabilities", JSONB, nullable=False, server_default="[]")
+    owner: Mapped[str] = mapped_column(String(256), nullable=False, server_default="")
+    status: Mapped[str] = mapped_column(String(64), nullable=False, server_default="available")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TaskAttempt(Base):
+    __tablename__ = "task_attempts"
+    __table_args__ = (
+        ForeignKeyConstraint(["project_id", "task_id"], ["tasks.project_id", "tasks.task_id"], ondelete="CASCADE", name="fk_task_attempts_task"),
+        UniqueConstraint("project_id", "task_id", "epoch", name="uq_task_attempts_project_task_epoch"),
+        Index("idx_task_attempts_project_assignee", "project_id", "assignee", "status"),
+    )
+
+    project_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    attempt_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    assignee: Mapped[str] = mapped_column(String(256), nullable=False)
+    assigned_by: Mapped[str] = mapped_column(String(256), nullable=False)
+    status: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TaskSubmission(Base):
+    __tablename__ = "task_submissions"
+    __table_args__ = (
+        ForeignKeyConstraint(["project_id", "task_id"], ["tasks.project_id", "tasks.task_id"], ondelete="CASCADE", name="fk_task_submissions_task"),
+        ForeignKeyConstraint(["project_id", "attempt_id"], ["task_attempts.project_id", "task_attempts.attempt_id"], ondelete="CASCADE", name="fk_task_submissions_attempt"),
+        Index("idx_task_submissions_project_task", "project_id", "task_id", "created_at"),
+    )
+
+    project_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    submission_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    attempt_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_json: Mapped[list[str]] = mapped_column("evidence", JSONB, nullable=False, server_default="[]")
+    task_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TaskReview(Base):
+    __tablename__ = "task_reviews"
+    __table_args__ = (
+        ForeignKeyConstraint(["project_id", "task_id"], ["tasks.project_id", "tasks.task_id"], ondelete="CASCADE", name="fk_task_reviews_task"),
+        ForeignKeyConstraint(["project_id", "submission_id"], ["task_submissions.project_id", "task_submissions.submission_id"], ondelete="CASCADE", name="fk_task_reviews_submission"),
+        Index("idx_task_reviews_project_task", "project_id", "task_id", "created_at"),
+    )
+
+    project_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    review_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    submission_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    reviewer: Mapped[str] = mapped_column(String(256), nullable=False)
+    decision: Mapped[str] = mapped_column(String(64), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ContextUsageDaily(Base):
     __tablename__ = "context_usage_daily"
 

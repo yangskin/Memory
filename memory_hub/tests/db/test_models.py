@@ -1,4 +1,16 @@
-from memory_hub.db.models import Base, BoardPost, GraphEdge, GraphNode, GraphProjectionState, MemoryEvent
+from memory_hub.db.models import (
+    Base,
+    BoardPost,
+    GraphEdge,
+    GraphNode,
+    GraphProjectionState,
+    MemoryEvent,
+    Task,
+    TaskAttempt,
+    TaskEvent,
+    TaskReview,
+    TaskSubmission,
+)
 
 
 def test_required_tables_and_event_idempotency_constraint_are_declared() -> None:
@@ -13,6 +25,12 @@ def test_required_tables_and_event_idempotency_constraint_are_declared() -> None
         "graph_nodes",
         "graph_edges",
         "graph_projection_states",
+        "task_events",
+        "tasks",
+        "task_agents",
+        "task_attempts",
+        "task_submissions",
+        "task_reviews",
     }
     unique_constraints = {constraint.name for constraint in MemoryEvent.__table__.constraints}
     indexes = {index.name for index in MemoryEvent.__table__.indexes}
@@ -41,3 +59,20 @@ def test_graph_constraints_and_indexes_are_declared() -> None:
     assert {item.name for item in GraphNode.__table__.indexes} == {"idx_graph_nodes_project_type"}
     assert {item.name for item in GraphEdge.__table__.indexes} == {"idx_graph_edges_project_source", "idx_graph_edges_project_target"}
     assert GraphProjectionState.__table__.primary_key.columns.keys() == ["project_id"]
+
+
+def test_task_projection_tables_have_project_scoped_identity_and_history_constraints() -> None:
+    assert Task.__table__.primary_key.columns.keys() == ["project_id", "task_id"]
+    assert TaskAttempt.__table__.primary_key.columns.keys() == ["project_id", "attempt_id"]
+    assert TaskSubmission.__table__.primary_key.columns.keys() == ["project_id", "submission_id"]
+    assert TaskReview.__table__.primary_key.columns.keys() == ["project_id", "review_id"]
+    assert {item.name for item in TaskEvent.__table__.constraints} >= {
+        "uq_task_events_project_command",
+        "uq_task_events_project_source_event",
+    }
+    assert {column.name for column in TaskEvent.__table__.columns} >= {
+        "expected_version",
+        "expected_assignment_epoch",
+        "task_version",
+        "assignment_epoch",
+    }

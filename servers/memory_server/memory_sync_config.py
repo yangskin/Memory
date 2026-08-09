@@ -19,6 +19,7 @@ class SharedMemoryConfig:
     upload_interval_seconds: int = 30
     upload_batch_size: int = 20
     upload_timeout_seconds: float = 5.0
+    task_command_timeout_seconds: float = 2.0
     upload_retry_max_seconds: int = 300
     read_enabled: bool = True
     background_refresh_seconds: int = 60
@@ -48,6 +49,11 @@ def parse_shared_memory_config(raw: Any) -> SharedMemoryConfig:
             return max(minimum, int(raw.get(name, default)))
         except (TypeError, ValueError):
             return default
+    def decimal(name: str, default: float, minimum: float) -> float:
+        try:
+            return max(minimum, float(raw.get(name, default)))
+        except (TypeError, ValueError):
+            return default
     scopes = raw.get("sync_scopes")
     if not isinstance(scopes, list):
         scopes = list(SharedMemoryConfig.sync_scopes)
@@ -61,7 +67,8 @@ def parse_shared_memory_config(raw: Any) -> SharedMemoryConfig:
         upload_enabled=bool(raw.get("upload_enabled", True)),
         upload_interval_seconds=integer("upload_interval_seconds", 30),
         upload_batch_size=min(20, integer("upload_batch_size", 20)),
-        upload_timeout_seconds=float(raw.get("upload_timeout_seconds", 5)),
+        upload_timeout_seconds=decimal("upload_timeout_seconds", 5.0, 0.1),
+        task_command_timeout_seconds=decimal("task_command_timeout_seconds", 2.0, 0.1),
         upload_retry_max_seconds=integer("upload_retry_max_seconds", 300),
         read_enabled=bool(raw.get("read_enabled", True)),
         background_refresh_seconds=integer("background_refresh_seconds", 60),

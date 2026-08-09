@@ -37,6 +37,7 @@ def build_memory_event(
             "confidence",
             "validated_by",
             "graph_delta",
+            "task_event",
         )
         if canonical.get(key, args.get(key)) is not None
     }

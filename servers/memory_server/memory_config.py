@@ -215,6 +215,7 @@ DEFAULT_CONFIG_CONTENT: dict[str, Any] = {
         "upload_interval_seconds": 30,
         "upload_batch_size": 20,
         "upload_timeout_seconds": 5,
+        "task_command_timeout_seconds": 2,
         "upload_retry_max_seconds": 300,
         "read_enabled": True,
         "background_refresh_seconds": 60,

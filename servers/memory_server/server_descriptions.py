@@ -53,6 +53,13 @@ _BASE_DESCRIPTIONS: dict[str, str] = {
         "warnings, handoffs, and proposals; reply to threads; or resolve observed outcomes. Writes are local-first "
         "and remote synchronization is best-effort."
     ),
+    "memory_task_sync": (
+        "Dedicated Graph Agent task interface. Read a Graph Bundle or create, assign, claim, decline, report, "
+        "block, resume, submit, review, reassign, and cancel tasks through an append-only local event store. "
+        "Mutations require command_id and expected_version; executor actions also require expected_assignment_epoch. "
+        "With an active shared Hub, commands are accepted by the Hub before local commit; while that Hub is offline, "
+        "only report and submit may be recorded locally."
+    ),
     "memory_context": (
         "Internal/CLI context operations. Supports deterministic compile, "
         "runtime digest reads, lineage tracing, conflict listing, snapshot comparison, "

@@ -14,7 +14,7 @@ from memory_hub.graph.projector import current_project_graph_edge_origins
 
 router = APIRouter()
 
-GRAPH_NODE_TYPES = frozenset({"source", "file", "class", "module", "asset", "blueprint", "map", "plugin", "system"})
+GRAPH_NODE_TYPES = frozenset({"source", "file", "class", "module", "asset", "blueprint", "map", "plugin", "system", "task", "agent", "attempt", "submission", "review"})
 
 
 def _assert_project(principal: Principal, project_id: str) -> None:

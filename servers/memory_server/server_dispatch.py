@@ -64,6 +64,7 @@ from .memory_task_context import (
     mark_task_checkpoint,
     recover_task_context_for_write,
 )
+from .memory_task_sync import enqueue_task_sync_event, task_sync
 from .memory_task_brief import build_task_brief
 from .memory_team_settlement import maybe_auto_settle_team_record
 from .memory_events import get_current_user
@@ -2218,7 +2219,7 @@ def _dispatch_memory_enhance(config: MemoryConfig, args: dict[str, Any]) -> dict
 # used to exist on the MCP surface; novel `memory_*` names get a generic
 # CLI hint.
 ALLOWED_TOOLS: frozenset[str] = frozenset(
-    {"memory_read", "memory_write", "memory_board_read", "memory_board_write"}
+    {"memory_read", "memory_write", "memory_board_read", "memory_board_write", "memory_task_sync"}
 )
 
 LEGACY_TOOL_MIGRATION_HINTS: dict[str, str] = {
@@ -2266,6 +2267,23 @@ def _migration_hint_for(name: str) -> str:
     return LEGACY_TOOL_MIGRATION_HINTS.get(name, _GENERIC_CLI_HINT)
 
 
+def _dispatch_memory_task_sync(config: MemoryConfig, args: dict[str, Any]) -> dict[str, Any]:
+    """Bind an optional task context to a local Task Graph command."""
+
+    task_args = dict(args)
+    context_token = _none_if_blank(task_args.get("context_token"))
+    if context_token:
+        context = get_task_context(config, context_token)
+        if not context.get("ok"):
+            return context
+        if not task_args.get("actor_id") and context.get("agent_id"):
+            task_args["actor_id"] = context["agent_id"]
+    result = task_sync(config, task_args)
+    if str(task_args.get("action") or "sync") not in {"sync", "history"}:
+        return enqueue_task_sync_event(config, result)
+    return result
+
+
 def _dispatch_tool(config: MemoryConfig, name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Dispatch a tool call and return the result dict.
 
@@ -2287,6 +2305,8 @@ def _dispatch_tool(config: MemoryConfig, name: str, args: dict[str, Any]) -> dic
             if "content" in board_args and "content_markdown" not in board_args:
                 board_args["content_markdown"] = board_args.pop("content")
             return _dispatch_memory_write(config, board_args)
+        if name == "memory_task_sync":
+            return _dispatch_memory_task_sync(config, args)
         result = error_result(
             "unknown_tool",
             f"unknown tool: {name}. {_GENERIC_CLI_HINT}",
@@ -2306,6 +2326,7 @@ __all__ = [
     "_dispatch_memory_write",
     "_dispatch_memory_context",
     "_dispatch_memory_enhance",
+    "_dispatch_memory_task_sync",
     "_dispatch_tool",
     "_migration_hint_for",
 ]

@@ -206,7 +206,7 @@ def test_lineage_tools_are_internal_not_mcp_surface(repo: Path) -> None:
     traced = memory_trace_lineage(config, observation["id"])
     rejected = _dispatch_tool(config, "memory_trace_lineage", {"record_id": observation["id"]})
 
-    assert tool_names == {"memory_read", "memory_write", "memory_board_read", "memory_board_write"}
+    assert tool_names == {"memory_read", "memory_write", "memory_board_read", "memory_board_write", "memory_task_sync"}
     assert observation["ok"] is True
     assert linked["ok"] is True
     assert traced["ok"] is True

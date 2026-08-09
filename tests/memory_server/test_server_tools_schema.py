@@ -79,6 +79,17 @@ def test_dedicated_board_tools_are_discoverable_with_narrow_schemas(tmp_path: Pa
     assert write_schema["additionalProperties"] is False
 
 
+def test_task_sync_tool_exposes_lifecycle_commands_with_a_narrow_schema(tmp_path: Path) -> None:
+    tools = {tool.name: tool for tool in _build_tools(_make_config(tmp_path))}
+
+    schema = tools["memory_task_sync"].inputSchema
+
+    assert schema["properties"]["action"]["default"] == "sync"
+    assert {"create", "claim", "submit", "review", "reassign"} <= set(schema["properties"]["action"]["enum"])
+    assert schema["properties"]["expected_version"]["minimum"] == 0
+    assert schema["additionalProperties"] is False
+
+
 def test_facade_schema_exposes_project_graph_operation(tmp_path: Path) -> None:
     read_schema = _tool_schema(_make_config(tmp_path), "memory_read")
     assert "project_graph" in read_schema["properties"]["operation"]["enum"]

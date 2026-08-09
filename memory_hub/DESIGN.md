@@ -10,8 +10,10 @@ Memory Hub 是本地 Memory MCP 的可选 HTTPS 共享事件服务。它不取�
 Markdown 真源、SQLite 索引或本地任务上下文：未配置 Hub 时，
 `memory_read` 和 `memory_write` 保持离线可用，也不会发起网络请求。
 
-启用 Hub 后，本地 MCP 将可同步的规范化事件写入本地 Outbox，并由后台线程
-异步上传。网络、远端鉴权或远端处理失败不会阻塞本地写入。
+启用 Hub 后，普通 Memory 写入仍先进入本地 Outbox 并由后台线程异步上传；网络、远端鉴权或
+远端处理失败不会阻塞这些本地写入。共享 Task Graph 的协调命令是例外：本地 MCP 先请求 Hub
+进行 version / epoch 裁决，只有 Hub 接受才提交本地 Task Event；离线时只允许 `report` 与
+`submit` 作为待同步记录。
 
 ## 2. 架构
 
@@ -33,6 +35,9 @@ flowchart LR
     MCP -->|HTTPS 上下文读取| Hub
     DB -->|项目可见事件旁路投影| Graph[Project Graph]
     MCP -->|显式 project_graph 查询| Graph
+    MCP -->|本地 Task Event / Projection| LocalTask[(Task Graph SQLite)]
+    MCP -->|共享 Task Command| Hub
+    DB -->|Task Event Projection| TaskGraph[Task Graph]
 ```
 
 生产 Compose 栈包含四个服务：
@@ -86,7 +91,26 @@ Hub 接口：
 处理。Graph 默认只返回紧凑节点和边：metadata、边 ID 与来源事件 UUID 列表必须显式请求；
 MCP Graph 客户端固定使用紧凑模式。
 
-### 3.2 响应与 Token 预算
+### 3.2 Graph Agent Task System
+
+Task Graph 是与共同记忆实体图分离的执行投影。每个 `task_sync` 外层事件包含经过严格校验的
+内层 Task Event；Hub 从 Token 绑定项目与权限，并要求内外 `task_id`、Agent ID 一致。该
+检查只保证事件封装一致性，不能替代 Token 级 Agent 身份认证。
+一次成功 ingest 在同一数据库事务中写入 `memory_events`、append-only `task_events`，校验
+`command_id`、expected version 与 assignment epoch，更新 Task/Attempt/Submission/Review
+Projection，并刷新 Graph Bundle 节点与边。`TaskEvent` 同时记录预期和实际 version/epoch，
+因此同一 command 的变形重放不会被当作成功重复。
+
+Task Graph 端点为 `GET /v1/projects/{project_id}/task-graph` 与
+`GET /v1/projects/{project_id}/task-events`，均受 `context:read` 和项目范围校验。Graph Bundle
+固定返回 `roots`、`nodes`、`edges` 与 `cursor`；`agent_id` 仅匹配当前 Attempt 的 assignee。
+`/shared` 的任务工作区通过这两个端点渲染 Dashboard、图、Agent 视图、详情和 Timeline。
+
+在 Hub 共享模式，协调命令同步调用已有的 batch event endpoint，避免异步 Outbox 把过期的
+claim/review/reassign 伪装为有效；Hub 不可用时只有 `report` / `submit` 可本地追加并在恢复后
+同步。普通 Memory 写入仍保持异步本地优先，不受此规则影响。
+
+### 3.3 响应与 Token 预算
 
 服务端在数据源和 MCP 边界实施两层限制。Hub Feed 默认 20 项、最大 50 项，事件正文为
 512 字符预览；Board 默认 20 项、最大 50 项，正文为 512 字符预览且省略 references；
@@ -193,6 +217,7 @@ docker compose -p <project-id> up -d --force-recreate worker
 | 事件正文脱敏、metadata 白名单、个人范围隔离 | 已完成 |
 | `fake` 与 OpenAI 兼容 Brief Provider | 已完成 |
 | Docker Compose、健康检查、备份命令与自动本机配置生成 | 已完成 |
-| 多节点高可用、跨区域复制、强一致任务编排 | 未实现，且不属于当前设计范围 |
+| 多节点高可用、跨区域复制、分布式共识 | 未实现，且不属于当前设计范围 |
+| 单 Hub 事务内的共享 Task Graph version / epoch 裁决 | 已完成；不引入心跳、租约、锁或强一致分布式任务状态机 |
 
 当前验证覆盖 Hub 单元/集成/Worker 测试、本地 MCP 同步测试、公开树审计、TLS 与 HTTPS 健康检查。真实部署的运行日志和数据库只应包含运行态信息，不应被复制进仓库文档。

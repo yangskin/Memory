@@ -3,5 +3,6 @@
   "enabled": false,
   "server_url": "https://memory.example.com",
   "project_id": "your-project-id",
+  "task_command_timeout_seconds": 2,
   "token": "mem_v1.<token-id>.<secret>"
 }
