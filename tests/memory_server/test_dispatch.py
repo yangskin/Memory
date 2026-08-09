@@ -219,22 +219,11 @@ def test_memory_read_retrieve_context_keeps_requested_shared_context(repo: Path,
 
 
 
-def test_memory_read_project_graph_is_independent_operation(repo: Path, monkeypatch) -> None:
+def test_memory_read_rejects_legacy_project_graph_operation(repo: Path) -> None:
     config = load_config(repo)
-    captured: dict = {}
-
-    def fake_graph(_config, args):
-        captured.update(args)
-        return {"nodes": [{"id": "n1"}], "edges": [], "freshness": {"stale": False}}
-
-    monkeypatch.setattr("servers.memory_server.memory_shared_context.get_project_graph", fake_graph)
     result = _dispatch_tool(config, "memory_read", {"operation": "project_graph", "task_id": "task-1"})
-    assert result["ok"] is True
-    assert result["operation"] == "project_graph"
-    assert result["graph"]["nodes"] == [{"id": "n1"}]
-    assert captured["depth"] == 1
-    assert captured["max_nodes"] == 50
-    assert captured["max_edges"] == 100
+    assert result["ok"] is False
+    assert result["error"] == "invalid_input"
 
 
 def test_memory_read_include_diagnostics_restores_retrieval_metadata(repo: Path) -> None:

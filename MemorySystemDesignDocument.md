@@ -568,7 +568,7 @@ unexpected process exit
 | [Hermes Agent](https://github.com/NousResearch/hermes-agent) | session 后复盘、memory/skill 分层、写入审批、周期 Curator | 否；只借鉴产品闭环与门禁 |
 | [Hermes Self-Evolution](https://github.com/NousResearch/hermes-agent-self-evolution) | execution trace 驱动反思、候选评测、全测/尺寸/语义约束 | 否；本目标不生成 Skill/Prompt/Code |
 | [LangMem](https://github.com/langchain-ai/langmem) | background extraction/consolidation API | 否；现有 runner + Markdown store 已覆盖，避免绑定 LangGraph |
-| [Graphiti](https://github.com/getzep/graphiti) | episode provenance、事实 validity window、增量冲突失效 | 否；等时态关系查询成为主需求再引入图存储 |
+| [Graphiti](https://github.com/getzep/graphiti) | episode provenance、事实 validity window、增量冲突失效 | 否；当前只保留 Task Graph，若未来出现独立的时态知识关系需求再单独评估 |
 | [Letta](https://github.com/letta-ai/letta) | memory blocks 与主 agent/睡眠 agent 分离 | 否；会扩大为另一套 agent runtime |
 | [Mem0](https://github.com/mem0ai/mem0) | 可插拔 memory layer 与历史 API | 否；当前项目级 typed records/lineage 更贴合现有数据 |
 

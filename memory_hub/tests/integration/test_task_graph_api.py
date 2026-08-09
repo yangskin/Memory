@@ -87,6 +87,13 @@ def test_task_sync_events_project_a_graph_bundle_and_timeline() -> None:
     assert response.status_code == 200
     assert len(response.json()["accepted"]) == len(events)
 
+    legacy_event = _event(_task_event("legacy-graph-delta", "TaskCreated", expected_version=0, task_version=1, assignment_epoch=0, payload={"title": "Legacy graph"}))
+    legacy_event["operation"] = "record"
+    legacy_event["metadata"] = {"graph_delta": {"version": "1.0"}}
+    legacy_response = client.post(f"/v1/projects/{project_id}/events/batch", headers=headers, json={"events": [legacy_event]})
+    assert legacy_response.status_code == 200
+    assert legacy_response.json()["rejected"][0]["code"] == "unsupported_metadata"
+
     graph = client.get(f"/v1/projects/{project_id}/task-graph?task_id=task-api-1", headers=headers)
     history = client.get(f"/v1/projects/{project_id}/task-events?task_id=task-api-1", headers=headers)
 
@@ -112,6 +119,8 @@ def test_task_sync_events_project_a_graph_bundle_and_timeline() -> None:
     assert unrelated_agent.status_code == 200
     assert unrelated_agent.json()["nodes"] == []
     assert unrelated_agent.json()["roots"] == {"current": [], "assigned": [], "review": [], "attention": []}
+    assert client.get(f"/v1/projects/{project_id}/graph", headers=headers).status_code == 404
+    assert client.post(f"/v1/projects/{project_id}/graph/query", headers=headers, json={}).status_code == 404
 
 
 def test_task_sync_rejects_an_outdated_task_version() -> None:

@@ -134,18 +134,3 @@ def test_event_identity_recovers_from_corrupt_file_and_bounds_fields(tmp_path) -
     assert len(event["agent_id"]) == 256
     assert event["source_node_id"]
     assert json.loads(identity_path.read_text(encoding="utf-8"))["source_node_id"] == event["source_node_id"]
-
-
-def test_graph_uses_project_graph_query_endpoint(monkeypatch) -> None:
-    client = MemoryHubClient(SharedMemoryConfig(enabled=True, server_url="https://memory.example.com", project_id="project-1"))
-    captured = {}
-
-    def fake_post(path, payload, timeout):
-        captured.update(path=path, payload=payload)
-        return 200, {"nodes": [], "edges": []}
-
-    monkeypatch.setattr(client, "post", fake_post)
-    status, body = client.graph({"task_id": "task-1"}, 2.0)
-    assert status == 200
-    assert body["nodes"] == []
-    assert captured == {"path": "/v1/projects/project-1/graph/query", "payload": {"task_id": "task-1"}}

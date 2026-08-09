@@ -11,8 +11,6 @@ from memory_hub.db.models import MemoryEvent
 from memory_hub.db.repositories import event_by_id, mark_brief_jobs_dirty
 from memory_hub.domain.events import EventBatchResponse, EventPayload, RejectedEvent
 from memory_hub.domain.tasks import task_event_from_metadata
-from memory_hub.graph.extractor import InvalidGraphDelta, validate_graph_delta
-from memory_hub.graph.semantic import has_project_graph_entities
 from memory_hub.tasks.projector import TaskProjectionError, project_task_event
 
 _SECRET = re.compile(
@@ -42,13 +40,10 @@ def ingest_events(session: Session, project_id: str, user_id: str, events: list[
                 response.rejected.append(RejectedEvent(event_id=event.event_id, code="event_id_conflict", message="event_id already exists with different content"))
             continue
         if isinstance(event.metadata, dict) and "graph_delta" in event.metadata:
-            try:
-                validate_graph_delta(event.metadata, event.task_id or "")
-            except InvalidGraphDelta as exc:
-                response.rejected.append(
-                    RejectedEvent(event_id=event.event_id, code="invalid_graph_delta", message=str(exc))
-                )
-                continue
+            response.rejected.append(
+                RejectedEvent(event_id=event.event_id, code="unsupported_metadata", message="graph_delta is retired")
+            )
+            continue
         task_event = None
         if event.operation == "task_sync":
             if event.scope not in _PROJECT_VISIBLE_SCOPES:
@@ -94,7 +89,6 @@ def ingest_events(session: Session, project_id: str, user_id: str, events: list[
                     model.server_seq,
                     user_debounce_seconds=user_debounce_seconds,
                     project_debounce_seconds=project_debounce_seconds,
-                    include_project_graph=model.scope in _PROJECT_VISIBLE_SCOPES and bool(content and content.strip()) and has_project_graph_entities(event.metadata),
                 )
         except TaskProjectionError as exc:
             response.rejected.append(RejectedEvent(event_id=event.event_id, code=exc.code, message=str(exc)))

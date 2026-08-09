@@ -3,7 +3,6 @@ from memory_hub.db.models import (
     BoardPost,
     GraphEdge,
     GraphNode,
-    GraphProjectionState,
     MemoryEvent,
     Task,
     TaskAttempt,
@@ -24,7 +23,6 @@ def test_required_tables_and_event_idempotency_constraint_are_declared() -> None
         "context_usage_daily",
         "graph_nodes",
         "graph_edges",
-        "graph_projection_states",
         "task_events",
         "tasks",
         "task_agents",
@@ -58,7 +56,6 @@ def test_graph_constraints_and_indexes_are_declared() -> None:
     assert "uq_graph_edges_project_relation" in {item.name for item in GraphEdge.__table__.constraints}
     assert {item.name for item in GraphNode.__table__.indexes} == {"idx_graph_nodes_project_type"}
     assert {item.name for item in GraphEdge.__table__.indexes} == {"idx_graph_edges_project_source", "idx_graph_edges_project_target"}
-    assert GraphProjectionState.__table__.primary_key.columns.keys() == ["project_id"]
 
 
 def test_task_projection_tables_have_project_scoped_identity_and_history_constraints() -> None:

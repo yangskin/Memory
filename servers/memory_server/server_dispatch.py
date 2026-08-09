@@ -1079,10 +1079,6 @@ def _bounded_read_args(operation: str, args: dict[str, Any]) -> dict[str, Any]:
         clamp("max_chars", None, 32_000)
     if operation == "board":
         clamp("max_items", 20, 50)
-    if operation == "project_graph":
-        clamp("depth", 1, 2)
-        clamp("max_nodes", 50, 200)
-        clamp("max_edges", 100, 400)
     return bounded
 
 
@@ -1211,18 +1207,6 @@ def _dispatch_memory_read(config: MemoryConfig, args: dict[str, Any]) -> dict[st
             return ok_result("shared context read", operation="shared_context", shared_context=payload)
         except Exception as exc:
             return error_result("shared_context_unavailable", type(exc).__name__)
-
-    if operation == "project_graph":
-        try:
-            from .memory_shared_context import get_project_graph
-            payload = get_project_graph(config.shared_memory, args)
-            if payload is None:
-                return error_result("shared_context_unavailable", "project graph read is disabled")
-            if payload.get("status") == "unavailable":
-                return error_result("project_graph_unavailable", str(payload.get("error") or "remote_unavailable"))
-            return ok_result("project graph read", operation="project_graph", graph=payload)
-        except Exception as exc:
-            return error_result("project_graph_unavailable", type(exc).__name__)
 
     if operation == "get_task_context":
         return get_task_context(config, str(args.get("context_token") or ""))
@@ -1412,7 +1396,7 @@ def _dispatch_memory_read(config: MemoryConfig, args: dict[str, Any]) -> dict[st
         ), args)
     return error_result(
         "invalid_input",
-        "operation must be one of: task_context, task_brief, get_task_context, get, search, search_records, board, runtime_digest, retrieve_context, important_memories, latest_memories, shared_context, project_graph",
+        "operation must be one of: task_context, task_brief, get_task_context, get, search, search_records, board, runtime_digest, retrieve_context, important_memories, latest_memories, shared_context",
     )
 
 
@@ -1592,28 +1576,6 @@ def _dispatch_memory_write(config: MemoryConfig, args: dict[str, Any]) -> dict[s
             result["current_task_path"] = task_ctx.get("current_task_path")
         trigger_phases = config.reflection.get("trigger_phases", ["task_done", "test_failed"])
         task_id = str(args.get("task_id") or checkpoint_task_id or "").strip()
-        if phase == "task_done" and task_id:
-            try:
-                from .memory_task_graph_jobs import enqueue_task_graph_settlement
-
-                result["background_task_graph"] = enqueue_task_graph_settlement(
-                    config,
-                    task_id=task_id,
-                    user=(
-                        canonical_identity(str(args.get("user") or args.get("author")))
-                        if args.get("user") or args.get("author")
-                        else None
-                    ),
-                    branch=str(args.get("branch") or "") or None,
-                    trigger=phase,
-                )
-            except Exception as exc:  # noqa: BLE001 - background intent must never fail the checkpoint
-                result["background_task_graph"] = {
-                    "ok": False,
-                    "queued": False,
-                    "error": "background_queue_unavailable",
-                    "message": f"{type(exc).__name__}: {exc}",
-                }
         if (
             config.reflection.get("enabled", False)
             and isinstance(trigger_phases, list)

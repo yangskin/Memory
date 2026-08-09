@@ -21,7 +21,6 @@ class Settings:
     brief_user_debounce_seconds: int
     brief_project_debounce_seconds: int
     brief_rebase_interval_seconds: int
-    project_graph_semantic_enabled: bool
 
 
 def load_settings() -> Settings:
@@ -39,5 +38,4 @@ def load_settings() -> Settings:
         brief_user_debounce_seconds=int(os.getenv("BRIEF_USER_DEBOUNCE_SECONDS", "20")),
         brief_project_debounce_seconds=int(os.getenv("BRIEF_PROJECT_DEBOUNCE_SECONDS", "45")),
         brief_rebase_interval_seconds=int(os.getenv("BRIEF_REBASE_INTERVAL_SECONDS", "3600")),
-        project_graph_semantic_enabled=os.getenv("PROJECT_GRAPH_SEMANTIC_ENABLED", "false").strip().lower() == "true",
     )

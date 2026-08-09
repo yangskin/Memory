@@ -13,4 +13,13 @@ def test_hub_migration_graph_has_one_current_head() -> None:
 
     script = ScriptDirectory.from_config(config)
 
-    assert tuple(script.get_heads()) == ("0010_task_graph",)
+    assert tuple(script.get_heads()) == ("0011_remove_project_graph",)
+
+    migration = (hub_root / "migrations" / "versions" / "0011_remove_project_graph.py").read_text(encoding="utf-8")
+    assert "graph_projection_states" in migration
+    assert 'drop_table("graph_nodes")' not in migration
+    assert 'drop_table("graph_edges")' not in migration
+
+    initial = (hub_root / "migrations" / "versions" / "0001_initial.py").read_text(encoding="utf-8")
+    assert "memory_hub.db.models import Base" not in initial
+    assert 'op.create_table(\n        "memory_events"' in initial

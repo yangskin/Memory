@@ -105,12 +105,6 @@ DEFAULT_CAPABILITY_PROFILES: dict[str, CapabilityProfile] = {
         max_tokens=1024,
         description="Evidence-bounded task briefing with deterministic fallback.",
     ),
-    "generate_task_graph_delta": CapabilityProfile(
-        enabled=False,
-        timeout=30.0,
-        max_tokens=1024,
-        description="Evidence-bounded semantic task graph proposals with deterministic validation.",
-    ),
     "project_reflection": CapabilityProfile(
         enabled=False,
         timeout=90.0,

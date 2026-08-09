@@ -71,7 +71,6 @@ def _build_facade_tools(
                             "important_memories",
                             "latest_memories",
                             "shared_context",
-                            "project_graph",
                         ],
                         "default": "task_context",
                         "description": "Read operation to perform.",
@@ -238,9 +237,6 @@ def _build_facade_tools(
                     },
                     "max_age_minutes": {"type": "integer", "minimum": 1, "maximum": 10080},
                     "force_refresh": {"type": "boolean", "default": False},
-                    "depth": {"type": "integer", "minimum": 0, "maximum": 2, "default": 1},
-                    "max_nodes": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
-                    "max_edges": {"type": "integer", "minimum": 1, "maximum": 400, "default": 100},
                     "llm_suggest_metadata": {
                         "type": "boolean",
                         "default": False,

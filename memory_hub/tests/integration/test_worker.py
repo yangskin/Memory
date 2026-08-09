@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 
 from memory_hub.config import load_settings
-from memory_hub.db.models import BriefHead, BriefJob, BriefSnapshot, GraphEdge, GraphNode, MemoryEvent
+from memory_hub.db.models import BriefHead, BriefJob, BriefSnapshot, MemoryEvent
 from memory_hub.db.repositories import mark_brief_jobs_dirty
 from memory_hub.db.session import create_session_factory
 from memory_hub.llm.fake import FakeBriefProvider
@@ -15,25 +15,6 @@ from memory_hub.worker.runner import run_once
 
 
 pytestmark = pytest.mark.skipif(not os.getenv("MEMORY_HUB_DATABASE_URL"), reason="requires PostgreSQL")
-
-
-def _isolate_worker_claim(monkeypatch, job_key: str) -> None:
-    import memory_hub.worker.runner as runner_module
-
-    monkeypatch.setattr(runner_module, "_schedule_rebases", lambda *_args: None)
-
-    def claim_only(session, *, max_jobs, worker_id, lease_seconds):
-        session.flush()
-        job = session.get(BriefJob, job_key)
-        assert job is not None
-        job.status = "running"
-        job.worker_id = worker_id
-        job.lease_until = datetime.now(UTC) + timedelta(seconds=lease_seconds)
-        job.attempts = int(job.attempts or 0) + 1
-        session.commit()
-        return [job]
-
-    monkeypatch.setattr(runner_module, "_claim_jobs", claim_only)
 
 
 def test_worker_creates_project_brief_snapshot_and_head() -> None:
@@ -52,72 +33,6 @@ def test_worker_creates_project_brief_snapshot_and_head() -> None:
         snapshot = session.get(BriefSnapshot, head.current_brief_id)
         assert snapshot is not None
         assert str(event_id) in snapshot.source_event_ids
-
-
-def test_worker_generates_evidenced_project_graph_and_materializes_it(monkeypatch) -> None:
-    factory = create_session_factory(load_settings().database_url or "")
-    project_id = f"worker-graph-{uuid4().hex}"
-    event_id = uuid4()
-
-    class GraphProvider(FakeBriefProvider):
-        def generate_project_graph(self, request):
-            assert len(request.events) == 1
-            return type("Result", (), {"structured_graph": {
-                "nodes": [
-                    {"type": "class", "key": "CheckoutVerifier", "name": "CheckoutVerifier"},
-                    {"type": "module", "key": "payments", "name": "payments"},
-                ],
-                "edges": [{
-                    "source": {"type": "class", "key": "CheckoutVerifier"},
-                    "target": {"type": "module", "key": "payments"},
-                    "relation": "validates",
-                    "confidence": 0.9,
-                    "evidence_ids": [str(event_id)],
-                }],
-            }})()
-
-    with factory() as session:
-        event = MemoryEvent(event_id=event_id, project_id=project_id, user_id="worker-user", agent_id="pytest", agent_instance_id="pytest-1", operation="record", scope="project_shared", content_markdown="# Checkout\n\nCheckout validates payments.", metadata_json={"system_area": "Checkout", "class_names": ["CheckoutVerifier"], "module_names": ["payments"]}, occurred_at=datetime.now(UTC), content_hash="sha256:" + "d" * 64)
-        session.add(event)
-        session.flush()
-        job_key = f"project_graph:{project_id}:-"
-        session.add(BriefJob(job_key=job_key, project_id=project_id, brief_type="project_graph", subject_user_id=None, requested_through_seq=event.server_seq, not_before=datetime.now(UTC) - timedelta(seconds=1), status="pending"))
-        _isolate_worker_claim(monkeypatch, job_key)
-
-        assert run_once(session, GraphProvider(), worker_id="graph-worker", max_jobs=1000, project_graph_semantic_enabled=True) >= 1
-        head = session.get(BriefHead, (project_id, "project_graph", ""))
-        assert head is not None
-        snapshot = session.get(BriefSnapshot, head.current_brief_id)
-        assert snapshot is not None
-        assert snapshot.source_event_ids == [str(event_id)]
-        assert session.query(GraphNode).filter_by(project_id=project_id, node_type="source").count() == 1
-        assert session.query(GraphNode).filter_by(project_id=project_id, node_type="class", node_key="CheckoutVerifier").count() == 1
-        edge = session.query(GraphEdge).filter_by(project_id=project_id, relation_type="validates").one()
-        assert edge.source_event_ids == [str(event_id)]
-        assert session.query(GraphEdge).filter_by(project_id=project_id, relation_type="documents").count() == 2
-
-
-def test_worker_builds_source_graph_without_calling_semantic_provider(monkeypatch) -> None:
-    factory = create_session_factory(load_settings().database_url or "")
-    project_id = f"worker-source-graph-{uuid4().hex}"
-    event_id = uuid4()
-
-    class NoSemanticProvider(FakeBriefProvider):
-        def generate_project_graph(self, request):
-            raise AssertionError("semantic graph extraction is disabled by default")
-
-    with factory() as session:
-        event = MemoryEvent(event_id=event_id, project_id=project_id, user_id="worker-user", agent_id="pytest", agent_instance_id="pytest-1", operation="record", scope="project_shared", content_markdown="Cart handoff.", metadata_json={"class_names": ["CartActor"], "module_names": ["PushCart"]}, occurred_at=datetime.now(UTC), content_hash="sha256:" + "e" * 64)
-        session.add(event)
-        session.flush()
-        job_key = f"project_graph:{project_id}:-"
-        session.add(BriefJob(job_key=job_key, project_id=project_id, brief_type="project_graph", subject_user_id=None, requested_through_seq=event.server_seq, not_before=datetime.now(UTC) - timedelta(seconds=1), status="pending"))
-        _isolate_worker_claim(monkeypatch, job_key)
-
-        assert run_once(session, NoSemanticProvider(), worker_id="source-graph-worker", max_jobs=1000) >= 1
-        assert session.query(GraphNode).filter_by(project_id=project_id, node_type="source").count() == 1
-        assert session.query(GraphEdge).filter_by(project_id=project_id, relation_type="documents").count() == 2
-        assert session.query(GraphEdge).filter_by(project_id=project_id, relation_type="validates").count() == 0
 
 
 def test_worker_falls_back_to_latest_shared_events_when_project_window_is_empty() -> None:
@@ -147,7 +62,7 @@ def test_worker_ignores_empty_shared_checkpoints_when_rebuilding_project_brief()
     shared_event_id = uuid4()
     with factory() as session:
         old_shared_event = MemoryEvent(event_id=shared_event_id, project_id=project_id, user_id="worker-user", agent_id="pytest", agent_instance_id="pytest-1", operation="record", scope="project_shared", content_markdown="retained project memory", metadata_json={}, occurred_at=datetime.now(UTC) - timedelta(hours=25), content_hash="sha256:" + "b" * 64)
-        checkpoint = MemoryEvent(event_id=uuid4(), project_id=project_id, user_id="worker-user", agent_id="pytest", agent_instance_id="pytest-1", operation="checkpoint", scope="project_shared", content_markdown="", metadata_json={"graph_delta": {}}, occurred_at=datetime.now(UTC), content_hash="sha256:" + "c" * 64)
+        checkpoint = MemoryEvent(event_id=uuid4(), project_id=project_id, user_id="worker-user", agent_id="pytest", agent_instance_id="pytest-1", operation="checkpoint", scope="project_shared", content_markdown="", metadata_json={}, occurred_at=datetime.now(UTC), content_hash="sha256:" + "c" * 64)
         session.add_all([old_shared_event, checkpoint])
         session.flush()
         session.add(BriefJob(job_key=f"project_recent:{project_id}:-", project_id=project_id, brief_type="project_recent", subject_user_id=None, requested_through_seq=checkpoint.server_seq, not_before=datetime.now(UTC) - timedelta(seconds=1), status="pending"))

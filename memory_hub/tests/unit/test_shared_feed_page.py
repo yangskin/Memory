@@ -24,7 +24,7 @@ def test_shared_page_is_served_without_database() -> None:
     assert "events_from_history" in body
 
 
-def test_shared_page_serves_graph_renderer() -> None:
+def test_shared_page_serves_task_queue_and_selected_lineage_without_legacy_graph() -> None:
     client = TestClient(create_app())
 
     page_response = client.get("/shared")
@@ -33,30 +33,23 @@ def test_shared_page_serves_graph_renderer() -> None:
     assert '<script src="/assets/cytoscape.min.js"></script>' in page_response.text
     assert script_response.status_code == 200
     assert "cytoscape" in script_response.text[:500].lower()
-    assert 'layout: { name: "cose"' in page_response.text
-    assert "projectGraphDetails(nodes, edges)" in page_response.text
-    assert 'if (degree[node.id] !== 1) return;' in page_response.text
-    assert 'node.type === "task"' not in page_response.text
-    assert "members.length < 2 || expandedGraphGroups[key]" in page_response.text
-    assert 'expandedGraphGroups[selected.data("key")] = true' in page_response.text
-    assert 'selected.removeClass("faded").addClass("focused")' in page_response.text
-    assert 'selected.connectedEdges().removeClass("faded").addClass("context")' in page_response.text
-    assert "selected.closedNeighborhood()" not in page_response.text
-    assert "共同记忆补充" not in page_response.text
-    assert "graph-mode-btn" not in page_response.text
-    assert "共同记忆来源" in page_response.text
-    assert "edge[relation = 'documents']" in page_response.text
-    assert "暂无带实体标注的共同记忆。" in page_response.text
-    assert 'id="graphSelection"' in page_response.text
-    assert "function renderGraphSelection(node)" in page_response.text
-    assert "完整节点信息" in page_response.text
-    assert "fullName: node.name || node.key || node.type" in page_response.text
+    assert 'layout: { name: "breadthfirst"' in page_response.text
+    assert 'data-tab="graphPanel"' not in page_response.text
+    assert "function fetchGraph()" not in page_response.text
+    assert "/graph?include_metadata" not in page_response.text
     assert 'data-tab="taskPanel"' in page_response.text
-    assert 'id="taskGraphArea"' in page_response.text
-    assert 'id="taskCurrentCount"' in page_response.text
+    assert 'id="taskBoard"' in page_response.text
+    assert 'id="taskLineageArea"' in page_response.text
+    assert 'id="taskOpenCount"' in page_response.text
+    assert 'id="taskBlockedCount"' in page_response.text
+    assert 'id="taskClosedGroup"' in page_response.text
     assert 'id="taskAgents"' in page_response.text
     assert 'id="taskEvents"' in page_response.text
     assert "function fetchTaskWorkspace()" in page_response.text
+    assert "function renderTaskWorkspace(bundle, history)" in page_response.text
+    assert "function renderTaskLineage(bundle, record)" in page_response.text
+    assert "function selectTask(taskId)" in page_response.text
+    assert 'data-task-id="' in page_response.text
     assert '"/task-graph?max_nodes=200&max_edges=400"' in page_response.text
-    assert '"/task-events?max_items=100"' in page_response.text
+    assert '"/task-events?max_items=200"' in page_response.text
     assert "TASK_SHAPES" in page_response.text

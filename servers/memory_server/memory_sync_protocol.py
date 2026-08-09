@@ -36,7 +36,6 @@ def build_memory_event(
             "active_files",
             "confidence",
             "validated_by",
-            "graph_delta",
             "task_event",
         )
         if canonical.get(key, args.get(key)) is not None

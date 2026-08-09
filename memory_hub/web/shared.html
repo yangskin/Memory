@@ -75,7 +75,7 @@
   button:disabled { opacity: .55; cursor: default; }
   main { max-width: 1200px; margin: 0 auto; padding: 22px; display: grid; grid-template-columns: 1.25fr 1fr; gap: 18px; }
   @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; }
+  .card { min-width: 0; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; }
   .tabs { max-width: 1200px; margin: 18px auto 0; padding: 0 22px; display: flex; gap: 6px; align-items: center; }
   .tab { color: var(--muted); background: transparent; border: 1px solid transparent; border-radius: 9px 9px 0 0; padding: 10px 16px; }
   .tab.active { color: var(--brand); background: var(--card); border-color: var(--line); border-bottom-color: var(--card); }
@@ -88,42 +88,58 @@
   [data-theme="dark"] .board-thread .thread-head { background: #273348; }
   [data-theme="dark"] .event .body pre, [data-theme="dark"] .event .body code,
   [data-theme="dark"] .board-post .body pre, [data-theme="dark"] .board-post .body code { background: #111827; }
-  .graph-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; color: var(--muted); font-size: 13px; }
-  .graph-toolbar input { min-width: 240px; flex: 1; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--card-soft); color: var(--ink); }
-  .graph-canvas { height: min(68vh, 680px); min-height: 520px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background-color: var(--card-soft); background-image: radial-gradient(var(--graph-grid) 1px, transparent 1px); background-size: 18px 18px; }
-  .graph-canvas .empty, .graph-canvas .errorbox { margin: 18px; }
-  .graph-selection { min-height: 66px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
-  .graph-selection-title { margin-bottom: 6px; font-size: 12px; font-weight: 700; color: var(--muted); }
-  .graph-selection-empty { color: var(--muted); font-size: 13px; }
-  .graph-selection-details { display: grid; gap: 5px; margin: 0; }
-  .graph-selection-details > div { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 10px; }
-  .graph-selection-details dt { color: var(--muted); font-size: 12px; }
-  .graph-selection-details dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
-  .graph-selection-details .node-key { font-family: var(--mono); font-size: 12px; }
-  .graph-legend { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; color: var(--muted); font-size: 12px; }
-  .legend-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; }
-  .task-dashboard { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
-  .task-metric { min-height: 82px; border: 1px solid var(--line); border-top: 3px solid var(--brand); padding: 11px 12px; background: var(--card-soft); }
-  .task-metric.review { border-top-color: #b06ad4; }
-  .task-metric.attention { border-top-color: var(--warn); }
-  .task-metric.assigned { border-top-color: #0e9f9f; }
+  .task-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; color: var(--muted); font-size: 13px; }
+  .task-toolbar input, .task-toolbar select { min-width: 170px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--card-soft); color: var(--ink); font-size: 13px; }
+  .task-toolbar input { flex: 1 1 260px; }
+  .task-dashboard { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 14px 0 18px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .task-metric { min-height: 66px; padding: 10px 12px; border-right: 1px solid var(--line); background: var(--card-soft); }
+  .task-metric:last-child { border-right: 0; }
+  .task-metric.open { border-top: 3px solid var(--brand); }
+  .task-metric.active { border-top: 3px solid #0e9f9f; }
+  .task-metric.blocked { border-top: 3px solid var(--warn); }
+  .task-metric.review { border-top: 3px solid #b06ad4; }
+  .task-metric.closed { border-top: 3px solid #8a93a8; }
   .task-metric-label { color: var(--muted); font-size: 12px; }
-  .task-metric-value { margin-top: 3px; color: var(--ink); font-family: var(--mono); font-size: 27px; font-weight: 700; }
-  .task-workspace-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 0.35fr); gap: 14px; }
-  .task-canvas { height: min(58vh, 600px); min-height: 460px; border: 1px solid var(--line); overflow: hidden; background-color: var(--card-soft); background-image: radial-gradient(var(--graph-grid) 1px, transparent 1px); background-size: 18px 18px; }
-  .task-side { min-width: 0; border-left: 1px solid var(--line); padding-left: 14px; }
-  .task-side h3, .task-timeline h3 { margin: 0 0 9px; color: var(--muted); font-size: 12px; font-weight: 700; }
+  .task-metric-value { margin-top: 2px; color: var(--ink); font-family: var(--mono); font-size: 23px; font-weight: 700; }
+  .task-queue { min-width: 0; margin-top: 2px; }
+  .task-state-columns { display: grid; width: 100%; min-width: 0; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 10px; overflow-x: auto; padding-bottom: 4px; }
+  .task-state-column { min-width: 220px; border: 1px solid var(--line); border-top: 3px solid var(--brand); border-radius: 8px; overflow: hidden; background: var(--card-soft); }
+  .task-state-column.active { border-top-color: #0e9f9f; }
+  .task-state-column.blocked { border-top-color: var(--warn); }
+  .task-state-column.review { border-top-color: #b06ad4; }
+  .task-state-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 10px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; font-weight: 700; }
+  .task-state-count { font-family: var(--mono); color: var(--ink); }
+  .task-state-list { display: grid; gap: 8px; min-height: 104px; padding: 9px; }
+  .task-card { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--card); color: var(--ink); text-align: left; }
+  .task-card:hover { border-color: var(--brand); filter: none; }
+  .task-card.selected { border-color: var(--brand); box-shadow: inset 3px 0 0 var(--brand); }
+  .task-card-title { display: -webkit-box; overflow: hidden; color: var(--ink); font-size: 13px; font-weight: 700; line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+  .task-card-meta, .task-card-footer { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 7px; color: var(--muted); font-size: 11px; }
+  .task-card-footer { justify-content: space-between; }
+  .task-chip { padding: 1px 6px; border-radius: 999px; background: var(--brand-soft); color: var(--brand); font-family: var(--mono); font-size: 10px; }
+  .task-card-note { min-height: 16px; margin-top: 7px; color: var(--ink); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .task-closed { margin-top: 12px; border-top: 1px solid var(--line); }
+  .task-closed summary { padding: 11px 0; color: var(--muted); font-size: 13px; font-weight: 700; cursor: pointer; }
+  .task-closed-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; padding-bottom: 4px; }
+  .task-workspace-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(270px, 0.38fr); gap: 16px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .task-main { min-width: 0; }
+  .task-side { min-width: 0; border-left: 1px solid var(--line); padding-left: 16px; }
+  .task-side h3, .task-timeline h3, .task-lineage h3 { margin: 0 0 9px; color: var(--muted); font-size: 12px; font-weight: 700; }
   .agent-summary { display: grid; gap: 7px; }
   .agent-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
   .agent-row:last-child { border-bottom: 0; }
   .agent-row .agent-id { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
   .agent-row .agent-count { color: var(--muted); font-family: var(--mono); font-size: 12px; }
-  .task-detail { min-height: 120px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .task-detail { min-height: 120px; }
   .task-detail-empty { color: var(--muted); font-size: 13px; }
+  .task-detail-title { margin: 0 0 10px; color: var(--ink); font-size: 15px; }
   .task-detail dl { display: grid; gap: 6px; margin: 0; }
   .task-detail dl > div { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 10px; }
   .task-detail dt { color: var(--muted); font-size: 12px; }
   .task-detail dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+  .task-lineage { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+  .task-lineage-canvas { height: min(42vh, 420px); min-height: 290px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background-color: var(--card-soft); background-image: radial-gradient(var(--graph-grid) 1px, transparent 1px); background-size: 18px 18px; }
+  .task-lineage-canvas .empty, .task-lineage-canvas .errorbox { margin: 18px; }
   .task-timeline { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
   .task-events { display: grid; gap: 7px; max-height: 310px; overflow: auto; padding-right: 3px; }
   .task-event { display: grid; grid-template-columns: 11px minmax(0, 1fr); gap: 9px; padding: 8px 0; border-bottom: 1px solid var(--line); }
@@ -133,7 +149,15 @@
   .task-event-meta { margin-top: 2px; color: var(--muted); font-size: 12px; }
   .task-event-summary { margin-top: 3px; font-size: 13px; overflow-wrap: anywhere; }
   @media (max-width: 900px) { .task-workspace-grid { grid-template-columns: 1fr; } .task-side { border-left: 0; border-top: 1px solid var(--line); padding: 14px 0 0; } }
-  @media (max-width: 620px) { .task-dashboard { grid-template-columns: repeat(2, minmax(0, 1fr)); } .task-canvas { min-height: 360px; } }
+  @media (max-width: 620px) {
+    header.topbar, .tokenbar, .tabs, main { padding-left: 14px; padding-right: 14px; }
+    .card { padding: 16px 14px; }
+    .tokenbar input, .task-toolbar input, .task-toolbar select { width: 100%; min-width: 0; flex-basis: 100%; }
+    .task-dashboard { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .task-metric:nth-child(2) { border-right: 0; }
+    .task-metric:nth-child(3) { border-top: 1px solid var(--line); }
+    .task-lineage-canvas { min-height: 250px; }
+  }
   .card h2 { margin: 0 0 12px; font-size: 15px; color: var(--muted); font-weight: 600; letter-spacing: .3px; }
   .empty { color: var(--muted); text-align: center; padding: 26px 0; font-size: 13px; }
   .stale-note { color: var(--warn); font-size: 12px; padding: 4px 0 10px; }
@@ -246,7 +270,6 @@
 
 <nav class="tabs" aria-label="主导航">
   <button class="tab active" data-tab="boardPanel">留言板</button>
-  <button class="tab" data-tab="graphPanel">Graph</button>
   <button class="tab" data-tab="taskPanel">任务工作区</button>
   <button class="tab" data-tab="sharedPanel">共享记忆</button>
 </nav>
@@ -273,53 +296,47 @@
   </section>
   </div>
 
-  <div class="tab-panel" id="graphPanel">
-  <section class="card" style="grid-column:1 / -1">
-    <h2>项目 Graph <span class="source-badge" id="graphFreshness">未连接</span></h2>
-    <div class="graph-toolbar">
-      <input id="graphSearch" type="search" placeholder="输入节点关键词，例如文件、类或模块" autocomplete="off">
-      <button id="graphRefreshBtn" disabled>刷新 Graph</button>
-      <span id="graphStats">—</span>
-    </div>
-    <div class="graph-canvas" id="graphArea"><div class="empty">连接后加载项目 Graph。</div></div>
-    <div class="graph-selection" id="graphSelection" aria-live="polite"><div class="graph-selection-empty">选择一个节点查看完整名称和标识。</div></div>
-    <div class="graph-legend"><span><i class="legend-dot" style="background:#6b7590"></i>共同记忆来源</span><span><i class="legend-dot" style="background:#0e9f9f"></i>文件</span><span><i class="legend-dot" style="background:#d9822b"></i>类 / 模块</span><span><i class="legend-dot" style="background:#b06ad4"></i>资源</span></div>
-  </section>
-  </div>
-
   <div class="tab-panel" id="taskPanel">
   <section class="card" style="grid-column:1 / -1">
-    <h2>Graph Agent 任务 <span class="source-badge" id="taskFreshness">未连接</span></h2>
-    <div class="graph-toolbar">
-      <input id="taskSearch" type="search" placeholder="搜索任务、Agent、提交或审核" autocomplete="off">
-      <select id="taskTypeFilter" aria-label="节点类型筛选">
-        <option value="all">全部节点</option>
-        <option value="task">任务</option>
-        <option value="agent">Agent</option>
-        <option value="attempt">Attempt</option>
-        <option value="submission">Submission</option>
-        <option value="review">Review</option>
+    <h2>任务工作队列 <span class="source-badge" id="taskFreshness">未连接</span></h2>
+    <div class="task-toolbar">
+      <input id="taskSearch" type="search" placeholder="搜索任务标题、目标或编号" autocomplete="off">
+      <select id="taskStateFilter" aria-label="任务状态筛选">
+        <option value="all">全部进行中状态</option>
+        <option value="open">待处理</option>
+        <option value="active">进行中</option>
+        <option value="blocked">受阻</option>
+        <option value="review">审查中</option>
       </select>
-      <input id="taskAgentFilter" type="search" placeholder="按 Agent ID 聚合" autocomplete="off">
-      <button id="taskRefreshBtn" disabled>刷新任务图</button>
+      <input id="taskAgentFilter" type="search" placeholder="按 Agent ID 筛选" autocomplete="off">
+      <button id="taskRefreshBtn" disabled>刷新任务</button>
       <span id="taskStats">—</span>
     </div>
     <div class="task-dashboard" aria-label="任务概览">
-      <div class="task-metric"><div class="task-metric-label">执行中</div><div class="task-metric-value" id="taskCurrentCount">0</div></div>
-      <div class="task-metric assigned"><div class="task-metric-label">待领取</div><div class="task-metric-value" id="taskAssignedCount">0</div></div>
+      <div class="task-metric open"><div class="task-metric-label">待处理</div><div class="task-metric-value" id="taskOpenCount">0</div></div>
+      <div class="task-metric active"><div class="task-metric-label">进行中</div><div class="task-metric-value" id="taskActiveCount">0</div></div>
+      <div class="task-metric blocked"><div class="task-metric-label">受阻</div><div class="task-metric-value" id="taskBlockedCount">0</div></div>
       <div class="task-metric review"><div class="task-metric-label">待审核</div><div class="task-metric-value" id="taskReviewCount">0</div></div>
-      <div class="task-metric attention"><div class="task-metric-label">需关注</div><div class="task-metric-value" id="taskAttentionCount">0</div></div>
+      <div class="task-metric closed"><div class="task-metric-label">已结束</div><div class="task-metric-value" id="taskClosedCount">0</div></div>
     </div>
+    <div class="task-queue" id="taskBoard"><div class="empty">连接后加载任务队列。</div></div>
+    <details class="task-closed" id="taskClosedGroup" hidden>
+      <summary id="taskClosedSummary">已结束</summary>
+      <div class="task-closed-list" id="taskClosedList"></div>
+    </details>
     <div class="task-workspace-grid">
-      <div>
-        <div class="task-canvas" id="taskGraphArea"><div class="empty">连接后加载任务 Graph。</div></div>
-        <div class="task-detail" id="taskDetail"><div class="task-detail-empty">选择节点查看任务状态、证据和关系。</div></div>
-      </div>
+      <section class="task-main">
+        <div class="task-detail" id="taskDetail"><div class="task-detail-empty">选择一个任务查看状态、提交和审核信息。</div></div>
+        <div class="task-lineage">
+          <h3>任务轨迹</h3>
+          <div class="task-lineage-canvas" id="taskLineageArea"><div class="empty">选择任务后显示依赖与交付轨迹。</div></div>
+        </div>
+      </section>
       <aside class="task-side">
-        <h3>Agent</h3>
+        <h3>Agent 负载</h3>
         <div class="agent-summary" id="taskAgents"><div class="empty">暂无 Agent 节点。</div></div>
         <div class="task-timeline">
-          <h3>Timeline</h3>
+          <h3>任务事件</h3>
           <div class="task-events" id="taskEvents"><div class="empty">暂无 Task Event。</div></div>
         </div>
       </aside>
@@ -356,8 +373,7 @@
   var pill = document.getElementById("statusPill");
   var lastUpdated = document.getElementById("lastUpdated");
   var projectId = document.getElementById("projectId");
-  var graph = null;
-  var taskGraph = null;
+  var taskLineage = null;
   var hasBriefContent = false;
   var hasFeedContent = false;
 
@@ -542,8 +558,8 @@
       "<span>简报待整理事件 <b>" + lag + "</b></span>";
     setPill(lag > 0 ? "busy" : "ok", lag > 0 ? "整理中" : "已同步");
     lastUpdated.textContent = "更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
-    document.getElementById("graphRefreshBtn").disabled = false;
-    fetchGraph();
+    document.getElementById("taskRefreshBtn").disabled = false;
+    fetchTaskWorkspace();
   }
   function typeClass(t) {
     var v = String(t || "").toLowerCase();
@@ -616,321 +632,260 @@
     });
     area.innerHTML = html;
   }
-  var GRAPH_COLORS = { source: "#6b7590", file: "#0e9f9f", "class": "#d9822b", module: "#d9822b", asset: "#b06ad4", blueprint: "#b06ad4", map: "#b06ad4", plugin: "#7a5af5", system: "#6b7590", task: "#2f6fed", agent: "#0e9f9f", attempt: "#d9822b", submission: "#b06ad4", review: "#17a05e" };
-  var GRAPH_TYPE_LABELS = { source: "共同记忆", file: "文件", "class": "类", module: "模块", asset: "资源", blueprint: "蓝图", map: "地图", plugin: "插件", system: "显式系统", task: "任务", agent: "Agent", attempt: "Attempt", submission: "Submission", review: "Review" };
-  var expandedGraphGroups = {};
-  function graphNodeLabel(node) {
-    var value = node.name || node.key || node.type;
-    value = String(value);
-    return value.length > 24 ? value.slice(0, 22) + "..." : value;
-  }
-  function projectGraphDetails(nodes, edges) {
-    var degree = {}, incident = {};
-    nodes.forEach(function (node) { degree[node.id] = 0; incident[node.id] = []; });
-    edges.forEach(function (edge) {
-      if (degree[edge.source] === undefined || degree[edge.target] === undefined) return;
-      degree[edge.source] += 1;
-      degree[edge.target] += 1;
-      incident[edge.source].push(edge);
-      incident[edge.target].push(edge);
-    });
-    var groups = {};
-    nodes.forEach(function (node) {
-      if (degree[node.id] !== 1) return;
-      var edge = incident[node.id][0];
-      var outgoing = edge.source === node.id;
-      var neighbor = outgoing ? edge.target : edge.source;
-      var key = [neighbor, node.type, edge.relation_type || "", outgoing ? "out" : "in"].join("|");
-      (groups[key] = groups[key] || []).push({ node: node, edge: edge, outgoing: outgoing });
-    });
-    var hidden = {}, aggregateNodes = [], aggregateEdges = [];
-    Object.keys(groups).sort().forEach(function (key, groupIndex) {
-      var members = groups[key];
-      if (members.length < 2 || expandedGraphGroups[key]) return;
-      members.forEach(function (member) { hidden[member.node.id] = true; });
-      var first = members[0], aggregateId = "aggregate-" + groupIndex;
-      var typeLabel = GRAPH_TYPE_LABELS[first.node.type] || first.node.type;
-      aggregateNodes.push({
-        id: aggregateId,
-        name: typeLabel + " · " + members.length,
-        key: key,
-        type: first.node.type,
-        aggregate: true,
-        member_count: members.length
-      });
-      aggregateEdges.push({
-        source: first.outgoing ? aggregateId : (first.edge.source === first.node.id ? first.edge.target : first.edge.source),
-        target: first.outgoing ? (first.edge.target === first.node.id ? first.edge.source : first.edge.target) : aggregateId,
-        relation_type: first.edge.relation_type,
-        source_event_count: members.reduce(function (sum, member) { return sum + (member.edge.source_event_count || 1); }, 0),
-        aggregate: true
-      });
-    });
-    return {
-      nodes: nodes.filter(function (node) { return !hidden[node.id]; }).concat(aggregateNodes),
-      edges: edges.filter(function (edge) { return !hidden[edge.source] && !hidden[edge.target]; }).concat(aggregateEdges)
-    };
-  }
-  function destroyGraph() {
-    if (graph) { graph.destroy(); graph = null; }
-  }
-  function resetGraphSelection() {
-    document.getElementById("graphSelection").innerHTML = '<div class="graph-selection-empty">选择一个节点查看完整名称和标识。</div>';
-  }
-  function renderGraphSelection(node) {
-    var data = node.data();
-    var nodeName = data.fullName || data.key || data.type || "—";
-    var nodeType = data.type || "—";
-    var nodeKey = data.key || "—";
-    document.getElementById("graphSelection").innerHTML =
-      '<div class="graph-selection-title">完整节点信息</div>' +
-      '<dl class="graph-selection-details">' +
-        '<div><dt>类型</dt><dd>' + esc(nodeType) + '</dd></div>' +
-        '<div><dt>完整名称</dt><dd>' + esc(nodeName) + '</dd></div>' +
-        '<div><dt>标识</dt><dd class="node-key">' + esc(nodeKey) + '</dd></div>' +
-      '</dl>';
-  }
-  function renderGraph(data) {
-    var area = document.getElementById("graphArea");
-    var nodes = (data && data.nodes) || [];
-    var edges = (data && data.edges) || [];
-    var query = document.getElementById("graphSearch").value.trim().toLowerCase();
-    if (query) {
-      var matched = {};
-      nodes.forEach(function (node) {
-        if ([node.name, node.key, node.type, GRAPH_TYPE_LABELS[node.type]].join(" ").toLowerCase().indexOf(query) >= 0) matched[node.id] = true;
-      });
-      edges.forEach(function (edge) {
-        if (matched[edge.source] || matched[edge.target]) { matched[edge.source] = true; matched[edge.target] = true; }
-      });
-      nodes = nodes.filter(function (node) { return matched[node.id]; });
-    }
-    var visible = {};
-    nodes.forEach(function (node) { visible[node.id] = node; });
-    edges = edges.filter(function (edge) { return visible[edge.source] && visible[edge.target]; });
-    var projected = projectGraphDetails(nodes, edges);
-    nodes = projected.nodes;
-    edges = projected.edges;
-    var sourceCount = nodes.filter(function (node) { return node.type === "source"; }).length;
-    var provenanceCount = edges.filter(function (edge) { return edge.relation_type === "documents"; }).length;
-    var semanticCount = edges.length - provenanceCount;
-    document.getElementById("graphStats").textContent = nodes.length + " 个节点 · " + sourceCount + " 个来源 · " + provenanceCount + " 条来源链路 · " + semanticCount + " 条实体关系";
-    var freshness = (data && data.freshness) || {};
-    var freshEl = document.getElementById("graphFreshness");
-    freshEl.textContent = freshness.stale ? "投影整理中" : "已同步";
-    destroyGraph();
-    resetGraphSelection();
-    if (!nodes.length) { area.innerHTML = '<div class="empty">暂无带实体标注的共同记忆。</div>'; return; }
-    area.innerHTML = "";
-    var elements = nodes.map(function (node) {
-      return { data: { id: node.id, label: graphNodeLabel(node), fullName: node.name || node.key || node.type, color: GRAPH_COLORS[node.type] || "#6b7590", type: GRAPH_TYPE_LABELS[node.type] || node.type, key: node.key, aggregate: node.aggregate ? 1 : 0, memberCount: node.member_count || 0, source: node.type === "source" ? 1 : 0 } };
-    });
-    edges.forEach(function (edge, index) {
-      elements.push({ data: { id: "edge-" + index, source: edge.source, target: edge.target, relation: edge.relation_type, count: edge.source_event_count || 1, origin: edge.origin || "" } });
-    });
-    var styles = getComputedStyle(document.documentElement);
-    graph = cytoscape({
-      container: area,
-      elements: elements,
-      minZoom: 0.15,
-      maxZoom: 2.5,
-      style: [
-        { selector: "node", style: { "background-color": "data(color)", "border-color": styles.getPropertyValue("--card").trim(), "border-width": 2, "color": "#fff", "font-size": 11, "font-weight": 600, "height": 42, "label": "data(label)", "shape": "round-rectangle", "text-halign": "center", "text-valign": "center", "text-wrap": "ellipsis", "text-max-width": 116, "width": 138 } },
-        { selector: "node[source = 1]", style: { "border-style": "dashed", "border-width": 3, "font-size": 10, "height": 48, "text-max-width": 154, "width": 176 } },
-        { selector: "node[aggregate = 1]", style: { "border-style": "dashed", "border-width": 3 } },
-        { selector: "edge", style: { "curve-style": "bezier", "line-color": styles.getPropertyValue("--graph-edge").trim(), "opacity": 0.58, "target-arrow-color": styles.getPropertyValue("--graph-edge").trim(), "target-arrow-shape": "triangle", "arrow-scale": 0.75, "width": 1.4 } },
-        { selector: "edge[relation = 'documents']", style: { "line-style": "dashed", "opacity": 0.42, "target-arrow-shape": "none", "width": 1.2 } },
-        { selector: ".faded", style: { "opacity": 0.12 } },
-        { selector: "node.focused", style: { "border-color": styles.getPropertyValue("--ink").trim(), "border-width": 4, "z-index": 10 } },
-        { selector: "edge.context", style: { "opacity": 0.34, "width": 1.8 } }
-      ],
-      layout: { name: "cose", animate: false, componentSpacing: 110, idealEdgeLength: 170, nodeOverlap: 48, nodeRepulsion: 14000, padding: 48, spacingFactor: 2 }
-    });
-    graph.on("tap", "node", function (event) {
-      var selected = event.target;
-      if (selected.data("aggregate")) {
-        expandedGraphGroups[selected.data("key")] = true;
-        renderGraph(window.__graphCache);
-        return;
-      }
-      graph.elements().addClass("faded");
-      graph.elements().removeClass("focused context");
-      selected.removeClass("faded").addClass("focused");
-      selected.connectedEdges().removeClass("faded").addClass("context");
-      renderGraphSelection(selected);
-    });
-    graph.on("tap", function (event) {
-      if (event.target !== graph) return;
-      graph.elements().removeClass("faded focused context");
-      resetGraphSelection();
-    });
-  }
-  function fetchGraph() {
-    var token = tokenEl.value.trim(), currentProject = projectId.textContent.replace(/^·\s*/, "");
-    if (!token || !currentProject || currentProject === "—") return;
-    fetch("/v1/projects/" + encodeURIComponent(currentProject) + "/graph?include_metadata=true", { headers: { "Authorization": "Bearer " + token } })
-      .then(function (resp) { if (resp.status === 200) return resp.json(); throw new Error("Graph 请求失败（HTTP " + resp.status + "）。"); })
-      .then(function (data) { window.__graphCache = data; renderGraph(data); })
-      .catch(function (err) {
-        destroyGraph();
-        resetGraphSelection();
-        document.getElementById("graphArea").innerHTML = '<div class="errorbox">Graph 加载失败：' + esc(err.message || err) + "</div>";
-      });
-  }
-  var TASK_COLORS = { task: "#2f6fed", agent: "#0e9f9f", attempt: "#d9822b", submission: "#b06ad4", review: "#17a05e" };
-  var TASK_SHAPES = { task: "round-rectangle", agent: "ellipse", attempt: "diamond", submission: "hexagon", review: "round-rectangle" };
-  var TASK_LABELS = { task: "任务", agent: "Agent", attempt: "Attempt", submission: "Submission", review: "Review" };
-  function destroyTaskGraph() {
-    if (taskGraph) { taskGraph.destroy(); taskGraph = null; }
+  var TASK_COLORS = { task: "#2f6fed", agent: "#0e9f9f", attempt: "#d9822b", submission: "#b06ad4", review: "#17a05e", asset: "#6b7590" };
+  var TASK_SHAPES = { task: "round-rectangle", agent: "ellipse", attempt: "diamond", submission: "hexagon", review: "round-rectangle", asset: "round-rectangle" };
+  var TASK_LABELS = { task: "任务", agent: "Agent", attempt: "Attempt", submission: "提交", review: "审查", asset: "产出" };
+  var TASK_STATES = [
+    { key: "open", label: "待处理" },
+    { key: "active", label: "进行中" },
+    { key: "blocked", label: "受阻" },
+    { key: "review", label: "审查中" }
+  ];
+  var selectedTaskId = null;
+  function destroyTaskLineage() {
+    if (taskLineage) { taskLineage.destroy(); taskLineage = null; }
   }
   function taskNodeLabel(node) {
     var value = String(node.name || node.key || node.type || "");
     return value.length > 23 ? value.slice(0, 21) + "..." : value;
   }
-  function resetTaskDetail() {
-    document.getElementById("taskDetail").innerHTML = '<div class="task-detail-empty">选择节点查看任务状态、证据和关系。</div>';
-  }
-  function taskDetailValue(value) {
-    if (value === null || value === undefined || value === "") return "—";
-    if (Array.isArray(value)) return value.length ? value.join(" · ") : "—";
-    if (typeof value === "object") return JSON.stringify(value);
-    return String(value);
-  }
-  function renderTaskDetail(node) {
-    var data = node.data(), metadata = data.metadata || {};
-    var fields = [
-      ["类型", data.type], ["标识", data.key], ["名称", data.fullName],
-      ["状态", metadata.state || metadata.status], ["版本", metadata.version],
-      ["Epoch", metadata.epoch || metadata.assignment_epoch], ["执行者", metadata.assignee || metadata.reviewer],
-      ["目标", metadata.objective], ["验收", metadata.acceptance], ["摘要", metadata.summary],
-      ["决定", metadata.decision], ["证据", metadata.evidence]
-    ].filter(function (pair) { return pair[1] !== undefined && pair[1] !== null && pair[1] !== ""; });
-    var html = '<div class="graph-selection-title">节点详情</div><dl>';
-    fields.forEach(function (pair) { html += '<div><dt>' + esc(pair[0]) + '</dt><dd>' + esc(taskDetailValue(pair[1])) + '</dd></div>'; });
-    html += "</dl>";
-    document.getElementById("taskDetail").innerHTML = html;
-  }
-  function updateTaskDashboard(bundle) {
-    var roots = (bundle && bundle.roots) || {};
-    document.getElementById("taskCurrentCount").textContent = (roots.current || []).length;
-    document.getElementById("taskAssignedCount").textContent = (roots.assigned || []).length;
-    document.getElementById("taskReviewCount").textContent = (roots.review || []).length;
-    document.getElementById("taskAttentionCount").textContent = (roots.attention || []).length;
-    document.getElementById("taskFreshness").textContent = bundle && bundle.cursor ? "事件 #" + bundle.cursor : "已同步";
-  }
-  function renderTaskAgents(nodes, edges) {
-    var area = document.getElementById("taskAgents");
-    var assigned = {};
-    edges.forEach(function (edge) {
-      if (edge.relation_type === "assigned_to") assigned[edge.target] = (assigned[edge.target] || 0) + 1;
-    });
-    var agents = nodes.filter(function (node) { return node.type === "agent"; }).sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
-    if (!agents.length) { area.innerHTML = '<div class="empty">暂无 Agent 节点。</div>'; return; }
-    area.innerHTML = agents.map(function (agent) {
-      var count = assigned[agent.id] || 0;
-      return '<div class="agent-row"><span class="agent-id" title="' + esc(agent.name || agent.key) + '">' + esc(agent.name || agent.key) + '</span><span class="agent-count">' + count + ' 项</span></div>';
-    }).join("");
-  }
   function taskEventSummary(event) {
     var payload = event.payload || {};
     return payload.summary || payload.reason || payload.title || payload.decision || payload.attempt_id || "";
   }
-  function renderTaskEvents(data) {
-    var area = document.getElementById("taskEvents"), events = (data && data.events) || [];
-    if (!events.length) { area.innerHTML = '<div class="empty">暂无 Task Event。</div>'; return; }
+  function taskTime(value) {
+    var time = Date.parse(value || "");
+    return isNaN(time) ? 0 : time;
+  }
+  function newest(items, value) {
+    return items.slice().sort(function (left, right) { return taskTime(value(right)) - taskTime(value(left)); })[0] || null;
+  }
+  function relativeTime(iso) {
+    if (!iso) return "暂无更新";
+    var delta = Math.max(0, Date.now() - taskTime(iso));
+    if (delta < 60000) return "刚刚更新";
+    if (delta < 3600000) return Math.floor(delta / 60000) + " 分钟前";
+    if (delta < 86400000) return Math.floor(delta / 3600000) + " 小时前";
+    return Math.floor(delta / 86400000) + " 天前";
+  }
+  function buildTaskRecords(bundle, history) {
+    var nodes = (bundle && bundle.nodes) || [];
+    var events = (history && history.events) || [];
+    var eventsByTask = {};
+    events.forEach(function (event) { (eventsByTask[event.task_id] = eventsByTask[event.task_id] || []).push(event); });
+    return nodes.filter(function (node) {
+      return node.type === "task" && !(node.metadata && node.metadata.external);
+    }).map(function (node) {
+      var metadata = node.metadata || {};
+      var attempts = nodes.filter(function (item) { return item.type === "attempt" && item.metadata && item.metadata.task_id === node.key; });
+      var submissions = nodes.filter(function (item) { return item.type === "submission" && item.metadata && item.metadata.task_id === node.key; });
+      var reviews = nodes.filter(function (item) { return item.type === "review" && item.metadata && item.metadata.task_id === node.key; });
+      var currentAttempt = attempts.filter(function (item) { return item.key === metadata.current_attempt; })[0] || newest(attempts, function (item) { return item.metadata.created_at; });
+      var latestSubmission = newest(submissions, function (item) { return item.metadata.created_at; });
+      var latestReview = newest(reviews, function (item) { return item.metadata.created_at; });
+      var latestEvent = newest(eventsByTask[node.key] || [], function (item) { return item.occurred_at; });
+      return {
+        id: node.id,
+        key: node.key,
+        title: node.name || node.key,
+        metadata: metadata,
+        state: metadata.state || "open",
+        priority: metadata.priority || "normal",
+        currentAttempt: currentAttempt,
+        latestSubmission: latestSubmission,
+        latestReview: latestReview,
+        updatedAt: latestEvent ? latestEvent.occurred_at : metadata.updated_at || metadata.created_at || ""
+      };
+    }).sort(function (left, right) { return taskTime(right.updatedAt) - taskTime(left.updatedAt); });
+  }
+  function taskMatches(record, ignoreState) {
+    var query = document.getElementById("taskSearch").value.trim().toLowerCase();
+    var state = document.getElementById("taskStateFilter").value;
+    var agent = document.getElementById("taskAgentFilter").value.trim().toLowerCase();
+    var assignee = record.currentAttempt && record.currentAttempt.metadata ? record.currentAttempt.metadata.assignee || "" : "";
+    var text = [record.title, record.key, record.metadata.objective, record.metadata.acceptance, record.priority, assignee].join(" ").toLowerCase();
+    if (query && text.indexOf(query) < 0) return false;
+    if (agent && assignee.toLowerCase().indexOf(agent) < 0) return false;
+    return ignoreState || state === "all" || record.state === state;
+  }
+  function isClosedTask(record) {
+    return record.state === "done" || record.state === "cancelled";
+  }
+  function renderTaskDashboard(records) {
+    var counts = { open: 0, active: 0, blocked: 0, review: 0, closed: 0 };
+    records.forEach(function (record) {
+      if (isClosedTask(record)) counts.closed += 1;
+      else if (counts[record.state] !== undefined) counts[record.state] += 1;
+    });
+    document.getElementById("taskOpenCount").textContent = counts.open;
+    document.getElementById("taskActiveCount").textContent = counts.active;
+    document.getElementById("taskBlockedCount").textContent = counts.blocked;
+    document.getElementById("taskReviewCount").textContent = counts.review;
+    document.getElementById("taskClosedCount").textContent = counts.closed;
+  }
+  function taskCard(record) {
+    var attempt = record.currentAttempt && record.currentAttempt.metadata ? record.currentAttempt.metadata : {};
+    var latest = record.latestReview && record.latestReview.metadata ? "审查 " + (record.latestReview.metadata.decision || "已完成") : record.latestSubmission ? "已提交" : attempt.status || "待分派";
+    return '<button type="button" class="task-card' + (record.id === selectedTaskId ? " selected" : "") + '" data-task-id="' + esc(record.id) + '" aria-pressed="' + (record.id === selectedTaskId ? "true" : "false") + '">' +
+      '<span class="task-card-title">' + esc(record.title) + '</span>' +
+      '<span class="task-card-meta"><span class="task-chip">' + esc(record.priority) + '</span><span>v' + esc(record.metadata.version || 0) + ' · e' + esc(record.metadata.assignment_epoch || 0) + '</span></span>' +
+      '<span class="task-card-note">' + esc(attempt.assignee || "未分配") + '</span>' +
+      '<span class="task-card-footer"><span>' + esc(latest) + '</span><span>' + esc(relativeTime(record.updatedAt)) + '</span></span>' +
+    '</button>';
+  }
+  function renderTaskDetail(record) {
+    var area = document.getElementById("taskDetail");
+    if (!record) {
+      area.innerHTML = '<div class="task-detail-empty">选择一个任务查看状态、提交和审核信息。</div>';
+      return;
+    }
+    var attempt = record.currentAttempt && record.currentAttempt.metadata ? record.currentAttempt.metadata : {};
+    var submission = record.latestSubmission && record.latestSubmission.metadata ? record.latestSubmission.metadata : {};
+    var review = record.latestReview && record.latestReview.metadata ? record.latestReview.metadata : {};
+    var fields = [
+      ["状态", record.state], ["优先级", record.priority], ["执行者", attempt.assignee || "未分配"],
+      ["版本", "v" + (record.metadata.version || 0) + " · epoch " + (record.metadata.assignment_epoch || 0)],
+      ["最近更新", relativeTime(record.updatedAt)], ["目标", record.metadata.objective], ["验收", record.metadata.acceptance],
+      ["最近提交", submission.summary], ["最近审查", review.decision ? review.decision + (review.summary ? " · " + review.summary : "") : ""]
+    ].filter(function (field) { return field[1] !== undefined && field[1] !== null && field[1] !== ""; });
+    var html = '<h3 class="task-detail-title">' + esc(record.title) + '</h3><dl>';
+    fields.forEach(function (field) { html += '<div><dt>' + esc(field[0]) + '</dt><dd>' + esc(field[1]) + '</dd></div>'; });
+    html += '</dl>';
+    area.innerHTML = html;
+  }
+  function renderTaskAgents(records) {
+    var area = document.getElementById("taskAgents"), loads = {};
+    records.forEach(function (record) {
+      var attempt = record.currentAttempt && record.currentAttempt.metadata ? record.currentAttempt.metadata : {};
+      if (!attempt.assignee || isClosedTask(record)) return;
+      loads[attempt.assignee] = (loads[attempt.assignee] || 0) + 1;
+    });
+    var agents = Object.keys(loads).sort(function (left, right) { return loads[right] - loads[left] || left.localeCompare(right); });
+    if (!agents.length) { area.innerHTML = '<div class="empty">当前没有在办任务。</div>'; return; }
+    area.innerHTML = agents.map(function (agent) {
+      return '<div class="agent-row"><span class="agent-id" title="' + esc(agent) + '">' + esc(agent) + '</span><span class="agent-count">' + loads[agent] + ' 项</span></div>';
+    }).join("");
+  }
+  function renderTaskEvents(history, record) {
+    var area = document.getElementById("taskEvents"), events = (history && history.events) || [];
+    events = record ? events.filter(function (event) { return event.task_id === record.key; }) : [];
+    events.sort(function (left, right) { return Number(right.seq || 0) - Number(left.seq || 0); });
+    if (!events.length) { area.innerHTML = '<div class="empty">尚未选择任务或暂无事件。</div>'; return; }
     area.innerHTML = events.map(function (event) {
       var summary = taskEventSummary(event);
       return '<div class="task-event"><span class="task-event-dot"></span><div><div class="task-event-title">' + esc(event.event_type) + '</div><div class="task-event-meta">' + esc(event.actor_id || "") + ' · ' + fmtTime(event.occurred_at) + '</div>' + (summary ? '<div class="task-event-summary">' + esc(summary) + '</div>' : "") + '</div></div>';
     }).join("");
   }
-  function filteredTaskGraph(data) {
-    var query = document.getElementById("taskSearch").value.trim().toLowerCase();
-    var type = document.getElementById("taskTypeFilter").value;
-    var nodes = (data && data.nodes) || [];
-    var edges = (data && data.edges) || [];
-    var selected = {};
-    nodes.forEach(function (node) {
-      var text = [node.name, node.key, node.type, JSON.stringify(node.metadata || {})].join(" ").toLowerCase();
-      if ((type === "all" || node.type === type) && (!query || text.indexOf(query) >= 0)) selected[node.id] = true;
-    });
-    if (!query && type === "all") nodes.forEach(function (node) { selected[node.id] = true; });
-    edges.forEach(function (edge) {
-      if (selected[edge.source] || selected[edge.target]) { selected[edge.source] = true; selected[edge.target] = true; }
-    });
-    return {
-      nodes: nodes.filter(function (node) { return selected[node.id]; }),
-      edges: edges.filter(function (edge) { return selected[edge.source] && selected[edge.target]; })
-    };
+  function taskLineageData(bundle, record) {
+    var nodes = (bundle && bundle.nodes) || [], edges = (bundle && bundle.edges) || [];
+    var selected = {}, selectedEdges = [];
+    function include(edge) {
+      if (selectedEdges.indexOf(edge) >= 0) return;
+      selectedEdges.push(edge);
+      selected[edge.source] = true;
+      selected[edge.target] = true;
+    }
+    selected[record.id] = true;
+    edges.forEach(function (edge) { if (edge.source === record.id || edge.target === record.id) include(edge); });
+    var attemptIds = {};
+    nodes.forEach(function (node) { if (node.type === "attempt" && node.metadata && node.metadata.task_id === record.key) { attemptIds[node.id] = true; selected[node.id] = true; } });
+    edges.forEach(function (edge) { if (attemptIds[edge.source] && ["assigned_to", "assigned_by", "has_submission"].indexOf(edge.relation_type) >= 0) include(edge); });
+    var submissionIds = {};
+    nodes.forEach(function (node) { if (node.type === "submission" && node.metadata && node.metadata.task_id === record.key) { submissionIds[node.id] = true; selected[node.id] = true; } });
+    edges.forEach(function (edge) { if (submissionIds[edge.source] && edge.relation_type === "has_review") include(edge); });
+    var reviewIds = {};
+    nodes.forEach(function (node) { if (node.type === "review" && node.metadata && node.metadata.task_id === record.key) { reviewIds[node.id] = true; selected[node.id] = true; } });
+    edges.forEach(function (edge) { if (reviewIds[edge.source] && edge.relation_type === "reviewed_by") include(edge); });
+    return { nodes: nodes.filter(function (node) { return selected[node.id]; }), edges: selectedEdges };
   }
-  function renderTaskGraph(bundle) {
-    var area = document.getElementById("taskGraphArea"), filtered = filteredTaskGraph(bundle);
-    var nodes = filtered.nodes, edges = filtered.edges;
-    updateTaskDashboard(bundle);
-    renderTaskAgents((bundle && bundle.nodes) || [], (bundle && bundle.edges) || []);
-    document.getElementById("taskStats").textContent = nodes.length + " 个节点 · " + edges.length + " 条关系";
-    destroyTaskGraph();
-    resetTaskDetail();
-    if (!nodes.length) { area.innerHTML = '<div class="empty">暂无符合筛选条件的任务节点。</div>'; return; }
+  function renderTaskLineage(bundle, record) {
+    var area = document.getElementById("taskLineageArea");
+    destroyTaskLineage();
+    if (!record) { area.innerHTML = '<div class="empty">选择任务后显示依赖与交付轨迹。</div>'; return; }
+    var lineage = taskLineageData(bundle, record);
+    if (!lineage.nodes.length) { area.innerHTML = '<div class="empty">该任务尚无可视关系。</div>'; return; }
     area.innerHTML = "";
-    var elements = nodes.map(function (node) {
-      return { data: { id: node.id, label: taskNodeLabel(node), fullName: node.name || node.key || node.type, key: node.key, type: node.type, color: TASK_COLORS[node.type] || "#6b7590", shape: TASK_SHAPES[node.type] || "round-rectangle", metadata: node.metadata || {} } };
-    });
-    edges.forEach(function (edge, index) {
-      elements.push({ data: { id: "task-edge-" + index, source: edge.source, target: edge.target, relation: edge.relation_type } });
-    });
     var styles = getComputedStyle(document.documentElement);
-    taskGraph = cytoscape({
+    var elements = lineage.nodes.map(function (node) {
+      return { data: { id: node.id, label: taskNodeLabel(node), type: node.type, key: node.key, color: TASK_COLORS[node.type] || "#6b7590", shape: TASK_SHAPES[node.type] || "round-rectangle" } };
+    });
+    lineage.edges.forEach(function (edge, index) {
+      elements.push({ data: { id: "lineage-edge-" + index, source: edge.source, target: edge.target, relation: edge.relation_type } });
+    });
+    taskLineage = cytoscape({
       container: area,
       elements: elements,
-      minZoom: 0.15,
+      minZoom: 0.2,
       maxZoom: 2.5,
       style: [
-        { selector: "node", style: { "background-color": "data(color)", "shape": "data(shape)", "border-color": styles.getPropertyValue("--card").trim(), "border-width": 2, "color": "#fff", "font-size": 11, "font-weight": 600, "height": 44, "label": "data(label)", "text-halign": "center", "text-valign": "center", "text-wrap": "ellipsis", "text-max-width": 118, "width": 140 } },
-        { selector: "node[type = 'task']", style: { "height": 54, "width": 164, "font-size": 12 } },
-        { selector: "edge", style: { "curve-style": "bezier", "line-color": styles.getPropertyValue("--graph-edge").trim(), "opacity": 0.62, "target-arrow-color": styles.getPropertyValue("--graph-edge").trim(), "target-arrow-shape": "triangle", "arrow-scale": 0.72, "width": 1.5 } },
-        { selector: ".faded", style: { "opacity": 0.12 } },
-        { selector: "node.focused", style: { "border-color": styles.getPropertyValue("--ink").trim(), "border-width": 4, "z-index": 10 } },
-        { selector: "edge.context", style: { "opacity": 0.45, "width": 2 } }
+        { selector: "node", style: { "background-color": "data(color)", "shape": "data(shape)", "border-color": styles.getPropertyValue("--card").trim(), "border-width": 2, "color": "#fff", "font-size": 10, "font-weight": 600, "height": 40, "label": "data(label)", "text-halign": "center", "text-valign": "center", "text-wrap": "ellipsis", "text-max-width": 102, "width": 122 } },
+        { selector: "node[type = 'task']", style: { "height": 52, "width": 158, "font-size": 12 } },
+        { selector: "edge", style: { "curve-style": "bezier", "line-color": styles.getPropertyValue("--graph-edge").trim(), "target-arrow-color": styles.getPropertyValue("--graph-edge").trim(), "target-arrow-shape": "triangle", "arrow-scale": 0.7, "width": 1.4, "opacity": 0.72 } }
       ],
-      layout: { name: "cose", animate: false, componentSpacing: 100, idealEdgeLength: 155, nodeOverlap: 44, nodeRepulsion: 13000, padding: 42, spacingFactor: 1.8 }
+      layout: { name: "breadthfirst", directed: true, animate: false, padding: 32, spacingFactor: 1.15 }
     });
-    taskGraph.on("tap", "node", function (event) {
-      var selected = event.target;
-      taskGraph.elements().addClass("faded").removeClass("focused context");
-      selected.removeClass("faded").addClass("focused");
-      selected.connectedEdges().removeClass("faded").addClass("context");
-      renderTaskDetail(selected);
+    taskLineage.on("tap", "node", function (event) {
+      var task = (window.__taskRecords || []).filter(function (recordItem) { return recordItem.id === event.target.id(); })[0];
+      if (task) selectTask(task.id);
     });
-    taskGraph.on("tap", function (event) {
-      if (event.target !== taskGraph) return;
-      taskGraph.elements().removeClass("faded focused context");
-      resetTaskDetail();
+  }
+  function renderTaskWorkspace(bundle, history) {
+    var records = buildTaskRecords(bundle, history);
+    window.__taskRecords = records;
+    renderTaskDashboard(records);
+    var visible = records.filter(function (record) { return !isClosedTask(record) && taskMatches(record, false); });
+    var closed = records.filter(function (record) { return isClosedTask(record) && taskMatches(record, true); });
+    var selected = records.filter(function (record) { return record.id === selectedTaskId; })[0];
+    if (!selected || (!isClosedTask(selected) && !visible.some(function (record) { return record.id === selected.id; }))) selected = visible[0] || closed[0] || null;
+    selectedTaskId = selected ? selected.id : null;
+    var board = document.getElementById("taskBoard");
+    board.innerHTML = '<div class="task-state-columns">' + TASK_STATES.map(function (state) {
+      var entries = visible.filter(function (record) { return record.state === state.key; });
+      return '<section class="task-state-column ' + state.key + '"><div class="task-state-head"><span>' + state.label + '</span><span class="task-state-count">' + entries.length + '</span></div><div class="task-state-list">' + (entries.length ? entries.map(taskCard).join("") : '<div class="empty">暂无任务</div>') + '</div></section>';
+    }).join("") + '</div>';
+    var closedGroup = document.getElementById("taskClosedGroup");
+    closedGroup.hidden = !closed.length;
+    document.getElementById("taskClosedSummary").textContent = "已结束 · " + closed.length;
+    document.getElementById("taskClosedList").innerHTML = closed.map(taskCard).join("");
+    document.getElementById("taskStats").textContent = visible.length + " 项在办 · " + closed.length + " 项已结束";
+    document.getElementById("taskFreshness").textContent = bundle && bundle.cursor ? "事件 #" + bundle.cursor : "已同步";
+    renderTaskDetail(selected);
+    renderTaskAgents(records);
+    renderTaskEvents(history, selected);
+    renderTaskLineage(bundle, selected);
+    board.querySelectorAll("[data-task-id]").forEach(function (card) {
+      card.addEventListener("click", function () { selectTask(card.dataset.taskId); });
     });
+    document.getElementById("taskClosedList").querySelectorAll("[data-task-id]").forEach(function (card) {
+      card.addEventListener("click", function () { selectTask(card.dataset.taskId); });
+    });
+  }
+  function selectTask(taskId) {
+    selectedTaskId = taskId;
+    if (window.__taskGraphCache && window.__taskHistoryCache) renderTaskWorkspace(window.__taskGraphCache, window.__taskHistoryCache);
   }
   function fetchTaskWorkspace() {
     var token = tokenEl.value.trim(), currentProject = projectId.textContent.replace(/^·\s*/, "");
     if (!token || !currentProject || currentProject === "—") return;
-    var agent = document.getElementById("taskAgentFilter").value.trim();
     var base = "/v1/projects/" + encodeURIComponent(currentProject);
-    var graphUrl = base + "/task-graph?max_nodes=200&max_edges=400" + (agent ? "&agent_id=" + encodeURIComponent(agent) : "");
-    var eventUrl = base + "/task-events?max_items=100";
+    var graphUrl = base + "/task-graph?max_nodes=200&max_edges=400";
+    var eventUrl = base + "/task-events?max_items=200";
     Promise.all([
       fetch(graphUrl, { headers: { "Authorization": "Bearer " + token } }),
       fetch(eventUrl, { headers: { "Authorization": "Bearer " + token } })
     ]).then(function (responses) {
-      if (responses[0].status !== 200) throw new Error("任务 Graph 请求失败（HTTP " + responses[0].status + "）。");
-      if (responses[1].status !== 200) throw new Error("Task Event 请求失败（HTTP " + responses[1].status + "）。");
+      if (responses[0].status !== 200) throw new Error("任务队列请求失败（HTTP " + responses[0].status + "）。");
+      if (responses[1].status !== 200) throw new Error("任务事件请求失败（HTTP " + responses[1].status + "）。");
       return Promise.all([responses[0].json(), responses[1].json()]);
     }).then(function (payload) {
       window.__taskGraphCache = payload[0];
       window.__taskHistoryCache = payload[1];
-      renderTaskGraph(payload[0]);
-      renderTaskEvents(payload[1]);
+      renderTaskWorkspace(payload[0], payload[1]);
     }).catch(function (err) {
-      destroyTaskGraph();
-      resetTaskDetail();
-      document.getElementById("taskGraphArea").innerHTML = '<div class="errorbox">任务 Graph 加载失败：' + esc(err.message || err) + "</div>";
-      document.getElementById("taskEvents").innerHTML = '<div class="errorbox">Timeline 加载失败。</div>';
+      destroyTaskLineage();
+      document.getElementById("taskBoard").innerHTML = '<div class="errorbox">任务队列加载失败：' + esc(err.message || err) + "</div>";
+      document.getElementById("taskLineageArea").innerHTML = '<div class="errorbox">任务轨迹加载失败。</div>';
+      document.getElementById("taskEvents").innerHTML = '<div class="errorbox">任务事件加载失败。</div>';
       document.getElementById("taskFreshness").textContent = "加载失败";
     });
   }
@@ -980,7 +935,7 @@
       showError(err && err.message ? err.message : String(err));
     });
   }
-  function refreshAll() { fetchFeed(); fetchBoard(); fetchGraph(); fetchTaskWorkspace(); }
+  function refreshAll() { fetchFeed(); fetchBoard(); }
   function schedule() {
     if (timer) clearInterval(timer);
     timer = setInterval(refreshAll, POLL_MS);
@@ -990,7 +945,6 @@
     if (!token) { showError("请先输入只读 Token。"); return; }
     try { sessionStorage.setItem(STORE_KEY, token); } catch (e) {}
     refreshBtn.disabled = false;
-    document.getElementById("graphRefreshBtn").disabled = false;
     document.getElementById("taskRefreshBtn").disabled = false;
     refreshAll();
   }
@@ -1014,53 +968,48 @@
     document.getElementById("boardTotal").textContent = "0";
     document.getElementById("boardOpen").textContent = "0";
     document.getElementById("boardResolved").textContent = "0";
-    destroyGraph();
-    destroyTaskGraph();
-    resetGraphSelection();
-    document.getElementById("graphArea").innerHTML = '<div class="empty">连接后加载项目 Graph。</div>';
-    document.getElementById("graphStats").textContent = "—";
-    document.getElementById("graphFreshness").textContent = "未连接";
-    document.getElementById("taskGraphArea").innerHTML = '<div class="empty">连接后加载任务 Graph。</div>';
+    destroyTaskLineage();
+    selectedTaskId = null;
+    window.__taskGraphCache = null;
+    window.__taskHistoryCache = null;
+    document.getElementById("taskBoard").innerHTML = '<div class="empty">连接后加载任务队列。</div>';
+    document.getElementById("taskClosedGroup").hidden = true;
+    document.getElementById("taskClosedList").innerHTML = "";
+    document.getElementById("taskLineageArea").innerHTML = '<div class="empty">选择任务后显示依赖与交付轨迹。</div>';
     document.getElementById("taskEvents").innerHTML = '<div class="empty">暂无 Task Event。</div>';
     document.getElementById("taskAgents").innerHTML = '<div class="empty">暂无 Agent 节点。</div>';
     document.getElementById("taskStats").textContent = "—";
     document.getElementById("taskFreshness").textContent = "未连接";
-    ["taskCurrentCount", "taskAssignedCount", "taskReviewCount", "taskAttentionCount"].forEach(function (id) { document.getElementById(id).textContent = "0"; });
-    resetTaskDetail();
+    ["taskOpenCount", "taskActiveCount", "taskBlockedCount", "taskReviewCount", "taskClosedCount"].forEach(function (id) { document.getElementById(id).textContent = "0"; });
+    renderTaskDetail(null);
   }
   connectBtn.addEventListener("click", connect);
   refreshBtn.addEventListener("click", refreshAll);
   clearBtn.addEventListener("click", clearAll);
-  document.getElementById("graphRefreshBtn").addEventListener("click", fetchGraph);
   document.getElementById("taskRefreshBtn").addEventListener("click", fetchTaskWorkspace);
-  document.getElementById("graphSearch").addEventListener("input", function () {
-    if (window.__graphCache) renderGraph(window.__graphCache);
-  });
   document.getElementById("taskSearch").addEventListener("input", function () {
-    if (window.__taskGraphCache) renderTaskGraph(window.__taskGraphCache);
+    if (window.__taskGraphCache) renderTaskWorkspace(window.__taskGraphCache, window.__taskHistoryCache);
   });
-  document.getElementById("taskTypeFilter").addEventListener("change", function () {
-    if (window.__taskGraphCache) renderTaskGraph(window.__taskGraphCache);
+  document.getElementById("taskStateFilter").addEventListener("change", function () {
+    if (window.__taskGraphCache) renderTaskWorkspace(window.__taskGraphCache, window.__taskHistoryCache);
   });
-  document.getElementById("taskAgentFilter").addEventListener("change", fetchTaskWorkspace);
+  document.getElementById("taskAgentFilter").addEventListener("input", function () {
+    if (window.__taskGraphCache) renderTaskWorkspace(window.__taskGraphCache, window.__taskHistoryCache);
+  });
   document.querySelectorAll(".tab").forEach(function (tab) {
     tab.addEventListener("click", function () {
       document.querySelectorAll(".tab").forEach(function (item) { item.classList.remove("active"); });
       document.querySelectorAll(".tab-panel").forEach(function (panel) { panel.classList.remove("active"); });
       tab.classList.add("active");
       document.getElementById(tab.dataset.tab).classList.add("active");
-      if (tab.dataset.tab === "graphPanel") {
-        if (graph) { graph.resize(); graph.fit(undefined, 48); }
-        else fetchGraph();
-      }
       if (tab.dataset.tab === "taskPanel") {
-        if (taskGraph) { taskGraph.resize(); taskGraph.fit(undefined, 42); }
+        if (taskLineage) { taskLineage.resize(); taskLineage.fit(undefined, 32); }
         else fetchTaskWorkspace();
       }
     });
   });
   var themeBtn = document.getElementById("themeBtn");
-  function setTheme(theme) { document.documentElement.dataset.theme = theme; themeBtn.textContent = theme === "dark" ? "☀" : "☾"; try { localStorage.setItem("memory_hub_theme", theme); } catch (e) {} }
+  function setTheme(theme) { document.documentElement.dataset.theme = theme; themeBtn.textContent = theme === "dark" ? "☀" : "☾"; try { localStorage.setItem("memory_hub_theme", theme); } catch (e) {} if (window.__taskGraphCache) renderTaskWorkspace(window.__taskGraphCache, window.__taskHistoryCache); }
   themeBtn.addEventListener("click", function () { setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"); });
   tokenEl.addEventListener("keydown", function (e) { if (e.key === "Enter") connect(); });
   document.getElementById("boardFilter").addEventListener("change", function () {
@@ -1075,7 +1024,7 @@
   try {
     setTheme(localStorage.getItem("memory_hub_theme") || "light");
     var saved = sessionStorage.getItem(STORE_KEY);
-    if (saved) { tokenEl.value = saved; refreshBtn.disabled = false; document.getElementById("graphRefreshBtn").disabled = false; document.getElementById("taskRefreshBtn").disabled = false; refreshAll(); }
+    if (saved) { tokenEl.value = saved; refreshBtn.disabled = false; document.getElementById("taskRefreshBtn").disabled = false; refreshAll(); }
   } catch (e) {}
 })();
 </script>

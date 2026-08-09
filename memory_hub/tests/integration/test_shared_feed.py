@@ -164,7 +164,7 @@ def test_shared_feed_ignores_empty_shared_checkpoints() -> None:
     with app.state.session_factory() as session:
         session.add_all([
             MemoryEvent(event_id=uuid4(), project_id=project_id, user_id="alice", agent_id="pytest", agent_instance_id="pytest-1", operation="record", scope="project_shared", content_markdown="retained shared note", metadata_json={}, occurred_at=now - timedelta(hours=13), content_hash="sha256:" + "3" * 64),
-            MemoryEvent(event_id=uuid4(), project_id=project_id, user_id="alice", agent_id="pytest", agent_instance_id="pytest-1", operation="checkpoint", scope="project_shared", content_markdown="", metadata_json={"graph_delta": {}}, occurred_at=now, content_hash="sha256:" + "4" * 64),
+            MemoryEvent(event_id=uuid4(), project_id=project_id, user_id="alice", agent_id="pytest", agent_instance_id="pytest-1", operation="checkpoint", scope="project_shared", content_markdown="", metadata_json={}, occurred_at=now, content_hash="sha256:" + "4" * 64),
         ])
         session.commit()
 

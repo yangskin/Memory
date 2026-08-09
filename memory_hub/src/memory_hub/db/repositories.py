@@ -24,10 +24,8 @@ def latest_event_seq(session: Session, project_id: str) -> int:
     return int(session.scalar(select(func.coalesce(func.max(MemoryEvent.server_seq), 0)).where(MemoryEvent.project_id == project_id)) or 0)
 
 
-def mark_brief_jobs_dirty(session: Session, project_id: str, user_id: str, through_seq: int, *, user_debounce_seconds: int = 20, project_debounce_seconds: int = 45, include_project_graph: bool = False) -> None:
+def mark_brief_jobs_dirty(session: Session, project_id: str, user_id: str, through_seq: int, *, user_debounce_seconds: int = 20, project_debounce_seconds: int = 45) -> None:
     jobs = [("user_recent", user_id, user_debounce_seconds), ("project_recent", "", project_debounce_seconds)]
-    if include_project_graph:
-        jobs.append(("project_graph", "", project_debounce_seconds))
     for brief_type, subject, debounce_seconds in jobs:
         key = f"{brief_type}:{project_id}:{subject or '-'}"
         not_before = datetime.now(UTC) + __import__("datetime").timedelta(seconds=debounce_seconds)

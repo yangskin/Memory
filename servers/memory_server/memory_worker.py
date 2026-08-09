@@ -14,7 +14,6 @@ from .memory_key_document_jobs import drain_key_document_rebuild_jobs
 from .memory_record_index import ensure_index_fresh
 from .memory_record_io import _atomic_write_text
 from .memory_reflection_jobs import curate_project_reflections, drain_project_reflection_jobs
-from .memory_task_graph_jobs import drain_task_graph_settlement_jobs
 
 logger = logging.getLogger(__name__)
 
@@ -112,9 +111,6 @@ class MemoryBackgroundWorker:
         steps: dict[str, Any] = {
             "compaction_recovery": _safe_step(
                 "compaction_recovery", lambda: recover_compaction_transactions(current)
-            ),
-            "task_graph": _safe_step(
-                "task_graph", lambda: drain_task_graph_settlement_jobs(current, max_jobs=maximum)
             ),
             "reflection": _safe_step(
                 "reflection", lambda: drain_project_reflection_jobs(current, max_jobs=maximum)

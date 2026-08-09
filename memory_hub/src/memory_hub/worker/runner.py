@@ -12,9 +12,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from memory_hub.db.models import BriefHead, BriefJob, BriefSnapshot, MemoryEvent
-from memory_hub.graph.projector import rebuild_project
-from memory_hub.graph.semantic import PROJECT_GRAPH_TYPE, build_project_graph, project_graph_inputs, project_graph_semantic_inputs
-from memory_hub.llm.base import BriefProvider, ProjectBriefDocument, ProjectBriefRequest, ProjectGraphRequest, UserBriefDocument, UserBriefRequest
+from memory_hub.llm.base import BriefProvider, ProjectBriefDocument, ProjectBriefRequest, UserBriefDocument, UserBriefRequest
 from memory_hub.llm.fake import FakeBriefProvider
 
 
@@ -29,13 +27,6 @@ def _render(structured: dict[str, object]) -> str:
     return str(structured.get("summary") or "No recent reports.")
 
 
-def _render_graph(structured: dict[str, object]) -> str:
-    edges = structured.get("edges") or []
-    provenance_count = sum(1 for edge in edges if isinstance(edge, dict) and edge.get("relation") == "documents")
-    semantic_count = len(edges) - provenance_count
-    return f"{provenance_count} source links and {semantic_count} semantic relations."
-
-
 def _visible_event(event: MemoryEvent, brief_type: str) -> dict[str, object]:
     body = event.content_markdown
     if brief_type == "project_recent" and event.scope not in {"shared", "project_shared", "org_shared"}:
@@ -43,11 +34,8 @@ def _visible_event(event: MemoryEvent, brief_type: str) -> dict[str, object]:
     return {"event_id": str(event.event_id), "content_markdown": body, "scope": event.scope, "user_id": event.user_id, "task_id": event.task_id, "agent_instance_id": event.agent_instance_id, "occurred_at": event.occurred_at.isoformat()}
 
 
-def _input_fingerprint(brief_type: str, event_payloads: list[dict[str, object]], *, project_graph_semantic_enabled: bool = False) -> str:
-    strategy = "project-graph-source-v1" if brief_type == PROJECT_GRAPH_TYPE else "recent-v1"
-    if brief_type == PROJECT_GRAPH_TYPE and project_graph_semantic_enabled:
-        strategy += "-semantic-v1"
-    payload = {"strategy": strategy, "brief_type": brief_type, "events": event_payloads}
+def _input_fingerprint(brief_type: str, event_payloads: list[dict[str, object]]) -> str:
+    payload = {"strategy": "recent-v1", "brief_type": brief_type, "events": event_payloads}
     encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
@@ -57,6 +45,7 @@ def _claim_jobs(session: Session, *, max_jobs: int, worker_id: str, lease_second
     query = (
         select(BriefJob)
         .where(
+            BriefJob.brief_type.in_(("user_recent", "project_recent")),
             BriefJob.not_before <= now,
             or_(
                 BriefJob.status == "pending",
@@ -110,7 +99,7 @@ def _retry(job: BriefJob, error: Exception) -> None:
 
 def _schedule_rebases(session: Session, rebase_interval_seconds: int) -> None:
     cutoff = datetime.now(UTC) - timedelta(seconds=rebase_interval_seconds)
-    heads = list(session.execute(select(BriefHead, BriefSnapshot).join(BriefSnapshot, BriefSnapshot.brief_id == BriefHead.current_brief_id).where(BriefSnapshot.generated_at <= cutoff)))
+    heads = list(session.execute(select(BriefHead, BriefSnapshot).join(BriefSnapshot, BriefSnapshot.brief_id == BriefHead.current_brief_id).where(BriefHead.brief_type.in_(("user_recent", "project_recent")), BriefSnapshot.generated_at <= cutoff)))
     for head, snapshot in heads:
         latest = int(session.scalar(select(func.coalesce(func.max(MemoryEvent.server_seq), 0)).where(MemoryEvent.project_id == head.project_id)) or 0)
         subject = head.subject_user_id or ""
@@ -128,7 +117,7 @@ def _schedule_rebases(session: Session, rebase_interval_seconds: int) -> None:
     session.commit()
 
 
-def run_once(session: Session, provider: BriefProvider | None = None, *, worker_id: str = "worker", max_jobs: int = 10, lease_seconds: int = 60, model_name: str = "fake", rebase_interval_seconds: int = 3600, project_graph_semantic_enabled: bool = False) -> int:
+def run_once(session: Session, provider: BriefProvider | None = None, *, worker_id: str = "worker", max_jobs: int = 10, lease_seconds: int = 60, model_name: str = "fake", rebase_interval_seconds: int = 3600) -> int:
     provider = provider or FakeBriefProvider()
     _schedule_rebases(session, rebase_interval_seconds)
     jobs = _claim_jobs(session, max_jobs=max_jobs, worker_id=worker_id, lease_seconds=lease_seconds)
@@ -139,35 +128,17 @@ def run_once(session: Session, provider: BriefProvider | None = None, *, worker_
         project_id = job.project_id
         subject_user_id = job.subject_user_id
         try:
-            is_project_graph = brief_type == PROJECT_GRAPH_TYPE
-            if is_project_graph:
-                window_start = None
-                records = list(
-                    session.scalars(
-                        select(MemoryEvent)
-                        .where(
-                            MemoryEvent.project_id == project_id,
-                            MemoryEvent.server_seq <= claimed_through_seq,
-                            MemoryEvent.scope.in_({"shared", "project_shared", "org_shared"}),
-                            *_contentful_event_clauses(),
-                        )
-                        .order_by(MemoryEvent.occurred_at.desc(), MemoryEvent.server_seq.desc())
-                        .limit(500)
-                    )
-                )
-            else:
-                window_start = datetime.now(UTC) - timedelta(hours=24)
-                visibility = (MemoryEvent.scope.in_({"shared", "project_shared", "org_shared"}),)
-                if brief_type == "user_recent" and subject_user_id:
-                    visibility = (or_(MemoryEvent.user_id == subject_user_id, MemoryEvent.scope.in_({"shared", "project_shared", "org_shared"})),)
-                records = list(session.scalars(select(MemoryEvent).where(MemoryEvent.project_id == project_id, MemoryEvent.occurred_at >= window_start, MemoryEvent.server_seq <= claimed_through_seq, *visibility, *_contentful_event_clauses()).order_by(MemoryEvent.occurred_at.desc(), MemoryEvent.server_seq.desc()).limit(500)))
-                if brief_type == "project_recent" and not records:
-                    records = list(session.scalars(select(MemoryEvent).where(MemoryEvent.project_id == project_id, MemoryEvent.server_seq <= claimed_through_seq, *visibility, *_contentful_event_clauses()).order_by(MemoryEvent.occurred_at.desc(), MemoryEvent.server_seq.desc()).limit(500)))
+            window_start = datetime.now(UTC) - timedelta(hours=24)
+            visibility = (MemoryEvent.scope.in_({"shared", "project_shared", "org_shared"}),)
+            if brief_type == "user_recent" and subject_user_id:
+                visibility = (or_(MemoryEvent.user_id == subject_user_id, MemoryEvent.scope.in_({"shared", "project_shared", "org_shared"})),)
+            records = list(session.scalars(select(MemoryEvent).where(MemoryEvent.project_id == project_id, MemoryEvent.occurred_at >= window_start, MemoryEvent.server_seq <= claimed_through_seq, *visibility, *_contentful_event_clauses()).order_by(MemoryEvent.occurred_at.desc(), MemoryEvent.server_seq.desc()).limit(500)))
+            if brief_type == "project_recent" and not records:
+                records = list(session.scalars(select(MemoryEvent).where(MemoryEvent.project_id == project_id, MemoryEvent.server_seq <= claimed_through_seq, *visibility, *_contentful_event_clauses()).order_by(MemoryEvent.occurred_at.desc(), MemoryEvent.server_seq.desc()).limit(500)))
             records.sort(key=lambda event: event.server_seq)
-            event_payloads = project_graph_inputs(records) if is_project_graph else [_visible_event(event, brief_type) for event in records]
-            semantic_event_payloads = project_graph_semantic_inputs(event_payloads) if is_project_graph else []
+            event_payloads = [_visible_event(event, brief_type) for event in records]
             source_ids = {str(event.event_id) for event in records}
-            input_fingerprint = _input_fingerprint(brief_type, event_payloads, project_graph_semantic_enabled=project_graph_semantic_enabled)
+            input_fingerprint = _input_fingerprint(brief_type, event_payloads)
             input_seq_from = min((event.server_seq for event in records), default=None)
             head = session.get(BriefHead, (project_id, brief_type, subject_user_id or ""))
             current_snapshot = session.get(BriefSnapshot, head.current_brief_id) if head is not None else None
@@ -179,20 +150,9 @@ def run_once(session: Session, provider: BriefProvider | None = None, *, worker_
                 job.last_checked_at = datetime.now(UTC)
                 job.updated_at = datetime.now(UTC)
                 session.commit()
-                if is_project_graph:
-                    rebuild_project(session, project_id)
                 continue
             session.rollback()
-            if is_project_graph:
-                raw_graph = (
-                    provider.generate_project_graph(ProjectGraphRequest(project_id=project_id, events=semantic_event_payloads)).structured_graph
-                    if project_graph_semantic_enabled and semantic_event_payloads
-                    else {"nodes": [], "edges": []}
-                )
-                validated = build_project_graph(raw_graph, event_payloads)
-                subject = ""
-                rendered_markdown = _render_graph(validated)
-            elif brief_type == "user_recent" and subject_user_id:
+            if brief_type == "user_recent" and subject_user_id:
                 structured = provider.generate_user_brief(UserBriefRequest(project_id=project_id, user_id=subject_user_id, events=event_payloads)).structured_brief
                 subject = subject_user_id
                 validated = _validate_structured(job, structured, source_ids)
@@ -227,8 +187,6 @@ def run_once(session: Session, provider: BriefProvider | None = None, *, worker_
             live_job.last_checked_at = datetime.now(UTC)
             live_job.updated_at = datetime.now(UTC)
             session.commit()
-            if is_project_graph:
-                rebuild_project(session, project_id)
         except Exception as exc:
             session.rollback()
             live_job = session.get(BriefJob, job_key)

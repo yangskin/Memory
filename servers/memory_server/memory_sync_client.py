@@ -64,6 +64,3 @@ class MemoryHubClient:
 
     def context(self, request: dict[str, Any], timeout_seconds: float) -> tuple[int, dict[str, Any]]:
         return self.post(f"/v1/projects/{self.config.project_id}/context", request, timeout_seconds)
-
-    def graph(self, request: dict[str, Any], timeout_seconds: float) -> tuple[int, dict[str, Any]]:
-        return self.post(f"/v1/projects/{self.config.project_id}/graph/query", request, timeout_seconds)

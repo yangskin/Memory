@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from memory_hub.llm.base import ProjectGraphRequest
+from memory_hub.llm.base import ProjectBriefRequest
 from memory_hub.llm.openai_compatible import OpenAICompatibleBriefProvider
 
 
@@ -54,22 +54,32 @@ def test_provider_normalizes_incomplete_and_uncited_model_output(monkeypatch) ->
     assert brief["stale_workstreams"] == []
 
 
-def test_project_graph_prompt_forbids_source_labels_as_entities(monkeypatch) -> None:
+def test_provider_normalizes_project_brief_output(monkeypatch) -> None:
     import memory_hub.llm.openai_compatible as provider_module
 
-    requests: list[dict[str, object]] = []
-
-    class CapturingClient(_Client):
-        def post(self, *args: object, **kwargs: object) -> _Response:
-            requests.append(kwargs["json"])
-            return super().post(*args, **kwargs)
-
-    monkeypatch.setattr(provider_module.httpx, "Client", lambda **kwargs: CapturingClient({"nodes": [], "edges": []}))
+    monkeypatch.setattr(provider_module.httpx, "Client", lambda **kwargs: _Client({
+        "summary": "Project summary",
+        "cross_cutting_changes": [
+            {"summary": "Valid change", "source_event_ids": ["event-1"]},
+            {"summary": "Uncited change"},
+        ],
+        "possible_overlaps": [{"summary": "Forged", "source_event_ids": ["not-an-input"]}],
+        "project_blockers": [{"summary": "Valid blocker", "source_event_ids": ["event-2"]}],
+        "build_and_test_status": [],
+        "recent_decisions": [{"summary": "Valid decision", "source_event_ids": ["event-1", "event-2"]}],
+    }))
     provider = OpenAICompatibleBriefProvider("https://provider.example.com/v1", "secret", "test-model")
 
-    provider.generate_project_graph(ProjectGraphRequest(project_id="project", events=[{"event_id": "event-1", "source": {"type": "source", "key": "event:event-1", "name": "report: Checkout"}, "entities": [{"type": "class", "key": "CheckoutVerifier"}]}]))
+    result = provider.generate_project_brief(ProjectBriefRequest(
+        project_id="project-1",
+        events=[{"event_id": "event-1"}, {"event_id": "event-2"}],
+    ))
 
-    prompt = requests[0]["messages"][0]["content"]
-    assert "system_area" in prompt
-    assert "report titles" in prompt
-    assert "never graph endpoints" in prompt
+    brief = result.structured_brief
+    assert brief["source_event_ids"] == ["event-1", "event-2"]
+    assert brief["cross_cutting_changes"] == [{"summary": "Valid change", "source_event_ids": ["event-1"]}]
+    assert brief["possible_overlaps"] == []
+    assert brief["project_blockers"] == [{"summary": "Valid blocker", "source_event_ids": ["event-2"]}]
+    assert brief["recent_decisions"] == [
+        {"summary": "Valid decision", "source_event_ids": ["event-1", "event-2"]}
+    ]

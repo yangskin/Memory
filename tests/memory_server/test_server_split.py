@@ -156,16 +156,11 @@ def test_dispatch_memory_write_checkpoint_test_phase_defaults_to_validation_resu
     assert result["persisted_record"]["record_kind"] == "validation_result"
 
 
-def test_task_done_uses_context_task_id_for_graph_settlement(tmp_path, monkeypatch):
+def test_task_done_uses_context_task_id_without_legacy_graph_settlement(tmp_path, monkeypatch):
     config = _make_config(tmp_path)
-    captured = {}
     monkeypatch.setattr(
         "servers.memory_server.server_dispatch.mark_task_checkpoint",
         lambda _config, _token, _phase: {"ok": True, "task_id": "task-from-context"},
-    )
-    monkeypatch.setattr(
-        "servers.memory_server.memory_task_graph_jobs.enqueue_task_graph_settlement",
-        lambda _config, **kwargs: captured.update(kwargs) or {"ok": True, "queued": True},
     )
 
     result = _dispatch_tool(
@@ -179,8 +174,8 @@ def test_task_done_uses_context_task_id_for_graph_settlement(tmp_path, monkeypat
     )
 
     assert result["ok"] is True
-    assert result["background_task_graph"]["queued"] is True
-    assert captured["task_id"] == "task-from-context"
+    assert result["task_state"]["task_id"] == "task-from-context"
+    assert "background_task_graph" not in result
 
 
 def test_checkpoint_publishes_task_handoff_to_board_without_blocking(tmp_path, monkeypatch):

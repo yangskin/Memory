@@ -187,13 +187,6 @@ class GraphEdge(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
-class GraphProjectionState(Base):
-    __tablename__ = "graph_projection_states"
-
-    project_id: Mapped[str] = mapped_column(String(256), primary_key=True)
-    covers_through_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
-
-
 class TaskEvent(Base):
     __tablename__ = "task_events"
     __table_args__ = (

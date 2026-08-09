@@ -18,21 +18,12 @@ class ProjectBriefRequest(BaseModel):
     events: list[dict[str, object]] = Field(default_factory=list)
 
 
-class ProjectGraphRequest(BaseModel):
-    project_id: str
-    events: list[dict[str, object]] = Field(default_factory=list)
-
-
 class UserBriefResult(BaseModel):
     structured_brief: dict[str, object]
 
 
 class ProjectBriefResult(BaseModel):
     structured_brief: dict[str, object]
-
-
-class ProjectGraphResult(BaseModel):
-    structured_graph: dict[str, object]
 
 
 class UserBriefDocument(BaseModel):
@@ -64,5 +55,3 @@ class BriefProvider(Protocol):
     def generate_user_brief(self, request: UserBriefRequest) -> UserBriefResult: ...
 
     def generate_project_brief(self, request: ProjectBriefRequest) -> ProjectBriefResult: ...
-
-    def generate_project_graph(self, request: ProjectGraphRequest) -> ProjectGraphResult: ...

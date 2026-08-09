@@ -147,29 +147,13 @@ Hub 管理员的服务器部署、运维、备份和 Token 签发方式见
 [`memory_hub/README.md`](memory_hub/README.md)；中文的架构、部署与当前进展说明见
 [`memory_hub/DESIGN.md`](memory_hub/DESIGN.md)。
 
-#### 2.3.2 显式查询 Project Graph 与 Task Graph
+#### 2.3.2 Task Graph 协作与查询
 
-启用 Hub 后，agent 可以通过现有 `memory_read` 工具显式读取项目 Graph：
-
-```json
-{
-  "operation": "project_graph",
-  "task_id": "task-123",
-  "active_files": ["src/example.py"],
-  "class_names": ["Example"],
-  "module_names": ["core"],
-  "depth": 1,
-  "max_nodes": 50,
-  "max_edges": 100
-}
-```
-
-也支持 `blueprint_paths`、`map_names` 和 `plugin_names` 过滤。Graph 只从项目可见事件生成，
-返回节点、边和 `freshness`；它是最终一致的派生视图，不是新的记忆真源。共同记忆的报告标题
-和 `system_area` 仅作来源标签，不能形成实体节点；带稳定实体标注的共同记忆会以来源节点和
-`documents` 证据边出现在同一张 Graph 中。
-该 operation 不改变 `task_context` 的默认响应，也不改变本地离线读写、Brief、Board 或
-`shared_context` 的既有语义。详细接口和部署侧说明见 [`memory_hub/README.md`](memory_hub/README.md)。
+启用 Hub 后，跨 Agent 协作只通过专用 `memory_task_sync` 读取和推进 Task Graph：
+`sync` 返回 `{roots,nodes,edges,cursor}`，生命周期命令使用同一图中的 Task、Attempt、
+Submission 与 Review 记录。它是执行协调的派生投影，不是新的记忆真源，也不会改变本地离线
+读写、Brief、Board 或 `shared_context` 的既有语义。详细接口和部署侧说明见
+[`memory_hub/README.md`](memory_hub/README.md)。
 
 任务执行不通过 `memory_write` 的自由 metadata 表达。使用专用 `memory_task_sync` 读取
 Graph Bundle，或写入 `create`、`assign`、`claim`、`decline`、`report`、`block`、`resume`、
@@ -207,13 +191,13 @@ Task/Attempt/Submission/Review 投影，并返回 `{roots,nodes,edges,cursor}`�
 `3,000` tokens。超限时服务端递归限制列表、字段、字符串和嵌套深度，保持有效 JSON，
 并返回 `response_truncated=true` 与 `response_budget`。读取参数也在运行时限制，不能通过
 绕过 JSON Schema 扩大响应：一般列表最多 50 项，`max_chars` 最多 32,000，`max_tokens`
-最多 8,000；Project Graph 默认 `depth=1`、50 节点、100 边，最大为 2、200、400。
+最多 8,000；Task Graph 的 Hub 查询也有独立的节点、边和事件条数上限。
 
-Hub API 默认使用紧凑投影：Graph 不返回 metadata 和来源事件 ID，Feed 正文为 512 字符
-预览且 Brief 不返回 structured 详情，Board 正文为 512 字符预览且不返回 references。
-Web 面板会显式请求展示所需详情；agent 应先使用 task、文件、类、模块等过滤器缩小范围，
-不要把完整项目 Graph 自动注入 `task_context`。这些限制只控制查询投影和传输，不删除
-append-only Event 真源，也不改变现有本地记忆、Brief 或 Board 数据。
+Hub API 默认使用紧凑投影：Feed 正文为 512 字符预览且 Brief 不返回 structured 详情，
+Board 正文为 512 字符预览且不返回 references。Web 面板会显式请求展示所需 Task Graph
+详情；agent 应通过 `memory_task_sync` 按需读取任务状态，不要把完整任务投影自动注入
+`task_context`。这些限制只控制查询投影和传输，不删除 append-only Event 真源，也不改变
+现有本地记忆、Brief 或 Board 数据。
 
 ### 2.4 Agent 规则配置（团队接入必做）
 
@@ -266,7 +250,6 @@ python scripts/check_public_tree.py
 生成采用双通路：
 
 - `.ai-memory/config.json` 启用 `llm_defaults.capabilities.generate_task_brief` 且 provider 配置可用时，LLM 生成意图摘要，并把确定性层已经筛选的稳定/情景经验合并成最多 5 条带 record id 的可追溯摘要；路径、规则、符号、验证状态与来源仍只能由确定性层发现和校验。提示词使用固定指令前缀与 `<current_task>` / `<authority_index>` / `<historical_memory>` 数据围栏，历史摘要按不可信证据处理，开放问题会回流 `missing_context`。Memory MCP 不发现或生成 Skill，也不把历史经验写成自我指令；其目标是提炼真正利于当前任务的决策、根因、验证结果、约束和未解决问题。
-- `.ai-memory/config.json` 启用 `llm_defaults.capabilities.generate_task_graph_delta` 后，任务完成结算 worker 会把项目可见记录作为有界、不可信证据交给 LLM 评估语义关系。LLM 只能提议带真实 record id 的 `inferred` 实体关系边；本地确定性层校验节点类型、关系、置信度和 evidence 白名单，重新封印 delta 后异步上报 Hub。模型禁用、超时、输出无效或没有证据时不会构造 `task -> entity` 星图；`task_id` 仍保留为事件溯源，等待有证据的实体语义关系出现，不阻断本地写入或任务完成。
 - capability 关闭、provider 缺失、超时、超预算、网络失败、结构协议非法或引用不存在的 record id 时，自动回退到确定性线路。确定性线路校验活动文件、源代码符号、规则入口、仓库 Skill 元数据与历史线索，隔离个人范围，并排除重复、乱码、疑似密钥、越界路径与冲突记录。
 - LLM 失败只体现在 `task_brief.generation`，不能改变 `task_context.ok`、`current_task` 或 `active_context`。调用方可用 `brief_use_llm=false` 强制确定性生成。
 - 同一 `context_token + task_id + 参数` 的简报持久化到 `.ai-memory/temp/task-brief-cache.sqlite`，因此 MCP 随时退出、重启后仍读取同一快照；`brief_refresh=true` 才显式重建。缓存只保存可再生派生视图，不影响基础记忆读写。

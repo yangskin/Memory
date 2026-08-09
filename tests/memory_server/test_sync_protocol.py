@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from servers.memory_server.memory_sync_protocol import build_memory_event
 
 
-def test_build_memory_event_preserves_graph_and_all_entity_fields(tmp_path, monkeypatch) -> None:
+def test_build_memory_event_preserves_task_event_and_excludes_retired_graph_delta(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         "servers.memory_server.memory_sync_protocol.load_runtime_identity",
         lambda _root, _args: SimpleNamespace(
@@ -17,7 +17,6 @@ def test_build_memory_event_preserves_graph_and_all_entity_fields(tmp_path, monk
             workspace_id="workspace-1",
         ),
     )
-    delta = {"version": "1.0", "delta_id": "sha256:test", "task_id": "task-1", "nodes": [], "edges": []}
     task_event = {
         "version": "1.0",
         "command_id": "command-1",
@@ -37,7 +36,7 @@ def test_build_memory_event_preserves_graph_and_all_entity_fields(tmp_path, monk
             "operation": "checkpoint",
             "scope": "project_shared",
             "task_id": "task-1",
-            "graph_delta": delta,
+            "graph_delta": {"retired": True},
             "task_event": task_event,
             "map_names": ["Main"],
             "plugin_names": ["Memory"],
@@ -46,7 +45,7 @@ def test_build_memory_event_preserves_graph_and_all_entity_fields(tmp_path, monk
         repo_root=tmp_path,
     )
 
-    assert event["metadata"]["graph_delta"] == delta
+    assert "graph_delta" not in event["metadata"]
     assert event["metadata"]["task_event"] == task_event
     assert event["metadata"]["map_names"] == ["Main"]
     assert event["metadata"]["plugin_names"] == ["Memory"]

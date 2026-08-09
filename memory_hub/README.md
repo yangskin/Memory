@@ -86,54 +86,9 @@ Hub 提供轻量协作看板接口，用于跨 Agent/成员同步「待处理事
 窄参数 schema。原有 `memory_read(operation="board")` 与
 `memory_write(operation="board")` 继续兼容。
 
-## Project Graph 查询
+## Task Graph
 
-Project Graph 是从项目可见事件生成的可重建派生视图。共同记忆正文只在事件已经显式标注
-文件、类、模块、资源、蓝图、地图或插件时参与：每条合格事件成为稳定的 `source` 节点，
-再通过确定性的 `documents` 边连接到它明确提及的实体。该边表示证据来源，不表示依赖。
-
-实体间的 `depends_on`、`implements`、`validates`、`caused_by` 与 `supersedes` 只来自
-显式客户端 `graph_delta` 或可选的服务端语义提取，且都需要事件证据。`task_id`、任务标题、
-`system_area` 和报告标题只可作为事件溯源或来源标签，绝不作为 Graph 实体端点。它不会读取或
-展示个人 scope 事件，也不会改变 Brief、Board、`shared_context` 或旧事件 ingest 的默认行为。
-投影由 Worker 旁路执行，查询结果可能暂时落后于最新事件，可通过响应中的 `freshness.stale`
-判断。
-
-接口需要 `context:read`：
-
-```bash
-curl --fail -X POST "https://memory.example.com/v1/projects/<project-id>/graph/query" \
-	-H "Authorization: Bearer <context-read-token>" \
-	-H "Content-Type: application/json" \
-	-d '{"task_id":"task-123","files":["src/example.py"],"depth":2,"max_nodes":100,"max_edges":200}'
-```
-
-查询过滤器包括 `task_id`、`files`、`classes`、`modules`、`assets`、`blueprints`、`maps` 和
-`plugins`。`depth` 范围为 `0..2`；默认返回 50 节点、100 边，最大
-200 节点、400 边。默认节点省略 metadata，边只返回 `source_event_count`；Hub API 只有
-显式传入 `include_metadata=true` / `include_source_event_ids=true` 才返回完整详情。MCP
-客户端始终请求紧凑 Graph，并通过唯一的 `memory_read` 工具调用：
-
-```json
-{
-	"operation": "project_graph",
-	"task_id": "task-123",
-	"active_files": ["src/example.py"],
-	"depth": 1,
-	"max_nodes": 50,
-	"max_edges": 100
-}
-```
-
-该 operation 是显式旁路查询，不会自动注入现有 `memory_read(operation="task_context")`
-响应；未配置 Hub 时返回远端不可用结果，本地记忆读写仍保持离线可用。
-
-`PROJECT_GRAPH_SEMANTIC_ENABLED` 默认是 `false`。来源图不依赖 LLM；只有在确认项目拥有
-稳定实体标注和足够明确的实体关系后，才应显式设为 `true` 以补充受证据约束的语义边。
-
-## Graph Agent Task System
-
-Task Graph 不复用共同记忆实体图的语义；它使用独立的 append-only `task_events` 与
+Task Graph 是唯一的图投影；它使用独立的 append-only `task_events` 与
 `tasks`、`task_agents`、`task_attempts`、`task_submissions`、`task_reviews` Projection 表，
 并将 Task/Agent/Attempt/Submission/Review 作为有类型的 `graph_nodes` / `graph_edges` 投影。
 `0010_task_graph` Alembic 迁移创建这些表。规范化 Task Event 同时保留
@@ -158,8 +113,9 @@ Agent 身份认证。生命周期命令为 `create`、`assign`、
 伪造 claim/review/reassign。Hub 不可用时，`report` 与 `submit` 仍可本地记录并进入 Outbox，
 其他协调状态变更明确拒绝。未启用 Hub 的独立本地模式不需要网络。
 
-`/shared` 中的“任务工作区”读取上述两个端点，提供 roots Dashboard、Cytoscape Task Graph、
-Agent 汇总、节点详情和 Timeline；页面只使用 Token 所在项目的共享任务数据。
+`/shared` 中的“任务工作区”读取上述两个端点，默认以状态队列展示待处理、进行中、受阻与
+审查中任务；结束任务折叠收纳。选中任务后才显示其依赖、产出、Attempt、Agent、Submission、
+Review 轨迹、Agent 负载和对应 Timeline；页面只使用 Token 所在项目的共享任务数据。
 
 ## 响应大小治理
 
@@ -167,13 +123,13 @@ Agent 汇总、节点详情和 Timeline；页面只使用 Token 所在项目的�
 	`include_content=true` 才返回全文。Brief markdown 最多 4,000 字符，
 	`include_brief_details=true` 才返回 structured brief。
 - Context 默认最多 10 项、最大 20 项，并且 `include` 最多选择 6 个白名单区段。
-- Board 与 Graph 使用上述紧凑默认值。`/shared` Web 面板显式请求 UI 所需详情，不代表
-	agent/MCP 默认响应。
+- Board 使用上述紧凑默认值。`/shared` Web 面板显式请求 UI 所需的 Task Graph 与事件详情，
+	不代表 agent/MCP 默认响应。
 - MCP 在 Hub 响应之外还有统一的 `12,000` 字符与约 `3,000` token 最终预算；截断仍
 	返回有效 JSON 和预算元数据。
 
 这些限制约束派生查询和网络传输，不删除 append-only `MemoryEvent`。大型项目应通过 task、
-文件、类、模块或时间窗口缩小查询，再按需请求详情；Graph 不自动注入 task context。
+Agent 或时间窗口缩小查询，再按需请求详情；Task Graph 不自动注入 task context。
 
 ## 验证与运维
 

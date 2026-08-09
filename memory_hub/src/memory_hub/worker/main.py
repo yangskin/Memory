@@ -10,7 +10,6 @@ from memory_hub.config import load_settings
 from memory_hub.logging import configure_logging
 from memory_hub.db.session import create_session_factory
 from memory_hub.worker.runner import run_once
-from memory_hub.graph.projector import project_pending
 
 
 def _provider(settings):
@@ -38,14 +37,7 @@ def main() -> None:
     lease_seconds = max(90, int(settings.llm_timeout_seconds) + 30)
     while True:
         with factory() as session:
-            processed = run_once(session, provider, worker_id=worker_id, lease_seconds=lease_seconds, model_name=model_name, rebase_interval_seconds=settings.brief_rebase_interval_seconds, project_graph_semantic_enabled=settings.project_graph_semantic_enabled)
-        try:
-            with factory() as session:
-                projected = project_pending(session)
-            if projected:
-                logger.info("memory-hub graph projector processed projects=%s", projected)
-        except Exception:
-            logger.exception("memory-hub graph projection failed; brief worker remains available")
+            processed = run_once(session, provider, worker_id=worker_id, lease_seconds=lease_seconds, model_name=model_name, rebase_interval_seconds=settings.brief_rebase_interval_seconds)
         if processed:
             logger.info("memory-hub worker processed jobs=%s provider=%s", processed, settings.llm_provider)
         time.sleep(1)
