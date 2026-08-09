@@ -178,8 +178,12 @@ Task/Attempt/Submission/Review 投影，并返回 `{roots,nodes,edges,cursor}`�
 
 未配置 Hub 时，Task Graph 是完全本地的执行图。配置并启用 Hub 后，所有在线 Task Graph
 命令会先经 Hub 的同一事务验证 `command_id`、version、assignment epoch 和内外事件的 Agent ID
-一致性；Hub
-接受或拒绝后，本地 SQLite 才提交，已接受的命令不会再写入 Outbox。Hub 不可用时，只有
+一致性；Hub 接受或拒绝后，本地 SQLite 才提交，已接受的命令不会再写入 Outbox。提交进入
+`review` 后，审核者必须不同于该 Submission 对应 Attempt 的执行者；违反时本地和 Hub 都返回
+`reviewer_conflict`，任务保持在 `review`。对于运输层错误、`408` 和 `5xx`，权威调用会在原
+`task_command_timeout_seconds` 总预算内用相同事件 ID 最多立即重试一次；恢复结果会带
+`shared_sync.authority_attempts` 与 `shared_sync.recovered_after_retry`，持续失败会带
+`authority_attempts`，可据此监控 Hub 可用性。Hub 不可用时，只有
 `report` 与 `submit` 可作为离线记录写入本地并等待异步同步；`create`、`assign`、`claim`、
 `decline`、`block`、`resume`、`review`、`reassign`、`cancel` 返回
 `task_authority_unavailable`。这条同步路径只适用于 `memory_task_sync`，不会让普通

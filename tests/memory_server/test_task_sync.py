@@ -192,6 +192,78 @@ def test_task_lifecycle_projects_attempt_submission_and_review_history(tmp_path)
     ]
 
 
+def test_review_rejects_the_submission_executor_and_preserves_review_state(tmp_path) -> None:
+    config = SimpleNamespace(repo_root=tmp_path)
+    created = task_sync(
+        config,
+        {
+            "action": "create",
+            "command_id": "self-review-create",
+            "expected_version": 0,
+            "task_id": "task-self-review",
+            "actor_id": "agent:lead",
+            "title": "Independent review task",
+        },
+    )
+    assigned = task_sync(
+        config,
+        {
+            "action": "assign",
+            "command_id": "self-review-assign",
+            "expected_version": created["version"],
+            "task_id": "task-self-review",
+            "actor_id": "agent:lead",
+            "assignee": "agent:worker",
+        },
+    )
+    claimed = task_sync(
+        config,
+        {
+            "action": "claim",
+            "command_id": "self-review-claim",
+            "expected_version": assigned["version"],
+            "expected_assignment_epoch": assigned["assignment_epoch"],
+            "task_id": "task-self-review",
+            "actor_id": "agent:worker",
+        },
+    )
+    submitted = task_sync(
+        config,
+        {
+            "action": "submit",
+            "command_id": "self-review-submit",
+            "expected_version": claimed["version"],
+            "expected_assignment_epoch": claimed["assignment_epoch"],
+            "task_id": "task-self-review",
+            "actor_id": "agent:worker",
+            "summary": "Ready for independent review.",
+        },
+    )
+    rejected = task_sync(
+        config,
+        {
+            "action": "review",
+            "command_id": "self-review-attempt",
+            "expected_version": submitted["version"],
+            "task_id": "task-self-review",
+            "actor_id": "agent:worker",
+            "decision": "approved",
+        },
+    )
+    bundle = task_sync(config, {"action": "sync", "task_id": "task-self-review"})
+    history = task_sync(config, {"action": "history", "task_id": "task-self-review"})
+
+    assert rejected["ok"] is False
+    assert rejected["error"] == "reviewer_conflict"
+    assert bundle["bundle"]["roots"]["review"] == ["task:task-self-review"]
+    assert [event["event_type"] for event in history["events"]] == [
+        "TaskCreated",
+        "TaskAssigned",
+        "TaskClaimed",
+        "TaskSubmitted",
+    ]
+
+
 def test_reassignment_rejects_stale_epoch_and_command_replay_is_idempotent(tmp_path) -> None:
     config = SimpleNamespace(repo_root=tmp_path)
     create_args = {
@@ -524,6 +596,49 @@ def test_hub_rejection_rolls_back_the_local_task_command(tmp_path, monkeypatch) 
     ]
 
 
+def test_hub_retries_a_transient_authority_failure_without_duplicate_local_events(tmp_path, monkeypatch) -> None:
+    remote_events: list[dict[str, object]] = []
+
+    def transient_post(_self, _path, payload, _timeout_seconds):
+        event = payload["events"][0]
+        remote_events.append(event)
+        if len(remote_events) == 1:
+            return 0, {"error": "remote_unavailable"}
+        return 200, {"duplicates": [event["event_id"]]}
+
+    monkeypatch.setattr(task_sync_module.MemoryHubClient, "post", transient_post)
+    config = SimpleNamespace(
+        repo_root=tmp_path,
+        shared_memory=SimpleNamespace(
+            enabled=True,
+            active=True,
+            project_id="project-transient-authority",
+            sync_scopes=frozenset({"project_shared"}),
+            task_command_timeout_seconds=0.1,
+        ),
+    )
+    created = task_sync(
+        config,
+        {
+            "action": "create",
+            "command_id": "transient-authority-create",
+            "expected_version": 0,
+            "task_id": "task-transient-authority",
+            "actor_id": "agent:lead",
+            "title": "Transient authority task",
+        },
+    )
+    history = task_sync(config, {"action": "history", "task_id": "task-transient-authority"})
+
+    assert created["ok"] is True
+    assert created["shared_sync"]["mode"] == "hub_authoritative"
+    assert created["shared_sync"]["authority_attempts"] == 2
+    assert created["shared_sync"]["recovered_after_retry"] is True
+    assert len(remote_events) == 2
+    assert remote_events[0]["event_id"] == remote_events[1]["event_id"]
+    assert [event["event_type"] for event in history["events"]] == ["TaskCreated"]
+
+
 def test_active_hub_outage_only_defers_report_and_submit(tmp_path, monkeypatch) -> None:
     def unavailable_post(_self, _path, _payload, _timeout_seconds):
         return 0, {"error": "remote_unavailable"}
@@ -615,6 +730,7 @@ def test_active_hub_outage_only_defers_report_and_submit(tmp_path, monkeypatch) 
 
     assert blocked["ok"] is False
     assert blocked["error"] == "task_authority_unavailable"
+    assert blocked["authority_attempts"] == 2
     assert reported["shared_sync"] == {
         "enabled": True,
         "mode": "offline_pending",

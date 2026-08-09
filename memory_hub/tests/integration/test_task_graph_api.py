@@ -151,6 +151,56 @@ def test_task_sync_rejects_an_outdated_task_version() -> None:
     assert response.json()["rejected"][0]["code"] == "version_conflict"
 
 
+def test_task_sync_rejects_a_self_review() -> None:
+    app = create_app()
+    token_id, token, secret_hash = create_token()
+    project_id = f"task-self-review-{uuid4().hex}"
+    with app.state.session_factory() as session:
+        session.add(
+            AccessToken(
+                token_id=token_id,
+                token_secret_hash=secret_hash,
+                token_prefix=token[:20],
+                user_id="task-user",
+                project_id=project_id,
+                scopes=["events:write", "context:read"],
+            )
+        )
+        session.commit()
+    client = TestClient(app)
+    headers = {"Authorization": f"Bearer {token}"}
+    events = [
+        _event(_task_event("self-review-create", "TaskCreated", expected_version=0, task_version=1, assignment_epoch=0, payload={"title": "Independent review task", "depends_on": [], "produced_memory": []})),
+        _event(_task_event("self-review-assign", "TaskAssigned", expected_version=1, task_version=2, assignment_epoch=1, payload={"attempt_id": "attempt-self-review", "assignee": "agent:worker", "assigned_by": "agent:lead", "epoch": 1})),
+        _event(_task_event("self-review-claim", "TaskClaimed", expected_version=2, task_version=3, assignment_epoch=1, expected_assignment_epoch=1, actor_id="agent:worker", payload={"attempt_id": "attempt-self-review"})),
+        _event(_task_event("self-review-submit", "TaskSubmitted", expected_version=3, task_version=4, assignment_epoch=1, expected_assignment_epoch=1, actor_id="agent:worker", payload={"attempt_id": "attempt-self-review", "submission_id": "submission-self-review", "summary": "Ready for review", "evidence": []})),
+    ]
+    accepted = client.post(f"/v1/projects/{project_id}/events/batch", headers=headers, json={"events": events})
+    rejected = client.post(
+        f"/v1/projects/{project_id}/events/batch",
+        headers=headers,
+        json={
+            "events": [
+                _event(_task_event("self-review", "TaskReviewed", expected_version=4, task_version=5, assignment_epoch=1, actor_id="agent:worker", payload={"review_id": "review-self-review", "submission_id": "submission-self-review", "decision": "approved", "summary": "Self-approved"}))
+            ]
+        },
+    )
+
+    assert accepted.status_code == 200
+    assert len(accepted.json()["accepted"]) == len(events)
+    assert rejected.status_code == 200
+    assert rejected.json()["rejected"][0]["code"] == "reviewer_conflict"
+    graph = client.get(f"/v1/projects/{project_id}/task-graph?task_id=task-api-1", headers=headers)
+    history = client.get(f"/v1/projects/{project_id}/task-events?task_id=task-api-1", headers=headers)
+    assert next(node for node in graph.json()["nodes"] if node["type"] == "task")["metadata"]["state"] == "review"
+    assert [item["event_type"] for item in history.json()["events"]] == [
+        "TaskCreated",
+        "TaskAssigned",
+        "TaskClaimed",
+        "TaskSubmitted",
+    ]
+
+
 def test_task_sync_rejects_an_executor_event_for_a_different_attempt() -> None:
     app = create_app()
     token_id, token, secret_hash = create_token()

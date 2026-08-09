@@ -367,6 +367,11 @@ def _apply_review(session: Session, project_id: str, task: Task, event: TaskEven
         raise TaskProjectionError("submission_not_found", "review submission does not belong to this task")
     if submission.task_version != event.expected_version:
         raise TaskProjectionError("submission_conflict", "review submission is not the current task version")
+    attempt = session.get(TaskAttempt, (project_id, submission.attempt_id))
+    if attempt is None:
+        raise TaskProjectionError("no_current_attempt", "submission attempt is unavailable")
+    if attempt.assignee == event.actor_id:
+        raise TaskProjectionError("reviewer_conflict", "reviewer must differ from the submission executor")
     if session.get(TaskReview, (project_id, review_id)) is not None:
         raise TaskProjectionError("review_exists", "review_id already exists")
     _upsert_agent(session, project_id, event.actor_id, event.occurred_at)
@@ -385,9 +390,6 @@ def _apply_review(session: Session, project_id: str, task: Task, event: TaskEven
     if decision == "approved":
         _advance(task, event, event.occurred_at, state="done")
         return
-    attempt = session.get(TaskAttempt, (project_id, submission.attempt_id))
-    if attempt is None:
-        raise TaskProjectionError("no_current_attempt", "submission attempt is unavailable")
     attempt.status = "active"
     attempt.updated_at = event.occurred_at
     _advance(task, event, event.occurred_at, state="active")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,6 +27,8 @@ TASK_MUTATION_ACTIONS = frozenset(
 )
 OFFLINE_TASK_ACTIONS = frozenset({"report", "submit"})
 RETRYABLE_TASK_AUTHORITY_STATUSES = frozenset({0, 408, 429, 500, 502, 503, 504})
+IMMEDIATE_TASK_AUTHORITY_RETRY_STATUSES = frozenset({0, 408, 500, 502, 503, 504})
+MAX_TASK_AUTHORITY_ATTEMPTS = 2
 
 
 def _now() -> str:
@@ -708,6 +711,19 @@ class TaskSyncStore:
                 ).fetchone()
             if submission is None:
                 return error_result("submission_not_found", "no matching submission is available for review")
+            submission_attempt = connection.execute(
+                "SELECT assignee FROM task_attempts WHERE attempt_id=? AND task_id=?",
+                (str(submission["attempt_id"]), str(task["task_id"])),
+            ).fetchone()
+            if submission_attempt is None:
+                return error_result("submission_not_found", "submission attempt is unavailable for review")
+            if str(submission_attempt["assignee"]) == actor_id:
+                return error_result(
+                    "reviewer_conflict",
+                    "reviewer must differ from the submission executor",
+                    task_id=str(task["task_id"]),
+                    submission_id=str(submission["submission_id"]),
+                )
             review_seed = f"{task['task_id']}:{args.get('command_id')}"
             review_id = requested_review or f"review_{hashlib.sha256(review_seed.encode('utf-8')).hexdigest()[:20]}"
             if connection.execute("SELECT 1 FROM task_reviews WHERE review_id=?", (review_id,)).fetchone() is not None:
@@ -1214,18 +1230,39 @@ def _authorize_hub_task_event(config: MemoryConfig, task_event: dict[str, Any]) 
     timeout_seconds = float(
         getattr(shared, "task_command_timeout_seconds", getattr(shared, "upload_timeout_seconds", 5.0))
     )
-    status, response = MemoryHubClient(shared).post(
-        f"/v1/projects/{shared.project_id}/events/batch",
-        {"events": [event]},
-        max(0.1, timeout_seconds),
-    )
+    timeout_seconds = max(0.1, timeout_seconds)
+    deadline = time.monotonic() + timeout_seconds
+    status = 0
+    response: dict[str, Any] = {"error": "remote_unavailable"}
+    attempts = 0
+    while attempts < MAX_TASK_AUTHORITY_ATTEMPTS:
+        remaining = deadline - time.monotonic()
+        if attempts and remaining <= 0:
+            break
+        attempts += 1
+        status, response = MemoryHubClient(shared).post(
+            f"/v1/projects/{shared.project_id}/events/batch",
+            {"events": [event]},
+            max(0.1, min(timeout_seconds, remaining)),
+        )
+        if status not in IMMEDIATE_TASK_AUTHORITY_RETRY_STATUSES:
+            break
     event_id = str(event["event_id"])
     if status == 200:
         acknowledged = {str(value) for value in list(response.get("accepted", [])) + list(response.get("duplicates", []))}
         if event_id in acknowledged:
+            shared_sync: dict[str, object] = {
+                "enabled": True,
+                "mode": "hub_authoritative",
+                "queued": False,
+                "remote_event_id": event_id,
+            }
+            if attempts > 1:
+                shared_sync["authority_attempts"] = attempts
+                shared_sync["recovered_after_retry"] = True
             return ok_result(
                 "Hub accepted task command",
-                shared_sync={"enabled": True, "mode": "hub_authoritative", "queued": False, "remote_event_id": event_id},
+                shared_sync=shared_sync,
             )
         for rejected in response.get("rejected", []):
             if isinstance(rejected, dict) and str(rejected.get("event_id") or "") == event_id:
@@ -1234,20 +1271,32 @@ def _authorize_hub_task_event(config: MemoryConfig, task_event: dict[str, Any]) 
                     str(rejected.get("message") or "Hub rejected task command"),
                     remote_authority=True,
                 )
-        return error_result("task_authority_unavailable", "Hub did not acknowledge the task command", remote_status=status)
+        return error_result(
+            "task_authority_unavailable",
+            "Hub did not acknowledge the task command",
+            remote_status=status,
+            authority_attempts=attempts,
+        )
     message = str(response.get("error") or f"Hub task command failed with HTTP {status}")
     if status in RETRYABLE_TASK_AUTHORITY_STATUSES:
+        details: dict[str, object] = {
+            "remote_status": status,
+            "retryable": True,
+            "authority_attempts": attempts,
+        }
+        if response.get("retry_after_seconds") is not None:
+            details["retry_after_seconds"] = response["retry_after_seconds"]
         return error_result(
             "task_authority_unavailable",
             message,
-            remote_status=status,
-            retryable=True,
+            **details,
         )
     return error_result(
         "task_authority_rejected",
         message,
         remote_status=status,
         remote_authority=True,
+        authority_attempts=attempts,
     )
 
 
