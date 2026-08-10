@@ -24,7 +24,7 @@ def test_shared_page_is_served_without_database() -> None:
     assert "events_from_history" in body
 
 
-def test_shared_page_serves_task_queue_and_selected_lineage_without_legacy_graph() -> None:
+def test_shared_page_serves_dark_paginated_task_queue_and_selected_lineage_without_legacy_graph() -> None:
     client = TestClient(create_app())
 
     page_response = client.get("/shared")
@@ -42,14 +42,19 @@ def test_shared_page_serves_task_queue_and_selected_lineage_without_legacy_graph
     assert 'id="taskLineageArea"' in page_response.text
     assert 'id="taskOpenCount"' in page_response.text
     assert 'id="taskBlockedCount"' in page_response.text
-    assert 'id="taskClosedGroup"' in page_response.text
+    assert 'class="task-table-wrap"' in page_response.text
+    assert 'id="taskLoadMoreBtn"' in page_response.text
     assert 'id="taskAgents"' in page_response.text
     assert 'id="taskEvents"' in page_response.text
-    assert "function fetchTaskWorkspace()" in page_response.text
-    assert "function renderTaskWorkspace(bundle, history)" in page_response.text
+    assert "function fetchTaskWorkspace(append)" in page_response.text
+    assert "function renderTaskWorkspace(catalog)" in page_response.text
     assert "function renderTaskLineage(bundle, record)" in page_response.text
     assert "function selectTask(taskId)" in page_response.text
     assert 'data-task-id="' in page_response.text
-    assert '"/task-graph?max_nodes=200&max_edges=400"' in page_response.text
-    assert '"/task-events?max_items=200"' in page_response.text
+    assert '"/tasks?" + query' in page_response.text
+    assert '"/task-graph?task_id="' in page_response.text
+    assert '"/task-events?task_id="' in page_response.text
     assert "TASK_SHAPES" in page_response.text
+    assert "color-scheme: dark" in page_response.text
+    assert 'id="themeBtn"' not in page_response.text
+    assert "data-theme" not in page_response.text

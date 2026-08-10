@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from memory_hub.api.dependencies import require_principal
 from memory_hub.auth.permissions import Principal
-from memory_hub.tasks.projector import task_graph_bundle, task_history
+from memory_hub.tasks.projector import task_catalog, task_graph_bundle, task_history
 
 router = APIRouter()
 
@@ -12,6 +12,27 @@ router = APIRouter()
 def _assert_project(principal: Principal, project_id: str) -> None:
     if principal.project_id != project_id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "project access denied")
+
+
+@router.get("/v1/projects/{project_id}/tasks")
+def tasks(
+    project_id: str,
+    request: Request,
+    state: str = Query(default="working", max_length=32),
+    q: str = Query(default="", max_length=256),
+    agent: str = Query(default="", max_length=256),
+    cursor: str | None = Query(default=None, max_length=1024),
+    limit: int = Query(default=40, ge=1, le=100),
+    principal: Principal = Depends(require_principal("context:read")),
+) -> dict[str, object]:
+    _assert_project(principal, project_id)
+    if not request.app.state.rate_limiter.allow(principal.token_id, "task_graph_read", 120):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "rate limit exceeded")
+    try:
+        with request.app.state.session_factory() as session:
+            return task_catalog(session, project_id, state=state, search=q, agent=agent, cursor=cursor, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
 
 @router.get("/v1/projects/{project_id}/task-graph")

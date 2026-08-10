@@ -105,6 +105,7 @@ Agent 身份认证。生命周期命令为 `create`、`assign`、
 
 只读端点均需要 `context:read`：
 
+- `GET /v1/projects/{project_id}/tasks`：返回紧凑、游标分页的任务目录。支持 `state`（默认 `working`）、`q`、`agent`、`cursor` 与 `limit`；响应包含全局 `state_counts`、进行中 `agent_loads` 和 `next_cursor`，不受 Graph Bundle 的节点上限影响。
 - `GET /v1/projects/{project_id}/task-graph`：返回 `{roots,nodes,edges,cursor}` Graph Bundle；`task_id` 可缩小到单任务，`agent_id` 仅返回当前 Attempt 分配给该 Agent 的任务。
 - `GET /v1/projects/{project_id}/task-events`：读取 append-only Timeline，可用 `task_id` 和 `cursor` 分页；每条事件返回预期与实际 version/epoch。
 
@@ -113,9 +114,10 @@ Agent 身份认证。生命周期命令为 `create`、`assign`、
 伪造 claim/review/reassign。Hub 不可用时，`report` 与 `submit` 仍可本地记录并进入 Outbox，
 其他协调状态变更明确拒绝。未启用 Hub 的独立本地模式不需要网络。
 
-`/shared` 中的“任务工作区”读取上述两个端点，默认以状态队列展示待处理、进行中、受阻与
-审查中任务；结束任务折叠收纳。选中任务后才显示其依赖、产出、Attempt、Agent、Submission、
-Review 轨迹、Agent 负载和对应 Timeline；页面只使用 Token 所在项目的共享任务数据。
+`/shared` 中的“任务工作区”先读取分页任务目录，默认显示进行中任务，也可筛选已完成或全部状态。
+表格以固定行高呈现并按需加载更多页面，因此大量完成任务不会撑开工作区或挤占运行中任务。
+选中任务后才读取其依赖、产出、Attempt、Agent、Submission、Review 轨迹和对应 Timeline；
+Agent 负载来自目录的全局聚合，页面只使用 Token 所在项目的共享任务数据。
 
 ## 响应大小治理
 

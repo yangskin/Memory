@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from memory_hub.api.main import create_app
 from memory_hub.auth.tokens import create_token
-from memory_hub.db.models import AccessToken
+from memory_hub.db.models import AccessToken, Task
 
 
 pytestmark = pytest.mark.skipif(not os.getenv("MEMORY_HUB_DATABASE_URL"), reason="requires PostgreSQL")
@@ -121,6 +121,81 @@ def test_task_sync_events_project_a_graph_bundle_and_timeline() -> None:
     assert unrelated_agent.json()["roots"] == {"current": [], "assigned": [], "review": [], "attention": []}
     assert client.get(f"/v1/projects/{project_id}/graph", headers=headers).status_code == 404
     assert client.post(f"/v1/projects/{project_id}/graph/query", headers=headers, json={}).status_code == 404
+
+
+def test_task_index_paginates_completed_tasks_beyond_graph_node_limit() -> None:
+    app = create_app()
+    token_id, token, secret_hash = create_token()
+    project_id = f"task-index-{uuid4().hex}"
+    now = datetime.now(UTC)
+    with app.state.session_factory() as session:
+        session.add(
+            AccessToken(
+                token_id=token_id,
+                token_secret_hash=secret_hash,
+                token_prefix=token[:20],
+                user_id="task-user",
+                project_id=project_id,
+                scopes=["context:read"],
+            )
+        )
+        for index in range(245):
+            state = "done" if index % 3 == 0 else "active"
+            updated_at = now - timedelta(minutes=index)
+            session.add(
+                Task(
+                    project_id=project_id,
+                    task_id=f"task-index-{index:03d}",
+                    title=f"Indexed task {index}",
+                    objective="Paginated task workspace",
+                    acceptance="Available beyond graph-node limits",
+                    priority="normal",
+                    state=state,
+                    version=1,
+                    assignment_epoch=0,
+                    current_attempt_id=None,
+                    created_at=updated_at,
+                    updated_at=updated_at,
+                )
+            )
+        session.commit()
+
+    client = TestClient(app)
+    headers = {"Authorization": f"Bearer {token}"}
+    first = client.get(f"/v1/projects/{project_id}/tasks?state=all&limit=100", headers=headers)
+
+    assert first.status_code == 200
+    first_body = first.json()
+    assert first_body["total"] == 245
+    assert len(first_body["items"]) == 100
+    assert first_body["state_counts"] == {"active": 163, "done": 82}
+    assert first_body["agent_loads"] == {}
+    assert first_body["next_cursor"]
+
+    second = client.get(
+        f"/v1/projects/{project_id}/tasks?state=all&limit=100&cursor={first_body['next_cursor']}",
+        headers=headers,
+    )
+    assert second.status_code == 200
+    second_body = second.json()
+    third = client.get(
+        f"/v1/projects/{project_id}/tasks?state=all&limit=100&cursor={second_body['next_cursor']}",
+        headers=headers,
+    )
+
+    assert third.status_code == 200
+    third_body = third.json()
+    all_task_ids = [item["task_id"] for item in first_body["items"] + second_body["items"] + third_body["items"]]
+
+    assert len(second_body["items"]) == 100
+    assert len(third_body["items"]) == 45
+    assert third_body["next_cursor"] is None
+    assert len(all_task_ids) == len(set(all_task_ids)) == 245
+
+    completed = client.get(f"/v1/projects/{project_id}/tasks?state=done&limit=100", headers=headers)
+    assert completed.status_code == 200
+    assert completed.json()["total"] == 82
+    assert all(item["state"] == "done" for item in completed.json()["items"])
 
 
 def test_task_sync_rejects_an_outdated_task_version() -> None:

@@ -7,7 +7,7 @@ import pytest
 
 from memory_hub.domain.events import EventPayload
 from memory_hub.domain.tasks import TaskEventPayload, task_event_from_metadata
-from memory_hub.tasks.projector import TaskProjectionError, _require_current_attempt_payload
+from memory_hub.tasks.projector import TaskProjectionError, _decode_task_cursor, _require_current_attempt_payload
 
 
 def _task_event() -> dict[str, object]:
@@ -53,6 +53,11 @@ def test_event_payload_permits_task_sync_without_client_identity_fields() -> Non
     )
 
     assert payload.operation == "task_sync"
+
+
+def test_task_catalog_rejects_a_malformed_cursor() -> None:
+    with pytest.raises(ValueError, match="invalid task cursor"):
+        _decode_task_cursor("a")
 
 
 @pytest.mark.parametrize("attempt_id", [None, "attempt-stale"])

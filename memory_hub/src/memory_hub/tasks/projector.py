@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 from datetime import UTC, datetime
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from memory_hub.db.models import (
@@ -27,6 +29,7 @@ from memory_hub.domain.tasks import TaskEventPayload
 MAX_GRAPH_IDS = 256
 MAX_HISTORY_ITEMS = 200
 TERMINAL_STATES = frozenset({"done", "cancelled"})
+TASK_LIST_STATES = frozenset({"all", "working", "open", "active", "blocked", "review", "done", "cancelled"})
 
 
 class TaskProjectionError(ValueError):
@@ -35,6 +38,27 @@ class TaskProjectionError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+def _encode_task_cursor(task: Task) -> str:
+    payload = json.dumps(
+        {"updated_at": task.updated_at.isoformat(), "task_id": task.task_id},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_task_cursor(cursor: str) -> tuple[datetime, str]:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        value = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+        updated_at = datetime.fromisoformat(str(value["updated_at"]))
+        task_id = str(value["task_id"])
+    except (binascii.Error, KeyError, TypeError, ValueError, UnicodeDecodeError) as exc:
+        raise ValueError("invalid task cursor") from exc
+    if not task_id:
+        raise ValueError("invalid task cursor")
+    return updated_at, task_id
 
 
 def _node_id(project_id: str, node_type: str, node_key: str) -> UUID:
@@ -817,6 +841,167 @@ def task_graph_bundle(
     }
 
 
+def task_catalog(
+    session: Session,
+    project_id: str,
+    *,
+    state: str = "working",
+    search: str = "",
+    agent: str = "",
+    cursor: str | None = None,
+    limit: int = 40,
+) -> dict[str, object]:
+    """Return a compact, cursor-paginated task index independent of GraphNode limits."""
+
+    normalized_state = state.strip().lower()
+    if normalized_state not in TASK_LIST_STATES:
+        raise ValueError("invalid task state")
+    normalized_search = search.strip()
+    normalized_agent = agent.strip()
+
+    query = select(Task).where(Task.project_id == project_id)
+    if normalized_state == "working":
+        query = query.where(~Task.state.in_(TERMINAL_STATES))
+    elif normalized_state != "all":
+        query = query.where(Task.state == normalized_state)
+    if normalized_search:
+        pattern = f"%{normalized_search}%"
+        query = query.where(
+            or_(
+                Task.task_id.ilike(pattern),
+                Task.title.ilike(pattern),
+                Task.objective.ilike(pattern),
+                Task.acceptance.ilike(pattern),
+            )
+        )
+    if normalized_agent:
+        query = query.join(
+            TaskAttempt,
+            (TaskAttempt.project_id == Task.project_id)
+            & (TaskAttempt.task_id == Task.task_id)
+            & (TaskAttempt.attempt_id == Task.current_attempt_id),
+        ).where(TaskAttempt.assignee.ilike(f"%{normalized_agent}%"))
+
+    total = int(session.scalar(select(func.count()).select_from(query.subquery())) or 0)
+    if cursor:
+        cursor_updated_at, cursor_task_id = _decode_task_cursor(cursor)
+        query = query.where(
+            or_(
+                Task.updated_at < cursor_updated_at,
+                and_(Task.updated_at == cursor_updated_at, Task.task_id > cursor_task_id),
+            )
+        )
+
+    page_size = max(1, min(100, limit))
+    rows = list(session.scalars(query.order_by(Task.updated_at.desc(), Task.task_id).limit(page_size + 1)))
+    page = rows[:page_size]
+    task_ids = [task.task_id for task in page]
+    current_attempt_ids = [task.current_attempt_id for task in page if task.current_attempt_id]
+    current_attempts = {
+        attempt.attempt_id: attempt
+        for attempt in session.scalars(
+            select(TaskAttempt).where(
+                TaskAttempt.project_id == project_id,
+                TaskAttempt.attempt_id.in_(current_attempt_ids),
+            )
+        )
+    } if current_attempt_ids else {}
+    submissions = list(
+        session.scalars(
+            select(TaskSubmission).where(
+                TaskSubmission.project_id == project_id,
+                TaskSubmission.task_id.in_(task_ids),
+            )
+        )
+    ) if task_ids else []
+    reviews = list(
+        session.scalars(
+            select(TaskReview).where(
+                TaskReview.project_id == project_id,
+                TaskReview.task_id.in_(task_ids),
+            )
+        )
+    ) if task_ids else []
+    latest_submissions: dict[str, TaskSubmission] = {}
+    for submission in submissions:
+        previous = latest_submissions.get(submission.task_id)
+        if previous is None or submission.created_at > previous.created_at:
+            latest_submissions[submission.task_id] = submission
+    latest_reviews: dict[str, TaskReview] = {}
+    for review in reviews:
+        previous = latest_reviews.get(review.task_id)
+        if previous is None or review.created_at > previous.created_at:
+            latest_reviews[review.task_id] = review
+    state_counts = {
+        task_state: int(count)
+        for task_state, count in session.execute(
+            select(Task.state, func.count()).where(Task.project_id == project_id).group_by(Task.state)
+        )
+    }
+    agent_loads = {
+        assignee: int(count)
+        for assignee, count in session.execute(
+            select(TaskAttempt.assignee, func.count())
+            .join(
+                Task,
+                (Task.project_id == TaskAttempt.project_id)
+                & (Task.task_id == TaskAttempt.task_id)
+                & (Task.current_attempt_id == TaskAttempt.attempt_id),
+            )
+            .where(TaskAttempt.project_id == project_id, ~Task.state.in_(TERMINAL_STATES))
+            .group_by(TaskAttempt.assignee)
+        )
+    }
+
+    items: list[dict[str, object]] = []
+    for task in page:
+        attempt = current_attempts.get(task.current_attempt_id or "")
+        submission = latest_submissions.get(task.task_id)
+        review = latest_reviews.get(task.task_id)
+        items.append(
+            {
+                "task_id": task.task_id,
+                "title": task.title,
+                "objective": task.objective,
+                "acceptance": task.acceptance,
+                "priority": task.priority,
+                "state": task.state,
+                "version": task.version,
+                "assignment_epoch": task.assignment_epoch,
+                "created_at": task.created_at.isoformat(),
+                "updated_at": task.updated_at.isoformat(),
+                "current_attempt": None if attempt is None else {
+                    "attempt_id": attempt.attempt_id,
+                    "assignee": attempt.assignee,
+                    "assigned_by": attempt.assigned_by,
+                    "status": attempt.status,
+                    "epoch": attempt.epoch,
+                    "updated_at": attempt.updated_at.isoformat(),
+                },
+                "latest_submission": None if submission is None else {
+                    "submission_id": submission.submission_id,
+                    "summary": submission.summary,
+                    "created_at": submission.created_at.isoformat(),
+                },
+                "latest_review": None if review is None else {
+                    "review_id": review.review_id,
+                    "reviewer": review.reviewer,
+                    "decision": review.decision,
+                    "summary": review.summary,
+                    "created_at": review.created_at.isoformat(),
+                },
+            }
+        )
+    return {
+        "items": items,
+        "total": total,
+        "state_counts": state_counts,
+        "agent_loads": agent_loads,
+        "next_cursor": _encode_task_cursor(page[-1]) if len(rows) > page_size else None,
+        "page_size": page_size,
+    }
+
+
 def task_history(
     session: Session,
     project_id: str,
@@ -855,6 +1040,7 @@ __all__ = [
     "project_task_event",
     "project_task_graph",
     "rebuild_task_graph",
+    "task_catalog",
     "task_graph_bundle",
     "task_history",
 ]
