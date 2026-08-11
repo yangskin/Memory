@@ -163,7 +163,9 @@ docker compose -p <project-id> down -v
 ## Token 与团队身份
 
 受信任的内部团队可以为同一项目使用一个带 `events:write` 和 `context:read` 权限的
-共享 Token。客户端**始终**将 `user_config.local.json` 的顶层 `user_name` 作为请求中的
+共享 Token。该 Token 还必须显式包含 `identity:delegate` 权限；没有该权限时，Hub
+会忽略 `X-Memory-User-ID` 并使用 Token 自身的用户身份。客户端将
+`user_config.local.json` 的顶层 `user_name` 作为请求中的
 `user_id`（`shared_memory.local.json` 不配置 `user_id`），Hub 用它归属事件、
 过滤个人事件并维护个人 Brief。该模式降低接入成本，但不验证 `user_id` 的真实性，
 不适用于不互相信任的成员。
@@ -177,7 +179,8 @@ docker compose -p <project-id> exec api memory-hub token create \
 	--project <project-id> \
 	--user <user-id> \
 	--scope events:write \
-	--scope context:read
+	--scope context:read \
+	--scope identity:delegate
 ```
 
 Token 明文仅在创建时输出，服务端只保存哈希，因此无法再次查询。查询 Token ID、

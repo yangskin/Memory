@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
 
 from memory_hub.api.main import create_app
+from memory_hub.api.routes_context import _fair_shared_events
 
 
 def test_shared_page_is_served_without_database() -> None:
@@ -58,3 +61,17 @@ def test_shared_page_serves_dark_paginated_task_queue_and_selected_lineage_witho
     assert "color-scheme: dark" in page_response.text
     assert 'id="themeBtn"' not in page_response.text
     assert "data-theme" not in page_response.text
+
+
+def test_shared_feed_round_robins_recent_events_across_users() -> None:
+    events = [
+        SimpleNamespace(user_id="deployment", event_id="d1"),
+        SimpleNamespace(user_id="deployment", event_id="d2"),
+        SimpleNamespace(user_id="deployment", event_id="d3"),
+        SimpleNamespace(user_id="alice", event_id="a1"),
+        SimpleNamespace(user_id="bob", event_id="b1"),
+    ]
+
+    selected = _fair_shared_events(events, 3)
+
+    assert [event.event_id for event in selected] == ["d1", "a1", "b1"]

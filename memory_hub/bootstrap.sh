@@ -87,7 +87,8 @@ token="$(docker compose -p "$project_id" exec -T api memory-hub token create \
     --project "$project_id" \
     --user "$user_id" \
     --scope events:write \
-    --scope context:read)"
+    --scope context:read \
+    --scope identity:delegate)"
 
 printf '{\n  "user_name": "%s"\n}\n' "$user_id" > "$local_config"
 printf '{\n  "enabled": true,\n  "server_url": "https://%s",\n  "project_id": "%s",\n  "user_id": "%s",\n  "token": "%s"\n}\n' \

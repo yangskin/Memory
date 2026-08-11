@@ -64,29 +64,42 @@ class MemorySyncWorker:
         rows = store.claim_due_events(config.upload_batch_size) if config.upload_enabled else []
         if rows:
             import json
-            events = [json.loads(row["payload_json"]) for row in rows]
-            status, response = MemoryHubClient(config).upload(events)
-            if status == 200:
-                acknowledged = {str(event_id) for event_id in list(response.get("accepted", [])) + list(response.get("duplicates", []))}
-                store.acknowledge(sorted(acknowledged))
-                rejected_ids: set[str] = set()
-                for rejected in response.get("rejected", []):
-                    event_id = str(rejected.get("event_id") or "")
-                    if event_id:
-                        rejected_ids.add(event_id)
-                        store.reject(event_id, str(rejected.get("code") or "rejected"))
-                for row in rows:
-                    if row["event_id"] not in acknowledged | rejected_ids:
-                        store.retry(row["event_id"], "unacknowledged_response", datetime.now(UTC).isoformat())
-            elif status in {400, 401, 403, 404, 413, 422}:
-                for row in rows:
-                    store.reject(row["event_id"], str(response.get("error") or f"http_{status}"))
-                if status in {401, 403}:
-                    store.put_state("remote_auth_disabled", {"token_hash": token_hash, "status": status})
-            else:
-                for row in rows:
-                    delay = min(config.upload_retry_max_seconds, 2 ** min(int(row["attempts"]), 8))
-                    store.retry(row["event_id"], str(response.get("error") or f"http_{status}"), (datetime.now(UTC) + timedelta(seconds=delay)).isoformat())
+            grouped_rows: dict[str, list[dict[str, object]]] = {}
+            for row in rows:
+                grouped_rows.setdefault(str(row.get("user_id") or config.user_id), []).append(row)
+            for user_id, user_rows in grouped_rows.items():
+                upload_config = config if user_id == config.user_id else SharedMemoryConfig(**{**config.__dict__, "user_id": user_id})
+                events = [json.loads(str(row["payload_json"])) for row in user_rows]
+                status, response = MemoryHubClient(upload_config).upload(events)
+                self._handle_upload_response(store, config, user_rows, status, response, token_hash)
+        self._refresh_context(runtime, config, store)
+
+    @staticmethod
+    def _handle_upload_response(store: SyncStore, config: SharedMemoryConfig, rows: list[dict[str, object]], status: int, response: dict[str, object], token_hash: str) -> None:
+        if status == 200:
+            acknowledged = {str(event_id) for event_id in list(response.get("accepted", [])) + list(response.get("duplicates", []))}
+            store.acknowledge(sorted(acknowledged))
+            rejected_ids: set[str] = set()
+            for rejected in response.get("rejected", []):
+                event_id = str(rejected.get("event_id") or "")
+                if event_id:
+                    rejected_ids.add(event_id)
+                    store.reject(event_id, str(rejected.get("code") or "rejected"))
+            for row in rows:
+                event_id = str(row["event_id"])
+                if event_id not in acknowledged | rejected_ids:
+                    store.retry(event_id, "unacknowledged_response", datetime.now(UTC).isoformat())
+        elif status in {400, 401, 403, 404, 413, 422}:
+            for row in rows:
+                store.reject(str(row["event_id"]), str(response.get("error") or f"http_{status}"))
+            if status in {401, 403}:
+                store.put_state("remote_auth_disabled", {"token_hash": token_hash, "status": status})
+        else:
+            for row in rows:
+                delay = min(config.upload_retry_max_seconds, 2 ** min(int(row["attempts"]), 8))
+                store.retry(str(row["event_id"]), str(response.get("error") or f"http_{status}"), (datetime.now(UTC) + timedelta(seconds=delay)).isoformat())
+
+    def _refresh_context(self, runtime: object, config: SharedMemoryConfig, store: SyncStore) -> None:
         if config.read_enabled and time.monotonic() >= self._next_refresh:
             self._next_refresh = time.monotonic() + config.background_refresh_seconds
             args = store.get_state("default_context_args")

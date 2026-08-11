@@ -19,6 +19,7 @@ def enqueue_shared_record(
         return result
     try:
         from .memory_frontmatter import parse_record_pack_entries
+        from .memory_events import get_current_user
         from .memory_reader import memory_get
         from .memory_sync_protocol import build_memory_event
         from .memory_sync_store import SyncStore
@@ -40,6 +41,7 @@ def enqueue_shared_record(
             event["event_id"],
             event,
             event["content_hash"],
+            get_current_user(config.repo_root),
         )
         if queued:
             from .memory_sync_worker import wake_sync_worker

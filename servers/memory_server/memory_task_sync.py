@@ -1347,6 +1347,7 @@ def enqueue_task_sync_event(config: MemoryConfig, result: dict[str, Any]) -> dic
         return result
     task_event = dict(result["task_event"])
     try:
+        from .memory_events import get_current_user
         from .memory_sync_store import SyncStore
 
         task_id = str(task_event.get("task_id") or "")
@@ -1354,7 +1355,7 @@ def enqueue_task_sync_event(config: MemoryConfig, result: dict[str, Any]) -> dic
         if event["scope"] not in getattr(shared, "sync_scopes", frozenset()):
             return result
         queued = SyncStore(config.repo_root / ".ai-memory" / "shared-sync.db").enqueue(
-            event["event_id"], event, event["content_hash"]
+            event["event_id"], event, event["content_hash"], get_current_user(config.repo_root)
         )
         if queued:
             from .memory_sync_worker import wake_sync_worker

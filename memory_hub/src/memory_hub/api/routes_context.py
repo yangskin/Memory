@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -8,7 +9,6 @@ from sqlalchemy.dialects.postgresql import insert
 
 from memory_hub.api.dependencies import effective_user_id, require_principal
 from memory_hub.auth.permissions import Principal
-from memory_hub.db.models import BriefHead, BriefSnapshot, MemoryEvent
 from memory_hub.db.models import BriefHead, BriefSnapshot, ContextUsageDaily, MemoryEvent
 from memory_hub.domain.shared_context import SharedContextRequest
 from memory_hub.domain.shared_feed import SharedFeedRequest
@@ -27,6 +27,20 @@ _SAFE_METADATA_KEYS = frozenset({
     "validated_by",
 })
 _PROJECT_VISIBLE_SCOPES = frozenset({"shared", "project_shared", "org_shared"})
+
+
+def _fair_shared_events(events: list[MemoryEvent], limit: int) -> list[MemoryEvent]:
+    by_user: dict[str, deque[MemoryEvent]] = {}
+    for event in events:
+        by_user.setdefault(event.user_id, deque()).append(event)
+    result: list[MemoryEvent] = []
+    users = deque(by_user)
+    while users and len(result) < limit:
+        user_id = users.popleft()
+        result.append(by_user[user_id].popleft())
+        if by_user[user_id]:
+            users.append(user_id)
+    return result
 
 
 def _project_visible_content() -> object:
@@ -209,10 +223,13 @@ def shared_feed(payload: SharedFeedRequest, request: Request, principal: Princip
     factory = request.app.state.session_factory
     with factory() as session:
         visible = _project_visible_content()
-        events = list(session.scalars(select(MemoryEvent).where(MemoryEvent.project_id == project_id, MemoryEvent.occurred_at >= since, visible).order_by(desc(MemoryEvent.occurred_at)).limit(payload.max_items)))
+        candidate_limit = min(500, payload.max_items * 10)
+        candidates = list(session.scalars(select(MemoryEvent).where(MemoryEvent.project_id == project_id, MemoryEvent.occurred_at >= since, visible).order_by(desc(MemoryEvent.occurred_at)).limit(candidate_limit)))
+        events = _fair_shared_events(candidates, payload.max_items)
         events_from_history = False
         if not events:
-            events = list(session.scalars(select(MemoryEvent).where(MemoryEvent.project_id == project_id, visible).order_by(desc(MemoryEvent.occurred_at)).limit(payload.max_items)))
+            candidates = list(session.scalars(select(MemoryEvent).where(MemoryEvent.project_id == project_id, visible).order_by(desc(MemoryEvent.occurred_at)).limit(candidate_limit)))
+            events = _fair_shared_events(candidates, payload.max_items)
             events_from_history = bool(events)
         latest_seq = max((event.server_seq for event in events), default=0)
         project_latest_seq = int(session.scalar(select(func.coalesce(func.max(MemoryEvent.server_seq), 0)).where(MemoryEvent.project_id == project_id, MemoryEvent.occurred_at >= since, visible)) or 0)

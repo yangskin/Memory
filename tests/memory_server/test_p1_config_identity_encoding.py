@@ -29,6 +29,23 @@ def test_reloadable_config_adopts_valid_changes_and_keeps_last_good_on_corruptio
     assert provider.diagnostics()["reload_error"]
 
 
+def test_reloadable_config_adopts_user_identity_file_changes(repo: Path) -> None:
+    memory_root = repo / "MCP" / "Memory"
+    memory_root.mkdir(parents=True, exist_ok=True)
+    (memory_root / "shared_memory.local.json").write_text(
+        json.dumps({"enabled": True, "server_url": "https://hub.example", "project_id": "project"}),
+        encoding="utf-8",
+    )
+    user_config = memory_root / "user_config.local.json"
+    user_config.write_text(json.dumps({"user_name": "alice"}), encoding="utf-8")
+    provider = ReloadableMemoryConfig(load_config(repo))
+
+    user_config.write_text(json.dumps({"user_name": "bob"}), encoding="utf-8")
+
+    assert provider.get().shared_memory.user_id == "bob"
+    assert provider.diagnostics()["reload_count"] == 1
+
+
 def test_reloadable_config_rejects_semantic_worker_errors_and_clears_recovered_diagnostic(repo: Path) -> None:
     initial = load_config(repo)
     provider = ReloadableMemoryConfig(initial)

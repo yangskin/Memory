@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 from servers.memory_server.memory_sync_store import SyncStore
 from servers.memory_server.memory_sync_protocol import build_memory_event
 
@@ -29,6 +31,24 @@ def test_claimed_event_recovers_after_restart(tmp_path) -> None:
     assert [item["event_id"] for item in store.claim_due_events(20)] == ["evt_3"]
     assert store.due_events(20) == []
     assert [item["event_id"] for item in SyncStore(path).due_events(20)] == ["evt_3"]
+
+
+def test_outbox_migrates_existing_schema_and_binds_new_event_user(tmp_path) -> None:
+    path = tmp_path / "shared-sync.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute("""
+            CREATE TABLE outbox_events (
+                local_seq INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE,
+                payload_json TEXT NOT NULL, content_hash TEXT NOT NULL, created_at TEXT NOT NULL,
+                next_retry_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                state TEXT NOT NULL DEFAULT 'pending', last_error TEXT, acknowledged_at TEXT
+            )
+        """)
+
+    store = SyncStore(path)
+    assert store.enqueue("evt_user", {"event_id": "evt_user"}, "sha256:user", "alice")
+
+    assert store.due_events(20)[0]["user_id"] == "alice"
 
 
 def test_event_protocol_prefers_persisted_canonical_record() -> None:

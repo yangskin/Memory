@@ -824,7 +824,9 @@ def test_active_hub_authorization_failure_does_not_defer_a_report(tmp_path, monk
     ]
 
 
-def test_completed_task_command_is_queued_for_hub_without_waiting(tmp_path) -> None:
+def test_completed_task_command_is_queued_for_hub_without_waiting(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("USER", "outbox-author")
+    monkeypatch.setenv("USERNAME", "outbox-author")
     local_config = SimpleNamespace(repo_root=tmp_path)
     created = task_sync(
         local_config,
@@ -850,6 +852,7 @@ def test_completed_task_command_is_queued_for_hub_without_waiting(tmp_path) -> N
     assert first_sync == {"enabled": True, "queued": True}
     assert replayed["shared_sync"] == {"enabled": True, "queued": False}
     assert len(rows) == 1
+    assert rows[0]["user_id"] == "outbox-author"
     event = json.loads(rows[0]["payload_json"])
     assert event["operation"] == "task_sync"
     assert event["content_markdown"] == ""

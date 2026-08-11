@@ -29,7 +29,7 @@ class SyncStore:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS outbox_events (
                     local_seq INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE,
-                    payload_json TEXT NOT NULL, content_hash TEXT NOT NULL, created_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL, content_hash TEXT NOT NULL, user_id TEXT, created_at TEXT NOT NULL,
                     next_retry_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
                     state TEXT NOT NULL DEFAULT 'pending', last_error TEXT, acknowledged_at TEXT);
                 CREATE TABLE IF NOT EXISTS shared_cache (
@@ -38,14 +38,17 @@ class SyncStore:
                 CREATE TABLE IF NOT EXISTS sync_state (
                     key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL);
             """)
+            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(outbox_events)")}
+            if "user_id" not in columns:
+                conn.execute("ALTER TABLE outbox_events ADD COLUMN user_id TEXT")
             conn.execute("UPDATE outbox_events SET state='pending' WHERE state='uploading'")
 
-    def enqueue(self, event_id: str, payload: dict[str, Any], content_hash: str) -> bool:
+    def enqueue(self, event_id: str, payload: dict[str, Any], content_hash: str, user_id: str | None = None) -> bool:
         now = _now()
         with self._connect() as conn:
             cursor = conn.execute(
-                "INSERT OR IGNORE INTO outbox_events(event_id,payload_json,content_hash,created_at,next_retry_at) VALUES(?,?,?,?,?)",
-                (event_id, json.dumps(payload, ensure_ascii=False, separators=(",", ":")), content_hash, now, now),
+                "INSERT OR IGNORE INTO outbox_events(event_id,payload_json,content_hash,user_id,created_at,next_retry_at) VALUES(?,?,?,?,?,?)",
+                (event_id, json.dumps(payload, ensure_ascii=False, separators=(",", ":")), content_hash, user_id, now, now),
             )
             return cursor.rowcount == 1
 

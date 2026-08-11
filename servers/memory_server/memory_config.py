@@ -361,8 +361,7 @@ class ReloadableMemoryConfig:
     def get(self) -> MemoryConfig:
         with self._lock:
             try:
-                raw = self._config.config_path.read_bytes()
-                source_hash = hashlib.sha256(raw).hexdigest()
+                source_hash = _config_sources_hash(self._config.repo_root, self._config.config_path)
             except OSError as exc:
                 self._last_error = f"config read failed: {exc}"
                 return self._config
@@ -456,6 +455,17 @@ def _load_local_shared_memory(repo_root: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         pass
     return result
+
+
+def _config_sources_hash(repo_root: Path, config_path: Path) -> str:
+    digest = hashlib.sha256()
+    for path in (config_path, _local_shared_memory_config_path(repo_root), _local_user_config_path(repo_root)):
+        digest.update(str(path).encode("utf-8"))
+        try:
+            digest.update(path.read_bytes())
+        except FileNotFoundError:
+            digest.update(b"<missing>")
+    return digest.hexdigest()
 
 
 def _validate_runtime_blocks(config: dict[str, Any]) -> None:
@@ -872,7 +882,7 @@ def load_config(repo_root: str | Path, config_path: str | Path | None = None) ->
     config_hash = hashlib.sha256(
         json.dumps(merged, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    config_source_hash = hashlib.sha256(config_bytes).hexdigest()
+    config_source_hash = _config_sources_hash(root, resolved_config_path)
     guard = merged.get("guard", {}) if isinstance(merged.get("guard"), dict) else {}
 
     allowed_roots_raw = merged.get("allowed_roots", DEFAULT_ALLOWED_ROOTS)

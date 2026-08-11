@@ -42,7 +42,7 @@ def test_authenticated_event_ingest_is_idempotent_and_project_scoped() -> None:
     app = create_app()
     token_id, raw_token, secret_hash = create_token()
     with app.state.session_factory() as session:
-        session.add(AccessToken(token_id=token_id, token_secret_hash=secret_hash, token_prefix=raw_token[:20], user_id="pytest-user", project_id="project-a", scopes=["events:write", "context:read"]))
+        session.add(AccessToken(token_id=token_id, token_secret_hash=secret_hash, token_prefix=raw_token[:20], user_id="pytest-user", project_id="project-a", scopes=["events:write", "context:read", "identity:delegate"]))
         session.commit()
     client = TestClient(app)
     headers = {"Authorization": f"Bearer {raw_token}", "X-Memory-User-ID": "alice"}
@@ -76,6 +76,26 @@ def test_authenticated_event_ingest_is_idempotent_and_project_scoped() -> None:
     bob_context = client.post("/v1/projects/project-a/context", headers={**headers, "X-Memory-User-ID": "bob"}, json={"agent_instance_id": "bob-agent", "include": ["project_activity"], "max_items": 10})
     assert bob_context.status_code == 200
     assert bob_context.json()["project_activity"] == []
+
+
+def test_token_without_identity_delegation_cannot_impersonate_another_user() -> None:
+    app = create_app()
+    token_id, raw_token, secret_hash = create_token()
+    project_id = f"project-{uuid4().hex}"
+    with app.state.session_factory() as session:
+        session.add(AccessToken(token_id=token_id, token_secret_hash=secret_hash, token_prefix=raw_token[:20], user_id="alice", project_id=project_id, scopes=["events:write", "context:read"]))
+        session.commit()
+
+    event_id = uuid4()
+    response = TestClient(app).post(
+        f"/v1/projects/{project_id}/events/batch",
+        headers={"Authorization": f"Bearer {raw_token}", "X-Memory-User-ID": "bob"},
+        json={"events": [_event(str(event_id))]},
+    )
+
+    assert response.status_code == 200
+    with app.state.session_factory() as session:
+        assert session.query(MemoryEvent).filter_by(event_id=event_id).one().user_id == "alice"
 
 
 def test_tokens_private_metadata_and_secret_redaction_are_enforced() -> None:
