@@ -139,6 +139,20 @@ def test_mcp_call_memory_task_sync(repo: Path) -> None:
     assert bundle["bundle"]["nodes"][0]["id"] == "task:mcp-task"
 
 
+def test_mcp_call_memory_task_sync_returns_an_empty_bundle_for_an_unknown_task(repo: Path) -> None:
+    config = load_config(repo)
+    server = create_server(config)
+
+    bundle = _run(_call_tool(server, "memory_task_sync", {
+        "action": "sync",
+        "task_id": "unknown-task",
+    }))
+
+    assert bundle["ok"] is True, bundle
+    assert bundle["bundle"]["nodes"] == []
+    assert bundle["bundle"]["edges"] == []
+
+
 def test_mcp_call_memory_read_task_context(repo: Path) -> None:
     """memory_read{operation=task_context} is the MCP task bootstrap path."""
     config = load_config(repo)
