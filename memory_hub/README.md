@@ -48,18 +48,27 @@ API 内置一个只读面板，实时展示 **LLM 整理的共同记忆**（项�
 - 数据端点：`POST /v1/shared-feed`（需要 `context:read` scope）
 - 项目范围来自 Token，请求体不参与身份判定；请求体含多余字段会被拒绝（422）
 
-页面把只读 Token 保存在 `sessionStorage`，通过 `Authorization: Bearer …`
-请求数据，Token 不会出现在 URL 或访问日志。页面每 30 秒自动轮询。
+可直接使用当前已有的 Token，不需要为面板另外创建专用 Token；只要该 Token 包含
+`context:read` 权限即可。把它放在 URL fragment 中即可分享链接：
 
-为面板创建一个只读 Token（最小权限）：
+```text
+https://<host>/shared#token=<当前-token>
+```
+
+fragment 不会发送到服务器或写入访问日志。页面读取后会立即从地址栏移除 Token，
+仅在当前页面内存中使用，并通过 `Authorization: Bearer …` 自动连接。页面不提供
+手动 Token 输入或链接生成控件；链接缺少 Token、Token 无效或权限不足时会直接提示。
+页面每 30 秒自动轮询。
+
+如果当前 Token 不包含 `context:read`，也可以另行创建一个只读 Token（可选）：
 
 ```bash
 docker compose -p <project-id> exec api \
 	memory-hub token create --project <project-id> --user dashboard --scope context:read
 ```
 
-> 提示：该 Token 只能读取项目共同内容，不能写入任何事件。请仅分发给可信团队，
-> 且不要提交、打印或发送到聊天中。
+> 提示：该 Token 只能读取项目共同内容，不能写入任何事件。分享链接仍包含凭据，
+> 请仅分发给可信团队，且不要提交、公开发布或发送到不受信任的聊天中。
 
 ## Project Board API
 

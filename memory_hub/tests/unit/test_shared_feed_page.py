@@ -27,6 +27,27 @@ def test_shared_page_is_served_without_database() -> None:
     assert "events_from_history" in body
 
 
+def test_shared_page_only_accepts_token_from_url_and_reports_auth_errors() -> None:
+    client = TestClient(create_app())
+
+    body = client.get("/shared").text
+
+    assert 'id="token"' not in body
+    assert 'id="connectBtn"' not in body
+    assert 'id="clearBtn"' not in body
+    assert 'id="shareBtn"' not in body
+    assert 'id="accessNotice"' in body
+    assert "function readTokenFromUrl()" in body
+    assert "window.location.hash" in body
+    assert 'params.get("token")' in body
+    assert "history.replaceState" in body
+    assert "var authToken = \"\"" in body
+    assert "tokenEl" not in body
+    assert "链接中没有 Token" in body
+    assert "Token 无效或已过期" in body
+    assert "Token 缺少 context:read 权限" in body
+
+
 def test_shared_page_serves_dark_paginated_task_queue_and_selected_lineage_without_legacy_graph() -> None:
     client = TestClient(create_app())
 

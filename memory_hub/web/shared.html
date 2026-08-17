@@ -49,15 +49,12 @@
   .status .pill.ok { background: #e5f7ee; color: var(--ok); }
   .status .pill.err { background: #fdeaea; color: var(--err); }
   .status .pill.busy { background: #fdf3e4; color: var(--warn); }
-  .tokenbar {
+  .accessbar {
     display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
     padding: 10px 22px; background: var(--card); border-bottom: 1px solid var(--line);
   }
-  .tokenbar label { font-size: 13px; color: var(--muted); }
-  .tokenbar input {
-    flex: 1; min-width: 260px; padding: 8px 12px; border: 1px solid var(--line);
-    border-radius: 8px; font-family: var(--mono); font-size: 13px; background: var(--card-soft); color: var(--ink);
-  }
+  .access-notice { flex: 1; font-size: 13px; color: var(--muted); }
+  .access-notice.error { color: var(--err); }
   button {
     border: 0; border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 600;
     background: var(--brand); color: #fff; cursor: pointer;
@@ -115,9 +112,9 @@
   .task-event-summary { margin-top: 3px; font-size: 13px; overflow-wrap: anywhere; }
   @media (max-width: 900px) { .task-workspace-grid { grid-template-columns: 1fr; } .task-side { border-left: 0; border-top: 1px solid var(--line); padding: 14px 0 0; } }
   @media (max-width: 620px) {
-    header.topbar, .tokenbar, .tabs, main { padding-left: 14px; padding-right: 14px; }
+    header.topbar, .accessbar, .tabs, main { padding-left: 14px; padding-right: 14px; }
     .card { padding: 16px 14px; }
-    .tokenbar input, .task-toolbar input, .task-toolbar select { width: 100%; min-width: 0; flex-basis: 100%; }
+    .task-toolbar input, .task-toolbar select { width: 100%; min-width: 0; flex-basis: 100%; }
     .task-dashboard { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .task-metric:nth-child(2) { border-right: 0; }
     .task-metric:nth-child(3) { border-top: 1px solid var(--line); }
@@ -289,12 +286,9 @@
   </div>
 </header>
 
-<div class="tokenbar">
-  <label for="token">只读 Token（<code>context:read</code>，仅存本浏览器会话）</label>
-  <input id="token" type="password" autocomplete="off" placeholder="mem_v1.tok_….…" spellcheck="false">
-  <button id="connectBtn">连接</button>
+<div class="accessbar">
+  <div class="access-notice" id="accessNotice" role="status">正在验证共享链接…</div>
   <button class="ghost" id="refreshBtn" disabled>立即刷新</button>
-  <button class="ghost" id="clearBtn">清空</button>
 </div>
 
 <nav class="tabs" aria-label="主导航">
@@ -375,7 +369,7 @@
   <div class="tab-panel" id="sharedPanel">
   <section class="card" id="briefCard">
     <h2>LLM 整理的共同记忆简报</h2>
-    <div id="briefArea"><div class="empty">尚未连接 · 输入只读 Token 后点击「连接」。</div></div>
+    <div id="briefArea"><div class="empty">正在验证共享链接。</div></div>
   </section>
 
   <section class="card" id="feedCard">
@@ -390,14 +384,12 @@
 <script>
 (function () {
   "use strict";
-  var STORE_KEY = "memory_hub_shared_token";
   var FEED_CACHE_KEY = "memory_hub_shared_feed_cache_v2";
   var POLL_MS = 30000;
   var timer = null;
-  var tokenEl = document.getElementById("token");
-  var connectBtn = document.getElementById("connectBtn");
+  var authToken = "";
   var refreshBtn = document.getElementById("refreshBtn");
-  var clearBtn = document.getElementById("clearBtn");
+  var accessNotice = document.getElementById("accessNotice");
   var pill = document.getElementById("statusPill");
   var lastUpdated = document.getElementById("lastUpdated");
   var projectId = document.getElementById("projectId");
@@ -839,7 +831,7 @@
     return selected;
   }
   function fetchTaskDetail(record) {
-    var token = tokenEl.value.trim(), currentProject = projectId.textContent.replace(/^·\s*/, "");
+    var token = authToken, currentProject = projectId.textContent.replace(/^·\s*/, "");
     if (!token || !currentProject || currentProject === "—" || !record) return;
     var requestId = ++taskDetailRequestId;
     var base = "/v1/projects/" + encodeURIComponent(currentProject);
@@ -874,7 +866,7 @@
     fetchTaskDetail(record);
   }
   function fetchTaskWorkspace(append) {
-    var token = tokenEl.value.trim(), currentProject = projectId.textContent.replace(/^·\s*/, "");
+    var token = authToken, currentProject = projectId.textContent.replace(/^·\s*/, "");
     if (!token || !currentProject || currentProject === "—") return;
     var shouldAppend = Boolean(append && taskCatalogCursor && window.__taskCatalogCache);
     var requestId = ++taskCatalogRequestId;
@@ -907,7 +899,7 @@
     });
   }
   function fetchBoard() {
-    var token = tokenEl.value.trim();
+    var token = authToken;
     if (!token) return;
     fetch("/v1/shared-board", {
       method: "POST",
@@ -922,6 +914,7 @@
     }).then(function (data) {
       renderBoard(data);
     }).catch(function (err) {
+      showAccessError(err && err.message ? err.message : String(err));
       var area = document.getElementById("boardArea");
       area.innerHTML = '<div class="errorbox">留言板加载失败：' + esc(err && err.message ? err.message : String(err)) + "</div>";
     });
@@ -931,9 +924,14 @@
     feedArea.innerHTML = '<div class="errorbox">' + esc(message) + "</div>";
     setPill("err", "错误");
   }
+  function showAccessError(message) {
+    accessNotice.textContent = message;
+    accessNotice.classList.add("error");
+    showError(message);
+  }
   function fetchFeed() {
-    var token = tokenEl.value.trim();
-    if (!token) { showError("请先输入只读 Token。"); return; }
+    var token = authToken;
+    if (!token) { showAccessError("链接中没有 Token，请使用包含 #token=... 的共享链接。"); return; }
     setPill("busy", "请求中");
     fetch("/v1/shared-feed", {
       method: "POST",
@@ -946,10 +944,12 @@
       if (resp.status === 429) throw new Error("请求过于频繁（429）。");
       throw new Error("服务错误（HTTP " + resp.status + "）。");
     }).then(function (feed) {
+      accessNotice.textContent = "共享链接验证通过";
+      accessNotice.classList.remove("error");
       renderFeed(feed);
       schedule();
     }).catch(function (err) {
-      showError(err && err.message ? err.message : String(err));
+      showAccessError(err && err.message ? err.message : String(err));
     });
   }
   function refreshAll() { fetchFeed(); fetchBoard(); }
@@ -957,55 +957,18 @@
     if (timer) clearInterval(timer);
     timer = setInterval(refreshAll, POLL_MS);
   }
-  function connect() {
-    var token = tokenEl.value.trim();
-    if (!token) { showError("请先输入只读 Token。"); return; }
-    try { sessionStorage.setItem(STORE_KEY, token); } catch (e) {}
-    refreshBtn.disabled = false;
-    document.getElementById("taskRefreshBtn").disabled = false;
-    refreshAll();
+  function readTokenFromUrl() {
+    var fragment = window.location.hash.replace(/^#\??/, "");
+    if (!fragment) return "";
+    var params = new URLSearchParams(fragment);
+    var token = (params.get("token") || "").trim();
+    if (!params.has("token")) return "";
+    params.delete("token");
+    var remainingFragment = params.toString();
+    history.replaceState(null, "", window.location.pathname + window.location.search + (remainingFragment ? "#" + remainingFragment : ""));
+    return token;
   }
-  function clearAll() {
-    try {
-      sessionStorage.removeItem(STORE_KEY);
-      sessionStorage.removeItem(FEED_CACHE_KEY);
-    } catch (e) {}
-    hasBriefContent = false;
-    hasFeedContent = false;
-    tokenEl.value = "";
-    if (timer) { clearInterval(timer); timer = null; }
-    refreshBtn.disabled = true;
-    projectId.textContent = "—";
-    lastUpdated.textContent = "—";
-    setPill("", "未连接");
-    document.getElementById("briefArea").innerHTML = '<div class="empty">尚未连接 · 输入只读 Token 后点击「连接」。</div>';
-    document.getElementById("feedArea").innerHTML = '<div class="empty">连接后每 30 秒自动刷新。</div>';
-    document.getElementById("freshness").style.display = "none";
-    document.getElementById("boardArea").innerHTML = '<div class="board-empty">连接后自动加载最近留言。</div>';
-    document.getElementById("boardTotal").textContent = "0";
-    document.getElementById("boardOpen").textContent = "0";
-    document.getElementById("boardResolved").textContent = "0";
-    destroyTaskLineage();
-    selectedTaskId = null;
-    taskCatalogCursor = null;
-    taskCatalogRequestId += 1;
-    taskDetailRequestId += 1;
-    if (taskFilterTimer) { clearTimeout(taskFilterTimer); taskFilterTimer = null; }
-    window.__taskCatalogCache = null;
-    window.__taskGraphCache = null;
-    window.__taskHistoryCache = null;
-    document.getElementById("taskBoard").innerHTML = '<div class="empty">连接后加载任务队列。</div>';
-    document.getElementById("taskLineageArea").innerHTML = '<div class="empty">选择任务后显示依赖与交付轨迹。</div>';
-    document.getElementById("taskEvents").innerHTML = '<div class="empty">暂无 Task Event。</div>';
-    document.getElementById("taskAgents").innerHTML = '<div class="empty">暂无 Agent 节点。</div>';
-    document.getElementById("taskStats").textContent = "—";
-    document.getElementById("taskFreshness").textContent = "未连接";
-    ["taskOpenCount", "taskActiveCount", "taskBlockedCount", "taskReviewCount", "taskClosedCount"].forEach(function (id) { document.getElementById(id).textContent = "0"; });
-    renderTaskDetail(null);
-  }
-  connectBtn.addEventListener("click", connect);
   refreshBtn.addEventListener("click", refreshAll);
-  clearBtn.addEventListener("click", clearAll);
   document.getElementById("taskRefreshBtn").addEventListener("click", function () {
     taskDetailRequestId += 1;
     window.__taskGraphCache = null;
@@ -1046,7 +1009,6 @@
       }
     });
   });
-  tokenEl.addEventListener("keydown", function (e) { if (e.key === "Enter") connect(); });
   document.getElementById("boardFilter").addEventListener("change", function () {
     var last = window.__boardCache;
     if (last) renderBoard(last);
@@ -1056,10 +1018,14 @@
     if (last) renderBoard(last);
   });
 
-  try {
-    var saved = sessionStorage.getItem(STORE_KEY);
-    if (saved) { tokenEl.value = saved; refreshBtn.disabled = false; document.getElementById("taskRefreshBtn").disabled = false; refreshAll(); }
-  } catch (e) {}
+  authToken = readTokenFromUrl();
+  if (authToken) {
+    refreshBtn.disabled = false;
+    document.getElementById("taskRefreshBtn").disabled = false;
+    refreshAll();
+  } else {
+    showAccessError("链接中没有 Token，请使用包含 #token=... 的共享链接。");
+  }
 })();
 </script>
 </body>
