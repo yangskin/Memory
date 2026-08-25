@@ -8,11 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from .memory_config import MemoryConfig
-from .memory_events import append_event
+from .memory_events import append_event, get_current_user
 from .memory_frontmatter import PACK_HEADER, parse_record_pack_entries, render_record_pack_entry
+from .memory_identity import canonical_identity
 from .memory_locks import file_lock
 from .memory_paths import PathManager, PathSecurityError
-from .memory_record_io import iter_record_files, refresh_index_if_exists
+from .memory_record_io import _atomic_write_text, iter_record_files, refresh_index_if_exists
+from .memory_request_id import content_sha
 from .memory_records import parse_record_markdown, render_record_markdown
 from .memory_result import error_result, ok_result
 
@@ -74,8 +76,113 @@ def _pack_rel_path_for_entry(source_rel_path: str, entry: PackEntry, fallback_ts
     return (source.parent / "packs" / f"{date_label}-{index:03d}.md").as_posix()
 
 
-def _archive_rel_path(bucket: str, index: int) -> str:
-    return f"memory-bank/archive/record-packs/{bucket}-{index:03d}.md"
+def _archive_rel_path(user: str, bucket: str, source_sha: str, fragment_index: int) -> str:
+    """Return an immutable archive shard path for one source pack fragment.
+
+    The source content digest makes simultaneous archive runs on different
+    devices produce different paths when their source packs differ. Reusing
+    the same digest is safe because the expected shard content is identical.
+    """
+
+    return f"memory-bank/archive/record-packs/{user}/{bucket}-{source_sha[:16]}-{fragment_index:03d}.md"
+
+
+def _render_archive_shard(entries: list[PackEntry]) -> str:
+    """Render a complete archive shard without mutating an existing pack."""
+
+    content = f"{PACK_HEADER}\n\n"
+    for entry in entries:
+        if content != f"{PACK_HEADER}\n\n":
+            if not content.endswith("\n"):
+                content += "\n"
+            content += "\n"
+        content += entry.packed
+    return content
+
+
+def _partition_archive_entries(entries: list[PackEntry], max_chars: int) -> list[list[PackEntry]] | dict[str, Any]:
+    """Split one source pack into bounded immutable archive fragments."""
+
+    fragments: list[list[PackEntry]] = []
+    current: list[PackEntry] = []
+    for entry in entries:
+        candidate = [*current, entry]
+        if len(_render_archive_shard(candidate)) <= max_chars:
+            current = candidate
+            continue
+        if not current or len(_render_archive_shard([entry])) > max_chars:
+            return error_result("record_too_large", f"record {entry.record_id} is larger than target pack size")
+        fragments.append(current)
+        current = [entry]
+    if current:
+        fragments.append(current)
+    return fragments
+
+
+def _write_immutable_archive_shard(
+    config: MemoryConfig,
+    *,
+    rel_path: str,
+    content: str,
+    dry_run: bool,
+) -> str | dict[str, Any]:
+    """Create one archive shard, accepting only an identical prior write."""
+
+    manager = PathManager(config)
+    try:
+        abs_path = manager.resolve(rel_path, must_exist=False, must_be_file=False)
+    except PathSecurityError as exc:
+        return error_result("path_not_allowed", str(exc))
+    try:
+        if dry_run:
+            if abs_path.exists() and abs_path.read_text(encoding="utf-8") != content:
+                return error_result("archive_shard_conflict", "immutable archive shard already has different content", path=rel_path)
+            return rel_path
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
+        with file_lock(config.repo_root, abs_path):
+            if abs_path.exists():
+                if abs_path.read_text(encoding="utf-8") == content:
+                    return rel_path
+                return error_result("archive_shard_conflict", "immutable archive shard already has different content", path=rel_path)
+            _atomic_write_text(abs_path, content, fsync_strict=config.mcp_fsync_strict)
+            return rel_path
+    except (OSError, UnicodeError) as exc:
+        return error_result("archive_shard_write_failed", str(exc), path=rel_path)
+
+
+def _archive_user_for_source(
+    config: MemoryConfig,
+    source_rel_path: str,
+    entries: list[PackEntry],
+) -> str | None:
+    """解析归档分区用户，避免不同成员继续写同一个月度 pack。
+
+    新格式的个人/共享 pack 已把用户 ID 编码在路径中，路径归属优先；
+    旧格式 pack 没有用户目录时，读取本机 ``user_config.local.json`` 的
+    企业微信 ID。仅在两者都不可用时，才使用记录里唯一且稳定的作者。
+    """
+
+    parts = Path(source_rel_path.replace("\\", "/")).parts
+    path_user = ""
+    if len(parts) >= 3 and parts[:2] == ("memory-bank", "people"):
+        path_user = canonical_identity(parts[2])
+    elif len(parts) >= 4 and parts[:3] == ("memory-bank", "shared", "packs"):
+        path_user = canonical_identity(parts[3])
+    if path_user and path_user != "unknown":
+        return path_user
+
+    configured_user = canonical_identity(get_current_user(config.repo_root))
+    if configured_user and configured_user != "unknown":
+        return configured_user
+
+    authors = {
+        canonical_identity(entry.metadata.get("author"))
+        for entry in entries
+        if canonical_identity(entry.metadata.get("author")) not in {"", "unknown"}
+    }
+    if len(authors) == 1:
+        return next(iter(authors))
+    return None
 
 
 def _entry_ids_from_text(text: str) -> set[str]:
@@ -267,11 +374,13 @@ def compact_old_record_packs(
     dry_run: bool = True,
     now: float | None = None,
 ) -> dict[str, Any]:
-    """Merge old date packs into larger archive packs inside ``memory-bank``.
+    """Move old date packs into immutable per-user archive shards.
 
     The data remains available to normal record iteration because archive packs
     are still Markdown files under ``memory-bank``. Files are split at
-    ``record_packing.archive_pack_max_chars`` (1 MiB by default).
+    ``record_packing.archive_pack_max_chars`` (1 MiB by default). Each source
+    pack is rendered into content-addressed shards, so no archive run appends
+    to a monthly file and same-user devices cannot create a Git write conflict.
     """
     cutoff_days = older_than_days if older_than_days is not None else config.record_packing_archive_after_days
     archive_max = max_pack_chars if max_pack_chars is not None else config.record_packing_archive_pack_max_chars
@@ -297,7 +406,6 @@ def compact_old_record_packs(
     candidates.sort(key=lambda item: item[1])
     actions: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
-    pack_states: dict[str, _PackState] = {}
     index_targets: set[str] = set()
     for abs_path, rel_path, bucket_date in candidates[:limit]:
         try:
@@ -310,17 +418,33 @@ def compact_old_record_packs(
         except (OSError, ValueError) as exc:
             skipped.append({"path": rel_path, "reason": "parse_failed", "message": str(exc)})
             continue
+        archive_user = _archive_user_for_source(config, rel_path, entries)
+        if not archive_user:
+            skipped.append(
+                {
+                    "path": rel_path,
+                    "reason": "archive_user_unknown",
+                    "message": (
+                        "archive pack requires a stable user id from its source path, "
+                        "MCP/Memory/user_config.local.json, or one unique record author"
+                    ),
+                }
+            )
+            continue
         bucket = bucket_date.strftime("%Y%m")
+        source_sha = content_sha(text)
+        fragments = _partition_archive_entries(entries, archive_max)
+        if isinstance(fragments, dict):
+            skipped.append({"path": rel_path, "reason": fragments.get("error"), "message": fragments.get("message")})
+            continue
         written_to: set[str] = set()
         failed: dict[str, Any] | None = None
-        for entry in entries:
-            result = _append_entry_to_pack(
+        for fragment_index, fragment in enumerate(fragments, start=1):
+            result = _write_immutable_archive_shard(
                 config,
-                rel_path_factory=lambda idx, b=bucket: _archive_rel_path(b, idx),
-                entry=entry,
-                max_chars=archive_max,
+                rel_path=_archive_rel_path(archive_user, bucket, source_sha, fragment_index),
+                content=_render_archive_shard(fragment),
                 dry_run=dry_run,
-                pack_states=pack_states,
             )
             if isinstance(result, dict):
                 failed = result
@@ -337,7 +461,14 @@ def compact_old_record_packs(
             except OSError as exc:
                 skipped.append({"path": rel_path, "reason": "remove_source_failed", "message": str(exc)})
                 continue
-        actions.append({"from": rel_path, "to": sorted(written_to), "records": len(entries)})
+        actions.append(
+            {
+                "from": rel_path,
+                "to": sorted(written_to),
+                "records": len(entries),
+                "archive_user": archive_user,
+            }
+        )
 
     if not dry_run:
         # 每个归档目标只刷新一次，避免随归档包增长形成二次方级索引开销。

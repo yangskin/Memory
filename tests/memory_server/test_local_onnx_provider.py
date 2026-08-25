@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import http.server
 import json
+import os
 import socket
 import socketserver
 import subprocess
@@ -224,10 +225,19 @@ def _run_cli(argv: list[str]) -> subprocess.CompletedProcess:
         / "scripts"
         / "download_embedding_model.py"
     )
+    # 必须显式定死编码：text=True 会用本机 locale 解码（中文 Windows 上是 GBK），
+    # 而子进程的输出编码取决于继承来的 PYTHONIOENCODING。两者不一致时 reader 线程
+    # 抛 UnicodeDecodeError，subprocess 把 stdout/stderr 交回 None，断言会以
+    # "argument of type 'NoneType' is not iterable" 这种与真实原因无关的形式失败。
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
     return subprocess.run(
         [sys.executable, str(script), *argv],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
         check=False,
     )
 
@@ -319,6 +329,47 @@ def test_cli_short_circuits_when_already_up_to_date(http_serving, tmp_path: Path
     )
     assert result.returncode == 0, result.stderr
     assert "already up-to-date" in result.stdout
+
+
+def test_cli_output_survives_a_restrictive_console_codepage(tmp_path: Path) -> None:
+    """CLI 的正常输出必须是纯 ASCII。
+
+    这个脚本不做任何 console 兜底（没有 reconfigure，也不强制 PYTHONIOENCODING），
+    所以打印任何非 ASCII 字符都会在装不下该字符的代码页上抛 UnicodeEncodeError。
+    曾经用过的省略号 U+2026 在 cp437 上就会崩，而且是在模型已经校验通过之后才崩。
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    payload = b"already-here" * 16
+    sha = hashlib.sha256(payload).hexdigest()
+    dest = repo / ".ai-memory/models/preexisting.onnx"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(payload)
+
+    script = Path(__file__).resolve().parents[2] / "scripts" / "download_embedding_model.py"
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "cp437"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--repo",
+            str(repo),
+            "--url",
+            "http://127.0.0.1:1/never-fetched.onnx",
+            "--sha256",
+            sha,
+            "--filename",
+            "preexisting.onnx",
+        ],
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr.decode("cp437", "replace")
+    assert b"UnicodeEncodeError" not in result.stderr
+    assert result.stdout.decode("ascii")  # 非 ASCII 会让 decode 抛错
 
 
 def test_cli_rejects_url_without_sha(tmp_path: Path) -> None:

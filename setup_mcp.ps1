@@ -322,6 +322,13 @@ $userServerEntry = @{
     }
 }
 
+Update-McpJsonServerEntry `
+    -Path (Join-Path $WorkspaceRoot ".cursor\mcp.json") `
+    -TopKey "mcpServers" `
+    -Label "Cursor (project)" `
+    -Entry $userServerEntry `
+    -CreateIfMissing
+
 $userHomePath = Get-UserHomePath
 if ($userHomePath) {
     Update-McpJsonServerEntry `

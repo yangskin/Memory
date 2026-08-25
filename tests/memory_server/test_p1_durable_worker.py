@@ -64,10 +64,12 @@ claimed = queue.claim(worker_id='child-process', lease_seconds=1)
 assert claimed and claimed['job_id'] == queued['job_id']
 """
     child = subprocess.run(
-        [sys.executable, "-c", script, str(tmp_path)],
+        [sys.executable, "-X", "utf8", "-c", script, str(tmp_path)],
         cwd=Path(__file__).resolve().parents[2],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=20,
     )
     assert child.returncode == 0, child.stderr

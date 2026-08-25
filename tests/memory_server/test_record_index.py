@@ -31,6 +31,63 @@ def test_rebuild_index_indexes_front_matter_records(repo: Path) -> None:
     assert (repo / ".ai-memory/search.db").is_file()
 
 
+def test_rebuild_index_deduplicates_identical_record_ids(repo: Path) -> None:
+    config = load_config(repo)
+    written = memory_write_record(
+        config,
+        content_markdown="# Exact Duplicate\n\nArchive migration kept an identical copy.\n",
+        record_kind="note",
+        tags=["mcp"],
+    )
+    source = repo / written["path"]
+    duplicate = repo / "memory-bank/archive/record-packs/exact-duplicate.md"
+    duplicate.parent.mkdir(parents=True, exist_ok=True)
+    duplicate.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+    result = memory_rebuild_index(config)
+
+    assert result["ok"] is True
+    assert result["indexed_records"] == 1
+    assert result["stats"]["duplicate_record_ids"] == 1
+    assert result["stats"]["deduplicated_records"] == 1
+    assert result["duplicate_records"][0]["id"] == written["id"]
+    assert len(result["duplicate_records"][0]["paths"]) == 2
+
+
+def test_rebuild_index_rejects_conflicting_record_ids_before_replacing_index(repo: Path) -> None:
+    config = load_config(repo)
+    stable = memory_write_record(
+        config,
+        content_markdown="# Stable Record\n\nThis row must survive a rejected rebuild.\n",
+        record_kind="note",
+        tags=["mcp"],
+    )
+    assert memory_rebuild_index(config)["ok"] is True
+
+    conflicting = memory_write_record(
+        config,
+        content_markdown="# Original Record\n\nOriginal body.\n",
+        record_kind="note",
+        tags=["mcp"],
+    )
+    source = repo / conflicting["path"]
+    duplicate = repo / "memory-bank/archive/record-packs/conflicting-duplicate.md"
+    duplicate.parent.mkdir(parents=True, exist_ok=True)
+    duplicate.write_text(
+        source.read_text(encoding="utf-8").replace("Original body.", "Conflicting body."),
+        encoding="utf-8",
+    )
+
+    result = memory_rebuild_index(config)
+
+    assert result["ok"] is False
+    assert result["error"] == "duplicate_record_id"
+    assert any(item["id"] == conflicting["id"] for item in result["conflicts"])
+    with sqlite3.connect(repo / ".ai-memory/search.db") as conn:
+        indexed_ids = {row[0] for row in conn.execute("SELECT id FROM memory_records")}
+    assert stable["id"] in indexed_ids
+
+
 def test_search_records_query_plan_uses_sqlite_fts_index(repo: Path) -> None:
     config = load_config(repo)
     memory_write_record(

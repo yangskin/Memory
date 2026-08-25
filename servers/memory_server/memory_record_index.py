@@ -490,6 +490,55 @@ def _iter_record_files(config: MemoryConfig) -> tuple[list[tuple[str, dict[str, 
     return records, stats
 
 
+def _deduplicate_record_ids(
+    records: list[tuple[str, dict[str, Any], str]],
+) -> tuple[
+    list[tuple[str, dict[str, Any], str]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    """Resolve duplicate logical IDs before the rebuild touches SQLite.
+
+    Parsed-equivalent logical records may legitimately coexist while archive
+    ownership is being migrated. They are indexed once using a deterministic
+    path and reported to the caller. Different records sharing an ID are a
+    corpus integrity error and must fail closed before the valid index is
+    replaced.
+    """
+    grouped: dict[str, list[tuple[str, dict[str, Any], str]]] = {}
+    for row in records:
+        grouped.setdefault(str(row[1].get("id")), []).append(row)
+
+    unique_records: list[tuple[str, dict[str, Any], str]] = []
+    exact_duplicates: list[dict[str, Any]] = []
+    conflicts: list[dict[str, Any]] = []
+    for record_id in sorted(grouped):
+        rows = sorted(grouped[record_id], key=lambda row: row[0])
+        canonical = rows[0]
+        if len(rows) == 1:
+            unique_records.append(canonical)
+            continue
+
+        paths = [row[0] for row in rows]
+        equivalent = all(
+            row[1] == canonical[1] and row[2] == canonical[2]
+            for row in rows[1:]
+        )
+        detail = {
+            "id": record_id,
+            "occurrences": len(rows),
+            "paths": paths,
+        }
+        if equivalent:
+            detail["canonical_path"] = canonical[0]
+            exact_duplicates.append(detail)
+            unique_records.append(canonical)
+        else:
+            conflicts.append(detail)
+
+    return unique_records, exact_duplicates, conflicts
+
+
 def memory_rebuild_index(config: MemoryConfig, *, _attempt: int = 0) -> dict[str, Any]:
     """Rebuild the SQLite FTS index from record Markdown files."""
     try:
@@ -499,6 +548,19 @@ def memory_rebuild_index(config: MemoryConfig, *, _attempt: int = 0) -> dict[str
         return error_result("path_not_allowed", str(exc))
     except FileNotFoundError as exc:
         return error_result("not_found", str(exc))
+
+    records, exact_duplicates, conflicts = _deduplicate_record_ids(records)
+    stats["duplicate_record_ids"] = len(exact_duplicates)
+    stats["deduplicated_records"] = sum(
+        int(item["occurrences"]) - 1 for item in exact_duplicates
+    )
+    if conflicts:
+        return error_result(
+            "duplicate_record_id",
+            "record corpus contains conflicting records with the same logical ID",
+            conflicts=conflicts,
+            stats=stats,
+        )
 
     # If a previous crash / disk error left a corrupted db file, drop it so
     # the rebuild can start from a clean schema instead of failing on every
@@ -603,6 +665,7 @@ def memory_rebuild_index(config: MemoryConfig, *, _attempt: int = 0) -> dict[str
         indexed_records=len(records),
         db_path=_db_path(config).relative_to(config.repo_root).as_posix(),
         stats=stats,
+        duplicate_records=exact_duplicates,
         corpus_watermark=_snapshot_watermark(source_snapshot),
         rebuild_attempts=_attempt + 1,
     )

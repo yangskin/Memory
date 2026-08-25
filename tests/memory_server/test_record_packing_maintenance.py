@@ -117,8 +117,11 @@ def test_compact_old_record_packs_merges_into_capped_archive_packs(repo: Path) -
     assert result["ok"] is True
     assert result["compacted"] == 1
     assert not source_pack.exists()
-    archive_packs = list((repo / "memory-bank" / "archive" / "record-packs").glob("*.md"))
+    archive_root = repo / "memory-bank" / "archive" / "record-packs"
+    archive_packs = list(archive_root.rglob("*.md"))
     assert archive_packs
+    assert all(path.parent == archive_root / "alice" for path in archive_packs)
+    assert result["actions"][0]["archive_user"] == "alice"
     assert all(path.stat().st_size <= 1800 for path in archive_packs)
     records, _stats = iter_parsed_records(config)
     ids = {record.metadata["id"] for record in records}
@@ -149,7 +152,100 @@ def test_compact_old_record_packs_dry_run_simulates_archive_size(repo: Path) -> 
     assert result["ok"] is True
     target_paths = {path for action in result["actions"] for path in action["to"]}
     assert len(target_paths) == 2
+    assert all(path.startswith("memory-bank/archive/record-packs/alice/") for path in target_paths)
     assert all(not (repo / path).exists() for path in target_paths)
+
+
+def test_compact_old_record_packs_partitions_each_source_user(repo: Path) -> None:
+    config = _with_record_packing(load_config(repo))
+    memory_write_record(
+        config,
+        content_markdown="# Alice record\n\nPersonal memory.\n",
+        record_kind="note",
+        scope="personal",
+        author="alice",
+        tags=["mcp"],
+    )
+    memory_write_record(
+        config,
+        content_markdown="# Bob record\n\nShared memory.\n",
+        record_kind="note",
+        scope="project_shared",
+        author="bob",
+        tags=["mcp"],
+    )
+
+    result = compact_old_record_packs(config, older_than_days=0, dry_run=False)
+
+    assert result["ok"] is True
+    assert {action["archive_user"] for action in result["actions"]} == {"alice", "bob"}
+    targets = {path for action in result["actions"] for path in action["to"]}
+    assert any(path.startswith("memory-bank/archive/record-packs/alice/") for path in targets)
+    assert any(path.startswith("memory-bank/archive/record-packs/bob/") for path in targets)
+
+
+def test_compact_old_record_packs_creates_distinct_immutable_shards_for_same_user(repo: Path) -> None:
+    config = _with_record_packing(load_config(repo))
+    first = memory_write_record(
+        config,
+        content_markdown="# Device A record\n\nFirst source pack.\n",
+        record_kind="note",
+        scope="personal",
+        author="alice",
+        task_id="device-a",
+        tags=["mcp"],
+    )
+    second = memory_write_record(
+        config,
+        content_markdown="# Device B record\n\nSecond source pack.\n",
+        record_kind="note",
+        scope="personal",
+        author="alice",
+        task_id="device-b",
+        tags=["mcp"],
+    )
+    legacy_path = repo / "memory-bank" / "archive" / "record-packs" / "alice" / "202605-001.md"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_content = "# Memory Record Pack\n\nLegacy archive must remain unchanged.\n"
+    legacy_path.write_text(legacy_content, encoding="utf-8")
+
+    result = compact_old_record_packs(config, older_than_days=0, dry_run=False)
+
+    assert result["ok"] is True
+    assert result["compacted"] == 2
+    target_paths = {path for action in result["actions"] for path in action["to"]}
+    assert len(target_paths) == 2
+    assert legacy_path.read_text(encoding="utf-8") == legacy_content
+    assert all(path.startswith("memory-bank/archive/record-packs/alice/") for path in target_paths)
+    assert all(Path(path).name.count("-") >= 2 for path in target_paths)
+    assert all((repo / path).is_file() for path in target_paths)
+    assert not (repo / first["path"]).exists()
+    assert not (repo / second["path"]).exists()
+
+
+def test_compact_legacy_pack_uses_local_enterprise_user_id(repo: Path) -> None:
+    user_config = repo / "MCP" / "Memory" / "user_config.local.json"
+    user_config.parent.mkdir(parents=True, exist_ok=True)
+    user_config.write_text('{"user_name":"bob"}', encoding="utf-8")
+    single_path = repo / "memory-bank" / "records" / "mem_legacy_a.md"
+    _write_single_record(
+        single_path,
+        record_id="mem_legacy_a",
+        author="legacy-author",
+        body="# Legacy record\n\nNo user partition in its source path.",
+    )
+    config = _with_record_packing(load_config(repo))
+    packed = pack_existing_records(config, dry_run=False)
+    assert packed["ok"] is True
+
+    result = compact_old_record_packs(config, older_than_days=0, dry_run=False)
+
+    assert result["ok"] is True
+    assert result["actions"][0]["archive_user"] == "bob"
+    assert all(
+        path.startswith("memory-bank/archive/record-packs/bob/")
+        for path in result["actions"][0]["to"]
+    )
 
 
 def test_health_check_warns_when_record_packing_quotas_exceeded(repo: Path) -> None:

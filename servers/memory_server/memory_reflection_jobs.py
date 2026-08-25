@@ -13,6 +13,30 @@ from .memory_reflection import publish_reflection_proposal, reflect_task
 from .memory_result import error_result, ok_result
 
 _STATE_REL = Path(".ai-memory") / "jobs" / "project-reflection.json"
+_REFLECTION_SHARED_KEY_DOCUMENT_TARGETS = (
+    "teamContext",
+    "progress",
+    "techContext",
+    "systemPatterns",
+)
+
+
+def _configured_reflection_key_document_targets(config: MemoryConfig) -> list[str]:
+    """只返回消费项目允许由后台反思自动重建的共享关键文档。"""
+
+    settings = getattr(config, "key_documents_auto_rebuild", None)
+    if settings is None or not bool(getattr(settings, "enabled", False)):
+        return []
+    configured = {
+        str(target).strip()
+        for target in (getattr(settings, "targets", None) or [])
+        if str(target).strip()
+    }
+    return [
+        target
+        for target in _REFLECTION_SHARED_KEY_DOCUMENT_TARGETS
+        if target in configured
+    ]
 
 
 def _safe_append_event(config: MemoryConfig, event_type: str, payload: dict[str, Any], *, status: str = "ok") -> dict[str, str] | None:
@@ -149,22 +173,33 @@ def drain_project_reflection_jobs(
                 result=reflection,
             )
         published = [item for item in reflection.get("published", []) if isinstance(item, dict) and item.get("ok") and not item.get("duplicate")]
+        key_document_rebuild: dict[str, Any] | None = None
         if published:
-            enqueue_key_document_rebuild(
-                config,
-                targets=["teamContext", "progress", "techContext", "systemPatterns"],
-                user=None,
-                renderer="deterministic",
-                guard_prefer_llm=False,
-                trigger="project_reflection",
-                reason=f"{len(published)} distilled project memories published",
-            )
+            reflection_targets = _configured_reflection_key_document_targets(config)
+            if reflection_targets:
+                key_document_rebuild = enqueue_key_document_rebuild(
+                    config,
+                    targets=reflection_targets,
+                    user=None,
+                    renderer="deterministic",
+                    guard_prefer_llm=False,
+                    trigger="project_reflection",
+                    reason=f"{len(published)} distilled project memories published",
+                )
+            else:
+                key_document_rebuild = ok_result(
+                    "project reflection key-document rebuild skipped by auto_rebuild targets",
+                    queued=False,
+                    skipped=True,
+                    targets=[],
+                )
         item = {
             "job_id": job.get("job_id"),
             "task_id": task_id,
             "ok": bool(reflection.get("ok") and finish.get("ok")),
             "reflection": reflection,
             "queue_update": finish,
+            "key_document_rebuild": key_document_rebuild,
         }
         processed.append(item)
         _safe_append_event(

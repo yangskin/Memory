@@ -253,6 +253,12 @@ def _build_incremental_llm_delta(existing_text: str, rendered_text: str) -> str:
 
 
 def _append_llm_delta(existing_text: str, delta: str, generated_at: str) -> str:
+    existing_lines = existing_text.rstrip().splitlines()
+    if existing_lines and is_generated(existing_text):
+        # 增量正文来自 LLM；同步更新确定性生成头，避免文件继续误报为
+        # renderer=deterministic，影响后续审计和冲突诊断。
+        existing_lines[0] = build_generated_header(renderer="llm")
+    base_text = "\n".join(existing_lines)
     day = generated_at[:10] if len(generated_at) >= 10 else generated_at
     block = [
         "",
@@ -261,7 +267,7 @@ def _append_llm_delta(existing_text: str, delta: str, generated_at: str) -> str:
         delta.strip(),
         "",
     ]
-    return existing_text.rstrip() + "\n" + "\n".join(block)
+    return base_text + "\n" + "\n".join(block)
 
 
 # ── Record selection ────────────────────────────────────────────────────

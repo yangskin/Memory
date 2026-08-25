@@ -801,6 +801,9 @@ def test_llm_rebuild_appends_incremental_delta_when_document_is_short(
     assert second["ok"] is True
 
     text = (populated_repo / "memory-bank/progress.md").read_text(encoding="utf-8")
+    meta = parse_generated_meta(text)
+    assert meta is not None
+    assert meta["renderer"] == "llm"
     assert "## Incremental Update" in text
     assert "- newly validated change" in text
 

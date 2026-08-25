@@ -1,4 +1,4 @@
 {
   "_comment": "Copy this file to user_config.local.json. It is gitignored and holds only the local identity. The remote Memory Hub connection lives in the separate shared_memory.local.json file (see shared_memory.example.json).",
-  "user_name": "your-name"
+  "user_name": "your-stable-user-id"
 }

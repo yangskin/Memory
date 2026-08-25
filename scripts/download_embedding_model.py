@@ -383,13 +383,13 @@ def main(argv: list[str] | None = None) -> int:
             actual = _file_sha256(dest)
             if actual.lower() == artifact.sha256:
                 if not args.quiet:
-                    print(f"already up-to-date: {dest} (sha256={actual[:16]}\u2026)")
+                    print(f"already up-to-date: {dest} (sha256={actual[:16]}...)")
                 downloaded_or_verified.append((artifact, dest, actual))
                 continue
             if not args.quiet:
                 print(
                     f"existing {artifact.role} hash mismatch "
-                    f"({actual[:16]}\u2026 != {artifact.sha256[:16]}\u2026); refreshing"
+                    f"({actual[:16]}... != {artifact.sha256[:16]}...); refreshing"
                 )
 
         # Try vendor (offline) source first.
@@ -409,7 +409,7 @@ def main(argv: list[str] | None = None) -> int:
             elif not args.quiet:
                 print(
                     f"vendor {artifact.role} sha256 mismatch "
-                    f"({actual_vendor[:16]}\u2026 != {artifact.sha256[:16]}\u2026); ignoring"
+                    f"({actual_vendor[:16]}... != {artifact.sha256[:16]}...); ignoring"
                 )
 
         if not copied_from_vendor:
@@ -467,7 +467,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     if not args.quiet:
         for artifact, dest, actual in downloaded_or_verified:
-            print(f"verified {artifact.role} sha256={actual[:16]}\u2026 ({dest.stat().st_size} bytes)")
+            print(f"verified {artifact.role} sha256={actual[:16]}... ({dest.stat().st_size} bytes)")
         print(
             "done. enable in .ai-memory/config.json:\n"
             f'  "embeddings": {{ "enabled": true, "provider": "local-onnx", '

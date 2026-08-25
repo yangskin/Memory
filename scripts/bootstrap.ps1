@@ -1,4 +1,4 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 <#
 .SYNOPSIS
     Memory MCP one-shot bootstrap (P1-1 / v0.6.0 OOTB hardening).
@@ -55,8 +55,39 @@ if (-not (Test-Path $venvPython)) {
     Write-Host "[bootstrap] creating venv ..."
     & $PythonExe -m venv $venvDir
 }
-& $venvPython -m pip install --upgrade pip --quiet
-& $venvPython -m pip install -r (Join-Path $mcpRoot "requirements.txt") --quiet
+# 经 dependency_guard 的 `--locked-pip` 转发，和 server 启动期自动修复共用同一把跨进程
+# 锁；否则重新 bootstrap 一个已存在的 venv 时可能与正在自动修复的 server 撞上同一套
+# site-packages。该模块只用标准库，mcp 已损坏时同样跑得起来。
+$guardModule = Join-Path $mcpRoot "servers\memory_server\dependency_guard.py"
+if (Test-Path $guardModule) {
+    # 每一步都要单独查退出码。只看最后一条时，前一条被锁挡住（75）或直接失败都会被丢掉，
+    # 脚本却照样打印 "dependencies OK"。
+    $steps = @(
+        @('install', '--upgrade', 'pip', '--quiet'),
+        @('install', '-r', (Join-Path $mcpRoot "requirements.txt"), '--quiet')
+    )
+    Push-Location $mcpRoot
+    try {
+        foreach ($step in $steps) {
+            & $venvPython -m servers.memory_server.dependency_guard --locked-pip --lock-wait 60 @step
+            if ($LASTEXITCODE -eq 75) {
+                throw "another process is installing into $venvDir right now; close the Memory MCP server and re-run"
+            }
+            if ($LASTEXITCODE -ne 0) {
+                throw "pip step failed (exit=$LASTEXITCODE): $($step -join ' ')"
+            }
+        }
+    }
+    finally {
+        Pop-Location
+    }
+}
+else {
+    & $venvPython -m pip install --upgrade pip --quiet
+    if ($LASTEXITCODE -ne 0) { throw "pip self-upgrade failed (exit=$LASTEXITCODE)" }
+    & $venvPython -m pip install -r (Join-Path $mcpRoot "requirements.txt") --quiet
+    if ($LASTEXITCODE -ne 0) { throw "installing requirements.txt failed (exit=$LASTEXITCODE)" }
+}
 Write-Host "[bootstrap] dependencies OK"
 
 $env:PYTHONPATH = $mcpRoot

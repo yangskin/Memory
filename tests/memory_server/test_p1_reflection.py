@@ -19,11 +19,15 @@ from servers.memory_server.memory_reflection import (
     reflect_task,
     validate_reflection_frame,
 )
-from servers.memory_server.memory_reflection_jobs import curate_project_reflections, enqueue_project_reflection
+from servers.memory_server.memory_reflection_jobs import (
+    curate_project_reflections,
+    drain_project_reflection_jobs,
+    enqueue_project_reflection,
+)
 from servers.memory_server.server_dispatch import _dispatch_tool
 
 
-def _reflection_config(repo: Path):
+def _reflection_config(repo: Path, *, auto_targets: list[str] | None = None):
     path = repo / ".ai-memory" / "config.json"
     raw = json.loads(path.read_text(encoding="utf-8"))
     raw["reflection"] = {
@@ -36,6 +40,13 @@ def _reflection_config(repo: Path):
         "auto_publish": True,
         "curator_enabled": True,
     }
+    if auto_targets is not None:
+        raw["key_documents"] = {
+            "auto_rebuild": {
+                "enabled": True,
+                "targets": auto_targets,
+            }
+        }
     path.write_text(json.dumps(raw), encoding="utf-8")
     return load_config(repo)
 
@@ -439,6 +450,77 @@ def test_reflection_queue_survives_event_log_failure(repo: Path, monkeypatch) ->
     assert result["ok"] is True
     assert result["queued"] is True
     assert result["warnings"][0]["code"] == "event_log_deferred"
+
+
+def test_reflection_does_not_enqueue_shared_key_documents_when_only_active_context_is_allowed(
+    repo: Path,
+    monkeypatch,
+) -> None:
+    config = _reflection_config(repo, auto_targets=["activeContext"])
+    enqueue = enqueue_project_reflection(
+        config,
+        task_id="task-active-only",
+        user="Codex",
+        trigger="task_done",
+    )
+    assert enqueue["ok"] is True
+    monkeypatch.setattr(
+        "servers.memory_server.memory_reflection_jobs.reflect_task",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "task_id": "task-active-only",
+            "published": [{"ok": True, "duplicate": False}],
+            "proposals": [],
+        },
+    )
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        "servers.memory_server.memory_reflection_jobs.enqueue_key_document_rebuild",
+        lambda *_args, **kwargs: calls.append(kwargs) or {"ok": True, "queued": True},
+    )
+
+    result = drain_project_reflection_jobs(config, max_jobs=1, worker_id="test")
+
+    assert result["ok"] is True
+    assert calls == []
+    key_docs = result["jobs"][0]["key_document_rebuild"]
+    assert key_docs["skipped"] is True
+    assert key_docs["targets"] == []
+
+
+def test_reflection_enqueues_only_shared_targets_allowed_by_auto_rebuild(
+    repo: Path,
+    monkeypatch,
+) -> None:
+    config = _reflection_config(repo, auto_targets=["activeContext", "progress"])
+    enqueue = enqueue_project_reflection(
+        config,
+        task_id="task-progress-only",
+        user="Codex",
+        trigger="task_done",
+    )
+    assert enqueue["ok"] is True
+    monkeypatch.setattr(
+        "servers.memory_server.memory_reflection_jobs.reflect_task",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "task_id": "task-progress-only",
+            "published": [{"ok": True, "duplicate": False}],
+            "proposals": [],
+        },
+    )
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        "servers.memory_server.memory_reflection_jobs.enqueue_key_document_rebuild",
+        lambda *_args, **kwargs: calls.append(kwargs) or {"ok": True, "queued": True},
+    )
+
+    result = drain_project_reflection_jobs(config, max_jobs=1, worker_id="test")
+
+    assert result["ok"] is True
+    assert len(calls) == 1
+    assert calls[0]["targets"] == ["progress"]
+    assert "systemPatterns" not in calls[0]["targets"]
 
 
 def test_corrupt_background_queue_never_fails_checkpoint(repo: Path) -> None:

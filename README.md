@@ -81,6 +81,94 @@ Python 版本要求与 `vendor/` wheel 标签一致，当前是 Windows CPython 
 3. `py -3.11`
 4. PATH 中的 `python` / `python3`
 
+### 2.1.2 启动期依赖自动修复与降级诊断
+
+`servers/memory_server/__main__.py` 在 `import mcp` **之前**调用
+`dependency_guard.ensure_ready()`，所以 venv 缺依赖、版本过旧或装成未迁移的 2.x 时，
+server 不会以一条无法解释的 import 异常退出：
+
+1. **自己修**。体检 → 离线优先修复（`vendor/` 先过 `SHA256SUMS` 校验，再 `--no-index`
+   安装，失败才回退 PyPI）→ 复检 → **真的 import 一次** `mcp.server` → 继续正常启动。
+   健康环境只多一次元数据读取和一次反正也要发生的 import，不起子进程、不联网。
+2. **修不好也不失联**。`dependency_fallback` 用纯标准库顶上一个最小 MCP server，暴露
+   `memory_environment_status`（确切诊断）和 `memory_repair_environment`（主动再修一次），
+   并在 `initialize.instructions` 里说明真实工具不可用。**此时不要把缺失的工具理解成
+   "功能不存在"，更不能据此判断记忆为空**；降级期间读写都不会落盘。
+
+为什么复检之后还要真的 import 一次：元数据齐全不等于装得能用。`mcp` 在 Windows 上依赖
+pywin32，而 pywin32 靠 `pywin32.pth` 往 `sys.path` 注入 `win32/lib`，`.pth` 只在解释器
+启动时由 `site` 处理 —— 刚装完它的那个进程仍然 `import pywintypes` 失败，表现和"没修好"
+一模一样。修复成功后会用 `site.addsitedir()` 补做一次 site 处理（而不是换进程，换进程会
+让客户端持有的 PID 失效、stdio 通道跟着断）。
+
+安全边界与防循环：
+
+- **pip 自己不见了也能修**。删一个正在运行的 venv，Windows 删不掉 server 打开着的 `.pyd`，
+  删除半途失败：pip 和一半 site-packages 没了。这种 venv 里每条修复命令都只报
+  `No module named pip`。守卫会先用标准库自带的 `ensurepip`（不需要网络）把 pip 装回来。
+  这里还有一层实测踩到的坑：`ensurepip` 内部是用捆绑的 wheel 跑 `pip install pip`，而那个
+  pip 只看元数据 —— `pip/` 目录没了但 `pip-24.0.dist-info` 还在时，它报
+  `Requirement already satisfied: pip`、退出码 0、什么都不装，修复在第一步就静默卡死。所以
+  守卫在"`ensurepip` 报成功但 pip 仍不可导入"时会清掉那份已经没有对应包目录的
+  `pip-*.dist-info`（`pip/` 还在就不碰）再重试一次，并把清掉了什么写进诊断。
+  `deploy.ps1` 的 `-ForceRecreate` 与 cp-tag 不匹配重建都会先列出正在使用该 venv 的进程
+  并拒绝执行，避免制造这种环境。
+- **元数据齐全但 import 不起来也能修**。上面那条是这个问题在 pip 自身上的特例；一般情况
+  同理：pip 只看 `dist-info` 判断"已满足"，包目录被删掉而 `dist-info` 留着时
+  `pip install -r` 是空操作：它报成功、体检报"依赖正常"，而 `import mcp.server` 照样炸。
+  守卫在"装完仍然 import 不起来"时会自动带 `--force-reinstall` 再走一遍。因此"环境可用"的
+  判据是真的 import 一次 `mcp.server`（`PROBE_MODULES`），`--repair` 也按这个判据决定退出
+  码，不会在一个起不来的环境上报 ok。这一轮升级重装由 `repair()` 自己在**持锁期间**完成：
+  如果让调用方各自"装完→验证→再装一次"，两轮安装之间锁是放开的，别的进程正好能在那个窗口
+  里挤进来开第二个 pip。
+- 只在虚拟环境里自动装包。系统 Python 和 UE 自带 Python 会被拒绝并给出说明 —— 往共享
+  解释器里装东西会影响别的项目。这类环境是直接拒绝，不写状态、不进冷却，因为"永远不该
+  装"和"过 10 分钟再来"是两回事。
+- **并发互斥**。平时这个 venv 只有一个 server 在用，但客户端重启、手工 `--repair`、启动
+  探测都可能和它撞上。pip 自己没有跨进程锁，同时往一套 site-packages 里装同一批 wheel 会
+  互相删改对方正在写的文件。修复前必须先拿 `<sys.prefix>/.memory_dependency_guard.lock`；
+  等过锁的进程会先复检一次，环境已经被别人修好就直接放行，不再重装。
+  这把锁**由内核持有**（Windows `msvcrt.locking`，POSIX `fcntl.flock`），不是"锁文件存在
+  就算持锁"。用文件存在性表达持锁就得自己判断持锁进程死没死，而那个判断天生有竞态：两个
+  等待者可以先后判定同一个锁陈旧，前者回收并成功持锁，后者随即把前者刚建好的锁当成陈旧的
+  搬走，两个 pip 于是一起写同一套 site-packages。内核锁在进程退出时自动释放，因此不需要
+  陈旧阈值，也不需要给长安装续心跳；代价是锁文件释放后不删除，"文件存在"不代表被持有。
+- 单进程只自动修一次，失败后有 10 分钟冷却（从修复**结束**时刻起算，否则一次几十秒的
+  离线安装会让冷却提前到期），避免客户端反复重启造成装包循环。通过
+  `memory_repair_environment` 或下面的 CLI 显式请求时不受这两道闸门限制。状态文件是原子
+  落盘的：截断式写入在进程被杀时会留下半截 JSON，那会被当成"没有状态"，冷却随之失效。
+- **显式修复同样要拿锁**。冷却和"本进程树已试过"是防自动重启循环的，可以绕；跨进程锁不能。
+  所有显式入口（兜底工具、`--repair`、以及 `deploy.ps1` / `scripts/bootstrap.ps1` 里的 pip）
+  都经 `-m servers.memory_server.dependency_guard --locked-pip [--lock-wait <秒>] <pip 参数>`
+  或 `locked_repair()` 走同一把锁；别人正在装时返回退出码 75（EX_TEMPFAIL）并提示稍后重试，
+  而不是并行开第二个 pip。
+- **带 UI 的调用者要用短 `--lock-wait`**。自动路径默认等到 540 秒，`deploy.ps1` /
+  `scripts/bootstrap.ps1` 只等 60 秒然后拿 75 提示稍后重试。脚本自己的超时必须大于
+  `--lock-wait` 加一次安装预算，否则脚本会在 pip 还在装时把 wrapper 杀掉，而杀 wrapper
+  不会杀掉它下面的 pip —— 结果是一个没人持锁、还在写 site-packages 的孤儿 pip。
+  `--locked-pip` 因此给 pip 加了超时并用 `taskkill /T /F` 连进程树一起杀，脚本侧也一样；
+  两个 `.ps1` 的每一步 pip 都单独检查退出码，75 单独提示而不是当成安装失败继续往下走。
+- 含中文的 `.ps1` 必须带 UTF-8 BOM。Windows PowerShell 5.1 对无 BOM 脚本按 ANSI 代码页
+  解码，GBK 机器上落单的 UTF-8 字节会把紧随其后的 `"` 吞成双字节字符的后半，引号不配对，
+  整个脚本连语法都过不了（`scripts/bootstrap.ps1` 实测如此）。测试会守住这条。
+- pip 的 `PIP_*` 环境变量会被剔除，否则继承来的 `PIP_INDEX_URL` / `PIP_FIND_LINKS` 能把
+  `--no-index` 那一步重新指向网络，"只用校验过的 vendor wheel"这条保证就没了。
+  `vendor/SHA256SUMS` 的条目也只接受纯文件名，`../` 或绝对路径会让校验读到 vendor 之外的
+  文件。
+- 版本判定按 PEP 440，含"排他上界 `<V` 也排除 V 的预发布版"这条规则 —— 否则 `mcp<2` 会
+  放过 `2.0.0rc1`，而 2.x 正是这条边界要挡的东西。
+- pip 带超时，不会把客户端的 initialize 握手无限期挂住。首次面对一个**完全空**的 venv
+  时，离线装完整依赖集可能超过客户端的 initialize 超时；此时重连一次即可，因为依赖已经
+  装好了。常规的"缺一两个包"场景是秒级。
+- `MEMORY_MCP_NO_AUTO_REPAIR=1` 关掉自动装包；`MEMORY_MCP_NO_NETWORK_REPAIR=1` 只用离线
+  wheel；`MEMORY_MCP_NO_FALLBACK_SERVER=1` 让进程按原样崩（排障用）。
+
+手动体检 / 修复（`--repair` 之外还可用 `--json`、`--requirements`、`--vendor`）：
+
+```powershell
+& <MemoryRoot>/.venv/Scripts/python.exe -m servers.memory_server.dependency_guard --repair
+```
+
 ### 2.2 手动注册到非 VS Code 客户端
 
 Codex 示例：`%USERPROFILE%\.codex\config.toml`
@@ -228,6 +316,14 @@ Memory MCP **源码仓库自身**不得提交 `.ai-memory/`、`.ai-context/`、�
 ```powershell
 python scripts/check_public_tree.py
 ```
+
+该脚本只依赖标准库（CI 在安装依赖之前就会运行它），检查三类问题：
+
+- **内容**：私有项目 ID、子系统名、游戏名、测试夹具、仓库路径、成员身份、私钥与 token。除已跟踪文件外，还会扫描未提交的源码类文件，避免"先写后提交"绕过门禁。二进制与非 UTF-8 文件跳过。
+- **跟踪**：`*.local.json` 本机凭据以及 `.ai-memory/`、`.ai-context/`、`.venv/` 等运行时路径一旦被 Git 跟踪即失败，不设公开发布豁免。这些文件留在磁盘上是正常用法，只做跟踪性检查、不做内容检查。
+- **vendor**：`vendor/SHA256SUMS` 必须存在，且与 `vendor/*.whl` 集合和摘要逐一对应。
+
+回归测试见 `tests/memory_server/test_public_tree_audit.py`。给它加用例时，违规样本必须分片拼装（例如 `"P1" + "11"`），因为测试文件本身也在扫描范围内。
 
 ---
 
@@ -445,7 +541,7 @@ python -m servers.memory_server.cli key-doc-jobs
 python -m servers.memory_server.cli key-doc-jobs --drain --max-jobs 5
 ```
 
-归档 pack 写在 `memory-bank/archive/record-packs/YYYYMM-001.md`，仍属于 `memory-bank` 真源，`search_records`、runtime digest、key-doc rebuild 仍能读取；只是物理文件数量从“每天/每用户/每目录”继续合并到“每月若干个 1 MiB 文件”。
+归档写为不可变分片：`memory-bank/archive/record-packs/{user}/YYYYMM-{source_sha[:16]}-{fragment:03d}.md`。其中 `{user}` 优先取源 pack 路径中的稳定用户 ID；旧格式路径从 `user_config.local.json` 读取稳定用户 ID（例如 `your-stable-user-id`）。同一源 pack 的重试会得到完全相同的分片；同名用户在不同设备产生不同源内容时会写入不同路径，绝不追加已有归档文件。归档仍属于 `memory-bank` 真源，`search_records`、runtime digest、key-doc rebuild 仍能读取。
 
 关键文档是派生视图：
 
@@ -484,6 +580,8 @@ python -m servers.memory_server.cli key-doc-jobs --drain --max-jobs 5
 - job 带 source watermark；若 rebuild 期间有新 raw 写入，完成时标记 `stale_at_publish=true` 并自动补排一个最新 job。
 - 自动重建路径默认 `guard_prefer_llm=false`：若派生文档超出 guard 预算，MCP 自动路径使用 deterministic 压缩；显式 CLI rebuild 仍可使用 LLM guard 压缩。
 
+在多成员同时使用 Git 的项目中，建议自动重建只包含 user-scoped 的 `activeContext`，并使用 `renderer="auto"` 让 LLM 优先优化个人暖上下文；`progress` 等共享派生文档应由明确的发布者或显式 CLI 低频重建，避免每台客户端整文件覆盖。建议在宿主项目的 `.ai-memory/config.json` 中采用该策略。
+
 ### 3.4 多人协作
 
 多人安全模式始终开启。
@@ -496,7 +594,7 @@ python -m servers.memory_server.cli key-doc-jobs --drain --max-jobs 5
 4. `USERNAME` / `USER`
 5. `unknown`
 
-推荐把稳定 user id 放在 Memory 项目根目录的本地配置中，和 LLM 本地配置并列：
+推荐把稳定 user id（团队内使用企业微信 ID）放在 Memory 项目根目录的本地配置中，和 LLM 本地配置并列：
 
 ```powershell
 Copy-Item <MemoryRoot>/user_config.example.json <MemoryRoot>/user_config.local.json
@@ -504,7 +602,7 @@ Copy-Item <MemoryRoot>/user_config.example.json <MemoryRoot>/user_config.local.j
 
 ```json
 {
-  "user_name": "alice"
+  "user_name": "your-stable-user-id"
 }
 ```
 
@@ -621,7 +719,7 @@ LLM 能力边界：
 - SQLite FTS 保存完整语料文件签名；搜索前校验 source manifest。索引缺失时普通 retrieval 继续 Markdown fallback，索引损坏或过期时可重建。
 - 所有新记录拒绝 NUL、U+FFFD 和非法 UTF-8。编码修复必须显式指定 codec、默认 dry-run，并先做原始字节级备份。
 
-项目级反思只在 `checkpoint(task_done|test_failed)` 后写入队列。worker 从同一 `task_id` 的结构化记录收集证据（默认最多 256 条 / 1,000,000 字符，利用大上下文但不强制填满），依次执行 extractor 和 adversarial critic；确定性门禁再次校验证据 ID、类型、置信度、秘密信号和重复项。提案动作协议为 `CREATE / UPDATE / MERGE / SUPERSEDE / REJECT`：更新类动作只允许指向尚未被替代的 `project_shared + background_reflection + replaceable=true + authoritative=false` 记录；落盘始终新增记录并写 `supersedes`，绝不原地改写或删除旧记录。只有高置信且具有 `validation_result` 证据，或至少两个不同任务重复支持的提案，才能发布；`REJECT` 不写记录，其余未过门禁的候选只保留在 durable job result，等待 Curator。
+项目级反思只在 `checkpoint(task_done|test_failed)` 后写入队列。worker 从同一 `task_id` 的结构化记录收集证据（默认最多 256 条 / 1,000,000 字符，利用大上下文但不强制填满），依次执行 extractor 和 adversarial critic；确定性门禁再次校验证据 ID、类型、置信度、秘密信号和重复项。提案动作协议为 `CREATE / UPDATE / MERGE / SUPERSEDE / REJECT`：更新类动作只允许指向尚未被替代的 `project_shared + background_reflection + replaceable=true + authoritative=false` 记录；落盘始终新增记录并写 `supersedes`，绝不原地改写或删除旧记录。只有高置信且具有 `validation_result` 证据，或至少两个不同任务重复支持的提案，才能发布；`REJECT` 不写记录，其余未过门禁的候选只保留在 durable job result，等待 Curator。反思发布后的共享关键文档重建只取 `key_documents.auto_rebuild.targets` 与 `teamContext/progress/techContext/systemPatterns` 的交集；配置仅含 `activeContext` 时不会后台生成任何共享关键文档。
 
 运维命令：
 
