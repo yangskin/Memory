@@ -12,8 +12,22 @@ from .base import ProjectBriefRequest, ProjectBriefResult, UserBriefRequest, Use
 
 
 class OpenAICompatibleBriefProvider:
-    def __init__(self, base_url: str, api_key: str, model: str, timeout_seconds: float = 60) -> None:
-        self._base_url, self._api_key, self._model, self._timeout = base_url.rstrip("/"), api_key, model, timeout_seconds
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        timeout_seconds: float = 60,
+        max_output_tokens: int = 800,
+    ) -> None:
+        normalized_base_url = base_url.rstrip("/")
+        self._endpoint = (
+            normalized_base_url
+            if normalized_base_url.endswith("/chat/completions")
+            else f"{normalized_base_url}/chat/completions"
+        )
+        self._api_key, self._model, self._timeout = api_key, model, timeout_seconds
+        self._max_output_tokens = max_output_tokens
 
     def _generate(self, kind: str, events: list[dict[str, object]]) -> dict[str, object]:
         if kind == "user_recent":
@@ -31,9 +45,17 @@ class OpenAICompatibleBriefProvider:
             f"using only these input event IDs: {source_ids}. source_event_ids must be a non-empty "
             "array using only those same IDs. Omit uncertain conclusions by returning empty arrays."
         )
-        payload: dict[str, Any] = {"model": self._model, "response_format": {"type": "json_object"}, "messages": [{"role": "system", "content": system}, {"role": "user", "content": json.dumps({"brief_type": kind, "events": events}, ensure_ascii=False)}]}
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "max_tokens": self._max_output_tokens,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps({"brief_type": kind, "events": events}, ensure_ascii=False)},
+            ],
+        }
         with httpx.Client(timeout=self._timeout) as client:
-            response = client.post(f"{self._base_url}/chat/completions", headers={"Authorization": f"Bearer {self._api_key}"}, json=payload)
+            response = client.post(self._endpoint, headers={"Authorization": f"Bearer {self._api_key}"}, json=payload)
             response.raise_for_status()
         raw = json.loads(response.json()["choices"][0]["message"]["content"])
         return self._normalize(kind, raw, source_ids, sections)

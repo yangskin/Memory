@@ -19,6 +19,12 @@ uv run memory-hub-worker
 
 默认 Brief Provider 为 `fake`，不会调用外部 LLM。
 
+真实 LLM Brief 默认采用成本控制：用户与项目 brief 分别在最后一个相关事件后
+120 秒、300 秒再生成；单次请求最多约 6,000 输入 token、800 输出 token；同一
+项目所有 brief 共享每日 100,000 token 的持久化额度。所有值均可通过
+`BRIEF_*` 环境变量调整，见 [`.env.example`](.env.example)。额度按调用前的
+保守估算预留，因此失败或超时请求仍会计入当日额度，避免重试绕过成本上限。
+
 ## 生产部署
 
 Docker 仅通过 Caddy 在主机公开 `80/443`；PostgreSQL、API 与 Worker 始终

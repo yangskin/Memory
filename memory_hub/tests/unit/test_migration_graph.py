@@ -13,7 +13,7 @@ def test_hub_migration_graph_has_one_current_head() -> None:
 
     script = ScriptDirectory.from_config(config)
 
-    assert tuple(script.get_heads()) == ("0011_remove_project_graph",)
+    assert tuple(script.get_heads()) == ("0012_brief_token_budget",)
 
     migration = (hub_root / "migrations" / "versions" / "0011_remove_project_graph.py").read_text(encoding="utf-8")
     assert "graph_projection_states" in migration

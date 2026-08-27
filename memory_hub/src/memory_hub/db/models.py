@@ -117,6 +117,19 @@ class BriefHead(Base):
     current_brief_id: Mapped[UUID] = mapped_column(nullable=False)
 
 
+class BriefTokenUsageDaily(Base):
+    """Per-project reservations for external Brief generation."""
+
+    __tablename__ = "brief_token_usage_daily"
+
+    project_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    usage_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class BoardPost(Base):
     __tablename__ = "board_posts"
     __table_args__ = (

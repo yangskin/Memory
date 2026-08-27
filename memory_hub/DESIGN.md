@@ -91,6 +91,14 @@ MCP dispatcher 对所有扩展参数做运行时 clamp，最终序列化边界�
 状态字段。该治理仅限制派生视图和传输，不删除 append-only Event 历史；大型项目通过任务、
 Agent、时间窗口和分次查询控制工作集，Task Graph 不进入自动 task-context 注入路径。
 
+外部 LLM Brief 另有独立的成本控制，不与读取响应预算混用：只在最后一个相关事件后的
+尾随去抖窗口结束时生成，单次 prompt 按保守估算裁剪为不超过
+`BRIEF_PROMPT_TOKEN_BUDGET`（默认 6,000），Provider 请求显式限制
+`BRIEF_OUTPUT_TOKEN_BUDGET`（默认 800）。每个项目每日共享
+`BRIEF_DAILY_TOKEN_BUDGET`（默认 100,000）的持久化预留额度；预约在请求前通过
+行锁完成，失败调用不退回额度，确保并发 Worker 与失败重试都不能绕过上限。连续失败达到
+`BRIEF_MAX_ATTEMPTS`（默认 5）后 Job 进入 `failed`，直到新的相关事件到达后才会重新激活。
+
 ## 4. 安全边界
 
 - Token 格式为 `mem_v1.<token-id>.<secret>`，服务端只保存 secret hash，明文只在创建时出现一次。

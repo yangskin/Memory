@@ -82,14 +82,17 @@ def ingest_events(session: Session, project_id: str, user_id: str, events: list[
                     project_task_event(session, project_id, model, task_event)
                 accepted_sequences.append(model.server_seq)
                 response.accepted.append(event.event_id)
-                mark_brief_jobs_dirty(
-                    session,
-                    project_id,
-                    user_id,
-                    model.server_seq,
-                    user_debounce_seconds=user_debounce_seconds,
-                    project_debounce_seconds=project_debounce_seconds,
-                )
+                contentful = bool(content and content.strip()) and model.operation != "task_sync"
+                if contentful:
+                    mark_brief_jobs_dirty(
+                        session,
+                        project_id,
+                        user_id,
+                        model.server_seq,
+                        user_debounce_seconds=user_debounce_seconds,
+                        project_debounce_seconds=project_debounce_seconds,
+                        include_project=model.scope in _PROJECT_VISIBLE_SCOPES,
+                    )
         except TaskProjectionError as exc:
             response.rejected.append(RejectedEvent(event_id=event.event_id, code=exc.code, message=str(exc)))
         except IntegrityError:

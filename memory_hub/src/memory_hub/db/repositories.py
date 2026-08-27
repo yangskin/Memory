@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import and_, desc, func, select
@@ -24,22 +24,41 @@ def latest_event_seq(session: Session, project_id: str) -> int:
     return int(session.scalar(select(func.coalesce(func.max(MemoryEvent.server_seq), 0)).where(MemoryEvent.project_id == project_id)) or 0)
 
 
-def mark_brief_jobs_dirty(session: Session, project_id: str, user_id: str, through_seq: int, *, user_debounce_seconds: int = 20, project_debounce_seconds: int = 45) -> None:
-    jobs = [("user_recent", user_id, user_debounce_seconds), ("project_recent", "", project_debounce_seconds)]
+def mark_brief_jobs_dirty(
+    session: Session,
+    project_id: str,
+    user_id: str,
+    through_seq: int,
+    *,
+    user_debounce_seconds: int = 120,
+    project_debounce_seconds: int = 300,
+    include_user: bool = True,
+    include_project: bool = True,
+) -> None:
+    jobs = []
+    if include_user:
+        jobs.append(("user_recent", user_id, user_debounce_seconds))
+    if include_project:
+        jobs.append(("project_recent", "", project_debounce_seconds))
     for brief_type, subject, debounce_seconds in jobs:
         key = f"{brief_type}:{project_id}:{subject or '-'}"
-        not_before = datetime.now(UTC) + __import__("datetime").timedelta(seconds=debounce_seconds)
+        not_before = datetime.now(UTC) + timedelta(seconds=debounce_seconds)
         job = session.get(BriefJob, key)
         if job is None:
             job = BriefJob(job_key=key, project_id=project_id, brief_type=brief_type, subject_user_id=subject or None, requested_through_seq=through_seq, not_before=not_before, status="pending")
             session.add(job)
         else:
             job.requested_through_seq = max(job.requested_through_seq, through_seq)
-            if job.status == "completed":
+            if job.status in {"completed", "failed"}:
+                was_failed = job.status == "failed"
                 job.status = "pending"
                 job.not_before = not_before
+                if was_failed:
+                    job.attempts = 0
+                    job.last_error = None
             elif job.status == "pending":
-                job.not_before = min(job.not_before, not_before)
+                # Debounce from the latest relevant event, not the first event in a burst.
+                job.not_before = max(job.not_before, not_before)
             job.updated_at = datetime.now(UTC)
 
 

@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 
 from memory_hub.config import load_settings
-from memory_hub.db.models import BriefHead, BriefJob, BriefSnapshot, MemoryEvent
+from memory_hub.db.models import BriefHead, BriefJob, BriefSnapshot, BriefTokenUsageDaily, MemoryEvent
 from memory_hub.db.repositories import mark_brief_jobs_dirty
 from memory_hub.db.session import create_session_factory
 from memory_hub.llm.fake import FakeBriefProvider
@@ -98,11 +98,83 @@ def test_worker_keeps_dirty_job_when_event_arrives_during_generation() -> None:
             return super().generate_user_brief(request)
 
     with factory() as session:
-        assert run_once(session, InjectingProvider(), worker_id="race-worker") >= 1
+        assert run_once(
+            session,
+            InjectingProvider(),
+            worker_id="race-worker",
+            user_debounce_seconds=30,
+        ) >= 1
         job = session.get(BriefJob, f"user_recent:{project_id}:worker-user")
         assert job is not None
         assert job.status == "pending"
         assert job.requested_through_seq > job.processed_through_seq
+        assert job.not_before > datetime.now(UTC) + timedelta(seconds=25)
+
+
+def test_marking_pending_job_dirty_uses_the_latest_event_debounce() -> None:
+    factory = create_session_factory(load_settings().database_url or "")
+    project_id = f"worker-trailing-debounce-{uuid4().hex}"
+    with factory() as session:
+        mark_brief_jobs_dirty(
+            session,
+            project_id,
+            "worker-user",
+            1,
+            user_debounce_seconds=30,
+            project_debounce_seconds=30,
+        )
+        session.commit()
+        original_not_before = session.get(
+            BriefJob,
+            f"user_recent:{project_id}:worker-user",
+        ).not_before
+        mark_brief_jobs_dirty(
+            session,
+            project_id,
+            "worker-user",
+            2,
+            user_debounce_seconds=30,
+            project_debounce_seconds=30,
+        )
+        session.commit()
+        updated = session.get(BriefJob, f"user_recent:{project_id}:worker-user")
+        assert updated is not None
+        assert updated.requested_through_seq == 2
+        assert updated.not_before > original_not_before
+
+
+def test_new_input_reactivates_a_failed_job_with_a_fresh_retry_budget() -> None:
+    factory = create_session_factory(load_settings().database_url or "")
+    project_id = f"worker-reactivate-{uuid4().hex}"
+    with factory() as session:
+        session.add(
+            BriefJob(
+                job_key=f"user_recent:{project_id}:worker-user",
+                project_id=project_id,
+                brief_type="user_recent",
+                subject_user_id="worker-user",
+                requested_through_seq=1,
+                not_before=datetime.now(UTC),
+                status="failed",
+                attempts=5,
+                last_error="TimeoutError",
+            )
+        )
+        session.commit()
+        mark_brief_jobs_dirty(
+            session,
+            project_id,
+            "worker-user",
+            2,
+            user_debounce_seconds=30,
+            include_project=False,
+        )
+        session.commit()
+        job = session.get(BriefJob, f"user_recent:{project_id}:worker-user")
+        assert job is not None
+        assert job.status == "pending"
+        assert job.attempts == 0
+        assert job.last_error is None
 
 
 def test_worker_releases_database_transaction_before_generation() -> None:
@@ -189,6 +261,66 @@ def test_worker_failure_keeps_existing_brief_head() -> None:
         run_once(session, FailingProvider(), worker_id="failure-worker")
         assert session.get(BriefHead, (project_id, "user_recent", "failure-user")).current_brief_id == old_brief_id
         assert session.get(BriefJob, f"user_recent:{project_id}:failure-user").status == "pending"
+
+
+def test_worker_pauses_after_maximum_consecutive_failures() -> None:
+    factory = create_session_factory(load_settings().database_url or "")
+    project_id = f"worker-failure-cap-{uuid4().hex}"
+    with factory() as session:
+        event = MemoryEvent(event_id=uuid4(), project_id=project_id, user_id="failure-user", agent_id="pytest", agent_instance_id="pytest", operation="record", scope="personal", content_markdown="event", metadata_json={}, occurred_at=datetime.now(UTC), content_hash="sha256:" + "d" * 64)
+        session.add(event)
+        session.flush()
+        session.add(BriefJob(job_key=f"user_recent:{project_id}:failure-user", project_id=project_id, brief_type="user_recent", subject_user_id="failure-user", requested_through_seq=event.server_seq, not_before=datetime.now(UTC) - timedelta(seconds=1), status="pending"))
+        session.commit()
+
+        class FailingProvider(FakeBriefProvider):
+            def generate_user_brief(self, request):
+                raise TimeoutError("provider timeout")
+
+        for _ in range(2):
+            run_once(session, FailingProvider(), worker_id="failure-cap-worker", max_attempts=2)
+            job = session.get(BriefJob, f"user_recent:{project_id}:failure-user")
+            assert job is not None
+            if job.status == "pending":
+                job.not_before = datetime.now(UTC) - timedelta(seconds=1)
+                session.commit()
+        assert session.get(BriefJob, f"user_recent:{project_id}:failure-user").status == "failed"
+
+
+def test_worker_defers_external_generation_after_daily_token_budget_is_exhausted() -> None:
+    factory = create_session_factory(load_settings().database_url or "")
+    project_id = f"worker-budget-{uuid4().hex}"
+    with factory() as session:
+        event = MemoryEvent(event_id=uuid4(), project_id=project_id, user_id="budget-user", agent_id="pytest", agent_instance_id="pytest", operation="record", scope="personal", content_markdown="budgeted event", metadata_json={}, occurred_at=datetime.now(UTC), content_hash="sha256:" + "c" * 64)
+        session.add(event)
+        session.flush()
+        session.add(BriefJob(job_key=f"user_recent:{project_id}:budget-user", project_id=project_id, brief_type="user_recent", subject_user_id="budget-user", requested_through_seq=event.server_seq, not_before=datetime.now(UTC) - timedelta(seconds=1), status="pending"))
+        session.commit()
+
+        class UnexpectedProvider(FakeBriefProvider):
+            def generate_user_brief(self, request):
+                raise AssertionError("the budget-exhausted job must not call the provider")
+
+        run_once(
+            session,
+            UnexpectedProvider(),
+            worker_id="budget-worker",
+            model_name="external",
+            prompt_token_budget=1024,
+            output_token_budget=128,
+            daily_token_budget=1,
+        )
+        job = session.get(BriefJob, f"user_recent:{project_id}:budget-user")
+        usage = session.get(
+            BriefTokenUsageDaily,
+            (project_id, datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)),
+        )
+        assert job is not None
+        assert job.status == "pending"
+        assert job.last_error == "daily_token_budget_exceeded"
+        assert job.not_before >= datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        assert usage is not None
+        assert usage.request_count == 0
 
 
 def test_worker_rebases_old_brief_from_raw_events() -> None:

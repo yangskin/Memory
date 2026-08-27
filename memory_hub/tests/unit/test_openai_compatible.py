@@ -20,6 +20,8 @@ class _Response:
 class _Client:
     def __init__(self, content: object) -> None:
         self._content = content
+        self.url: str | None = None
+        self.payload: dict[str, object] | None = None
 
     def __enter__(self) -> _Client:
         return self
@@ -27,7 +29,9 @@ class _Client:
     def __exit__(self, *args: object) -> None:
         return None
 
-    def post(self, *args: object, **kwargs: object) -> _Response:
+    def post(self, url: str, **kwargs: object) -> _Response:
+        self.url = url
+        self.payload = kwargs.get("json") if isinstance(kwargs.get("json"), dict) else None
         return _Response(self._content)
 
 
@@ -83,3 +87,34 @@ def test_provider_normalizes_project_brief_output(monkeypatch) -> None:
     assert brief["recent_decisions"] == [
         {"summary": "Valid decision", "source_event_ids": ["event-1", "event-2"]}
     ]
+
+
+def test_provider_accepts_a_complete_chat_completions_endpoint(monkeypatch) -> None:
+    import memory_hub.llm.openai_compatible as provider_module
+
+    client = _Client({"summary": "Project summary"})
+    monkeypatch.setattr(provider_module.httpx, "Client", lambda **kwargs: client)
+    endpoint = "https://provider.example.com/plan/v3/chat/completions"
+    provider = OpenAICompatibleBriefProvider(endpoint, "secret", "test-model")
+
+    provider.generate_project_brief(ProjectBriefRequest(project_id="project-1", events=[]))
+
+    assert client.url == endpoint
+
+
+def test_provider_caps_completion_tokens(monkeypatch) -> None:
+    import memory_hub.llm.openai_compatible as provider_module
+
+    client = _Client({"summary": "Project summary"})
+    monkeypatch.setattr(provider_module.httpx, "Client", lambda **kwargs: client)
+    provider = OpenAICompatibleBriefProvider(
+        "https://provider.example.com/v1",
+        "secret",
+        "test-model",
+        max_output_tokens=321,
+    )
+
+    provider.generate_project_brief(ProjectBriefRequest(project_id="project-1", events=[]))
+
+    assert client.payload is not None
+    assert client.payload["max_tokens"] == 321

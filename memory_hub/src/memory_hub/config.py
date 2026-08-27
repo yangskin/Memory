@@ -21,6 +21,10 @@ class Settings:
     brief_user_debounce_seconds: int
     brief_project_debounce_seconds: int
     brief_rebase_interval_seconds: int
+    brief_prompt_token_budget: int
+    brief_output_token_budget: int
+    brief_daily_token_budget: int
+    brief_max_attempts: int
 
 
 def load_settings() -> Settings:
@@ -35,7 +39,11 @@ def load_settings() -> Settings:
         llm_api_key=os.getenv("LLM_API_KEY") or None,
         llm_model=os.getenv("LLM_MODEL") or None,
         llm_timeout_seconds=float(os.getenv("LLM_TIMEOUT_SECONDS", "60")),
-        brief_user_debounce_seconds=int(os.getenv("BRIEF_USER_DEBOUNCE_SECONDS", "20")),
-        brief_project_debounce_seconds=int(os.getenv("BRIEF_PROJECT_DEBOUNCE_SECONDS", "45")),
-        brief_rebase_interval_seconds=int(os.getenv("BRIEF_REBASE_INTERVAL_SECONDS", "3600")),
+        brief_user_debounce_seconds=max(1, int(os.getenv("BRIEF_USER_DEBOUNCE_SECONDS", "120"))),
+        brief_project_debounce_seconds=max(1, int(os.getenv("BRIEF_PROJECT_DEBOUNCE_SECONDS", "300"))),
+        brief_rebase_interval_seconds=max(60, int(os.getenv("BRIEF_REBASE_INTERVAL_SECONDS", "21600"))),
+        brief_prompt_token_budget=max(1024, int(os.getenv("BRIEF_PROMPT_TOKEN_BUDGET", "6000"))),
+        brief_output_token_budget=max(128, int(os.getenv("BRIEF_OUTPUT_TOKEN_BUDGET", "800"))),
+        brief_daily_token_budget=max(1024, int(os.getenv("BRIEF_DAILY_TOKEN_BUDGET", "100000"))),
+        brief_max_attempts=max(1, int(os.getenv("BRIEF_MAX_ATTEMPTS", "5"))),
     )

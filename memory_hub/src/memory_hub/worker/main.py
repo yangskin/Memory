@@ -18,7 +18,13 @@ def _provider(settings):
             raise RuntimeError("OpenAI-compatible provider requires LLM_BASE_URL, LLM_API_KEY, and LLM_MODEL")
         from memory_hub.llm.openai_compatible import OpenAICompatibleBriefProvider
 
-        return OpenAICompatibleBriefProvider(settings.llm_base_url, settings.llm_api_key, settings.llm_model, settings.llm_timeout_seconds), settings.llm_model
+        return OpenAICompatibleBriefProvider(
+            settings.llm_base_url,
+            settings.llm_api_key,
+            settings.llm_model,
+            settings.llm_timeout_seconds,
+            settings.brief_output_token_budget,
+        ), settings.llm_model
     from memory_hub.llm.fake import FakeBriefProvider
 
     return FakeBriefProvider(), "fake"
@@ -37,7 +43,20 @@ def main() -> None:
     lease_seconds = max(90, int(settings.llm_timeout_seconds) + 30)
     while True:
         with factory() as session:
-            processed = run_once(session, provider, worker_id=worker_id, lease_seconds=lease_seconds, model_name=model_name, rebase_interval_seconds=settings.brief_rebase_interval_seconds)
+            processed = run_once(
+                session,
+                provider,
+                worker_id=worker_id,
+                lease_seconds=lease_seconds,
+                model_name=model_name,
+                rebase_interval_seconds=settings.brief_rebase_interval_seconds,
+                user_debounce_seconds=settings.brief_user_debounce_seconds,
+                project_debounce_seconds=settings.brief_project_debounce_seconds,
+                prompt_token_budget=settings.brief_prompt_token_budget,
+                output_token_budget=settings.brief_output_token_budget,
+                daily_token_budget=settings.brief_daily_token_budget,
+                max_attempts=settings.brief_max_attempts,
+            )
         if processed:
             logger.info("memory-hub worker processed jobs=%s provider=%s", processed, settings.llm_provider)
         time.sleep(1)

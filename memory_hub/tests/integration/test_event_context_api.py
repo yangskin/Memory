@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from memory_hub.api.main import create_app
 from memory_hub.auth.tokens import create_token
-from memory_hub.db.models import AccessToken, ContextUsageDaily, MemoryEvent
+from memory_hub.db.models import AccessToken, BriefJob, ContextUsageDaily, MemoryEvent
 
 
 pytestmark = pytest.mark.skipif(not os.getenv("MEMORY_HUB_DATABASE_URL"), reason="requires PostgreSQL")
@@ -96,6 +96,24 @@ def test_token_without_identity_delegation_cannot_impersonate_another_user() -> 
     assert response.status_code == 200
     with app.state.session_factory() as session:
         assert session.query(MemoryEvent).filter_by(event_id=event_id).one().user_id == "alice"
+
+
+def test_ingest_only_queues_briefs_for_contentful_visible_events() -> None:
+    app = create_app()
+    token_id, raw_token, secret_hash = create_token()
+    project_id = f"brief-queue-{uuid4().hex}"
+    with app.state.session_factory() as session:
+        session.add(AccessToken(token_id=token_id, token_secret_hash=secret_hash, token_prefix=raw_token[:20], user_id="pytest-user", project_id=project_id, scopes=["events:write"]))
+        session.commit()
+    client = TestClient(app)
+    headers = {"Authorization": f"******"}
+    checkpoint = {**_event(str(uuid4())), "operation": "checkpoint", "content_markdown": "", "content_hash": "sha256:" + "c" * 64}
+    personal = {**_event(str(uuid4())), "scope": "personal", "content_hash": "sha256:" + "d" * 64}
+    assert client.post(f"/v1/projects/{project_id}/events/batch", headers=headers, json={"events": [checkpoint]}).status_code == 200
+    assert client.post(f"/v1/projects/{project_id}/events/batch", headers=headers, json={"events": [personal]}).status_code == 200
+    with app.state.session_factory() as session:
+        jobs = {job.brief_type for job in session.query(BriefJob).filter_by(project_id=project_id)}
+    assert jobs == {"user_recent"}
 
 
 def test_tokens_private_metadata_and_secret_redaction_are_enforced() -> None:

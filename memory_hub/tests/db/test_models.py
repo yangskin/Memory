@@ -3,6 +3,7 @@ from memory_hub.db.models import (
     BoardPost,
     GraphEdge,
     GraphNode,
+    BriefTokenUsageDaily,
     MemoryEvent,
     Task,
     TaskAttempt,
@@ -20,6 +21,7 @@ def test_required_tables_and_event_idempotency_constraint_are_declared() -> None
         "brief_jobs",
         "brief_snapshots",
         "brief_heads",
+        "brief_token_usage_daily",
         "context_usage_daily",
         "graph_nodes",
         "graph_edges",
@@ -49,6 +51,13 @@ def test_board_post_indexes_are_declared() -> None:
         "idx_board_posts_project_status",
         "idx_board_posts_project_thread",
     }
+
+
+def test_brief_token_usage_is_project_day_scoped() -> None:
+    assert BriefTokenUsageDaily.__table__.primary_key.columns.keys() == [
+        "project_id",
+        "usage_date",
+    ]
 
 
 def test_graph_constraints_and_indexes_are_declared() -> None:
