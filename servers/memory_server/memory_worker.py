@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from .memory_auto_maintenance import run_if_due
 from .memory_compactor import recover_compaction_transactions
 from .memory_config import MemoryConfig
 from .memory_encoding import audit_memory_encoding
@@ -42,6 +43,10 @@ def _safe_step(name: str, callable_: Callable[[], dict[str, Any]]) -> dict[str, 
                 "stats",
                 "corpus_watermark",
                 "indexed_sources",
+                "skipped",
+                "reason",
+                "elapsed_ms",
+                "actions_summary",
             )
             if key in result
         }
@@ -63,6 +68,8 @@ class MemoryBackgroundWorker:
         self._last_index_check = 0.0
         self._last_encoding_audit = 0.0
         self._last_curator = 0.0
+        self._last_maintenance_check = float("-inf")
+        self._maintenance_status: dict[str, Any] = {}
         self._cycles = 0
 
     @property
@@ -90,6 +97,7 @@ class MemoryBackgroundWorker:
         import json
 
         try:
+            payload = {**payload, "maintenance": self._maintenance_status}
             _atomic_write_text(
                 self._status_path(config),
                 json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
@@ -98,6 +106,13 @@ class MemoryBackgroundWorker:
         except Exception as exc:  # noqa: BLE001 - diagnostics cannot affect the worker or MCP
             logger.debug("worker status write suppressed: %s", exc)
 
+    def _check_maintenance(self, config: MemoryConfig) -> None:
+        now = time.monotonic()
+        if now - self._last_maintenance_check < 60.0:
+            return
+        self._maintenance_status = _safe_step("maintenance", lambda: run_if_due(config))
+        # 失败或被另一进程占用也等待一个检查周期，避免每秒重试争抢。
+        self._last_maintenance_check = time.monotonic()
     def run_once(self, config: MemoryConfig | None = None) -> dict[str, Any]:
         # CLI、测试钩子与后台线程可能同时触发单轮运行；同一 worker 实例
         # 必须串行执行周期任务，避免重复 curator/巡检和时间戳竞争。
@@ -106,6 +121,7 @@ class MemoryBackgroundWorker:
 
     def _run_once_unlocked(self, config: MemoryConfig | None = None) -> dict[str, Any]:
         current = config or self._config_provider()
+        self._check_maintenance(current)
         maximum = max(1, int(current.worker.get("max_jobs_per_tick", 4)))
         now_monotonic = time.monotonic()
         steps: dict[str, Any] = {
@@ -162,6 +178,8 @@ class MemoryBackgroundWorker:
                         return
                 try:
                     if not config.worker.get("enabled", True):
+                        # worker.enabled 只控制原有任务队列；维护仍由自己的开关控制。
+                        self._check_maintenance(config)
                         self._write_status(
                             config,
                             {"ok": True, "state": "disabled", "heartbeat_at": _now(), "config_hash": config.config_hash},

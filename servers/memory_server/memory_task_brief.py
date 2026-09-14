@@ -320,18 +320,21 @@ def _visible_evidence(
         )
     except Exception as exc:  # noqa: BLE001 - 简报增强必须降级而非破坏 task_context
         relevant = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-    try:
-        latest = memory_get_latest_memories(
-            config,
-            user=user,
-            branch=branch,
-            top_k=limit,
-            max_items=limit,
-            max_chars=min(max(60000, limit * 1600), 1_600_000),
-            max_tokens=min(max(20000, limit * 500), 400_000),
-        )
-    except Exception as exc:  # noqa: BLE001 - 两路均失败时返回可诊断空地图
-        latest = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    latest: dict[str, Any] = {"ok": False}
+    # 最近记忆仅在相关性检索失败时使用；成功路径无需重复全库扫描。
+    if not relevant.get("ok"):
+        try:
+            latest = memory_get_latest_memories(
+                config,
+                user=user,
+                branch=branch,
+                top_k=limit,
+                max_items=limit,
+                max_chars=min(max(60000, limit * 1600), 1_600_000),
+                max_tokens=min(max(20000, limit * 500), 400_000),
+            )
+        except Exception as exc:  # noqa: BLE001 - 两路均失败时返回可诊断空地图
+            latest = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
     if not latest.get("ok") and not relevant.get("ok"):
         return [], {
             "retrieval_failed": 1,

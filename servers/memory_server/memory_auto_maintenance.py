@@ -1,13 +1,8 @@
-"""P0-3: startup auto-maintenance (v0.6.0 OOTB hardening).
+"""后台自动维护：按时间、索引新鲜度、上下文预算和容量阈值执行。
 
-``run_if_due(config)`` is meant to be called once at MCP server boot.
-It checks ``.ai-memory/last_maintenance.json`` against a small set of
-threshold checks and runs the corresponding maintenance functions
-(``memory_health_check``, ``memory_rebuild_index``) only when due.
-All steps are idempotent and best-effort: a single failure is logged
-to ``events.jsonl`` but never raises.
-
-Design intent (see MemorySystemDesignDocument §15.9.2):
+``run_if_due(config)`` 由 worker 在启动宽限期后定期调用，不参与 stdio 握手。
+同一工作区只允许一个维护执行者，未取得文件锁时返回 maintenance_busy。
+到期维护检查完整内容指纹，只有内容变化或索引异常才重建。
 
 - 普通用户开箱即用：从不需要手工跑 maintenance。
 - 失败必须不阻塞主链路：任何 step 异常都写入审计 log，函数本身始终返回。
@@ -25,6 +20,8 @@ from typing import Any
 
 from .memory_config import MemoryConfig
 from .memory_events import append_event
+from .memory_locks import LockTimeoutError, file_lock
+from .memory_record_io import _atomic_write_text
 
 # Default thresholds tuned for "set-and-forget" teams.
 DEFAULT_MIN_INTERVAL_SECONDS: int = 7 * 24 * 60 * 60   # 168 hours
@@ -75,12 +72,7 @@ def _read_state(config: MemoryConfig) -> dict[str, Any]:
 
 def _write_state(config: MemoryConfig, state: dict[str, Any]) -> None:
     path = _state_path(config)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    except OSError:
-        # Never let state-write failure break the call site.
-        pass
+    _atomic_write_text(path, json.dumps(state, ensure_ascii=False, indent=2), fsync_strict=config.mcp_fsync_strict)
 
 
 def _events_size_bytes(config: MemoryConfig) -> int:
@@ -129,9 +121,9 @@ def _guard_needs_optimization(config: MemoryConfig) -> bool:
     soon as it is detected.
     """
     try:
-        from .memory_guard import memory_guard_check
+        from .memory_guard_optimizer import maintenance_guard_check
 
-        result = memory_guard_check(config)
+        result = maintenance_guard_check(config)
     except Exception:
         return False
     stats = result.get("stats") if isinstance(result, dict) else None
@@ -185,16 +177,26 @@ def _decide_actions(
 
 
 def run_if_due(config: MemoryConfig, *, now: float | None = None) -> dict[str, Any]:
-    """Run due maintenance actions; return a structured report.
+    """后台维护入口；跨进程互斥，持锁者重新检查到期状态。"""
+    if not _resolve_settings(config).enabled:
+        return {"ok": True, "skipped": True, "reason": "disabled", "actions": []}
+    try:
+        # 复用文件锁，避免多个客户端同时执行完整维护；不等待占用者。
+        with file_lock(config.repo_root, _state_path(config), timeout=0.0):
+            return _run_if_due_locked(config, now=now)
+    except LockTimeoutError:
+        return {"ok": True, "skipped": True, "reason": "maintenance_busy", "actions": []}
+    except Exception as exc:
+        return {"ok": False, "error": type(exc).__name__, "message": str(exc), "actions": []}
 
-    Always returns a dict with ``ok`` (bool) and ``actions`` (list of
-    per-step records). Never raises. Safe to call from MCP server
-    startup, CLI, or tests.
-    """
+
+def _run_if_due_locked(config: MemoryConfig, *, now: float | None = None) -> dict[str, Any]:
+    """持锁执行到期步骤；单步失败保留诊断，不推进上次成功时间。"""
     settings = _resolve_settings(config)
     if not settings.enabled:
         return {"ok": True, "skipped": True, "reason": "disabled", "actions": []}
 
+    started = time.monotonic()
     state = _read_state(config)
     current_ts = now if now is not None else time.time()
     decisions = _decide_actions(config, settings, state, current_ts)
@@ -212,7 +214,7 @@ def run_if_due(config: MemoryConfig, *, now: float | None = None) -> dict[str, A
 
     # Lazy import to avoid circular dependency at module load time.
     from .memory_maintenance import memory_health_check
-    from .memory_record_index import memory_rebuild_index
+    from .memory_record_index import ensure_index_fresh
     from .memory_guard_optimizer import optimize_guard_targets
     from .memory_retention import apply_retention
 
@@ -220,7 +222,8 @@ def run_if_due(config: MemoryConfig, *, now: float | None = None) -> dict[str, A
         actions.append(_safe_run("health_check", lambda: memory_health_check(config)))
 
     if decisions["rebuild_index"]:
-        actions.append(_safe_run("rebuild_index", lambda: memory_rebuild_index(config)))
+        # 到期只验证新鲜度；内容未变时保留现有索引，不因时间到期全量重建。
+        actions.append(_safe_run("rebuild_index", lambda: ensure_index_fresh(config)))
 
     if decisions.get("guard_optimize"):
         # 后台维护必须可复现且不依赖外部模型，避免 LLM 输出异常污染关键文档。
@@ -235,14 +238,17 @@ def run_if_due(config: MemoryConfig, *, now: float | None = None) -> dict[str, A
     if decisions["rotate_events"]:
         actions.append({"step": "rotate_events", "ok": True, "note": "delegated to append_event"})
 
+    succeeded = all(action.get("ok", True) for action in actions)
     state.update(
         {
-            "last_run_ts": current_ts,
-            "last_run_iso": _iso(current_ts),
             "decisions": decisions,
-            "actions_summary": [{"step": a["step"], "ok": a.get("ok", True)} for a in actions],
+            "actions_summary": [_action_summary(action) for action in actions],
+            "elapsed_ms": round((time.monotonic() - started) * 1000),
         }
     )
+    # 失败不推进成功时间，下一轮仍可重试，避免故障被隐藏一个维护周期。
+    if succeeded:
+        state.update(last_run_ts=current_ts, last_run_iso=_iso(current_ts))
     _write_state(config, state)
 
     try:
@@ -255,20 +261,42 @@ def run_if_due(config: MemoryConfig, *, now: float | None = None) -> dict[str, A
                 "decisions": decisions,
                 "actions": state["actions_summary"],
                 "scoring_strategy_hash": current_strategy_hash(),
+                "elapsed_ms": state["elapsed_ms"],
             },
-            status="ok",
+            status="ok" if succeeded else "failed",
         )
     except Exception:  # pragma: no cover — audit log must never raise
         pass
 
-    return {"ok": True, "actions": actions, "decisions": decisions}
+    return {
+        "ok": succeeded, "actions": actions, "decisions": decisions,
+        "actions_summary": state["actions_summary"], "elapsed_ms": state["elapsed_ms"],
+    }
+
+
+def _action_summary(action: dict[str, Any]) -> dict[str, Any]:
+    """后台状态保留有界失败原因，不复制完整健康报告或记忆记录。"""
+    summary = {"step": action["step"], "ok": action.get("ok", True)}
+    if "elapsed_ms" in action:
+        summary["elapsed_ms"] = action["elapsed_ms"]
+    if not summary["ok"]:
+        result = action.get("result") if isinstance(action.get("result"), dict) else {}
+        for key in ("error", "message"):
+            value = action.get(key) or result.get(key)
+            if value:
+                summary[key] = str(value)[:500]
+    return summary
 
 
 def _safe_run(step: str, fn) -> dict[str, Any]:
+    started = time.monotonic()
     try:
         result = fn()
         ok = bool(result.get("ok", True)) if isinstance(result, dict) else True
-        return {"step": step, "ok": ok, "result": result if isinstance(result, dict) else None}
+        return {
+            "step": step, "ok": ok, "result": result if isinstance(result, dict) else None,
+            "elapsed_ms": round((time.monotonic() - started) * 1000),
+        }
     except Exception as exc:  # pragma: no cover (covered indirectly)
         return {
             "step": step,

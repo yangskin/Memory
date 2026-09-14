@@ -10,7 +10,7 @@ from typing import Any
 from .memory_backup import backup_files
 from .memory_compactor import _compact_error_summary, _compact_hot_task, _compact_warm_context
 from .memory_config import GuardTarget, MemoryConfig
-from .memory_events import append_event
+from .memory_events import append_event, get_current_user
 from .memory_locks import LockTimeoutError, file_lock
 from .memory_paths import PathManager, PathSecurityError
 from .memory_record_io import DiskFullError, _atomic_write_text
@@ -384,17 +384,58 @@ def _archive_active_context_original(config: MemoryConfig, rel_path: str, text: 
     return archive_path.relative_to(config.repo_root).as_posix()
 
 
-def optimize_guard_targets(config: MemoryConfig, *, prefer_llm: bool = True) -> dict[str, Any]:
-    """Optimize every currently exceeded guard target in place.
+def maintenance_guard_check(config: MemoryConfig, *, all_users: bool = False) -> dict[str, Any]:
+    """维护预算仅包含当前用户的个人文件；全库报告仍可由 guard CLI 读取。"""
+    from .memory_guard import memory_guard_check, _target_write_policy
+
+    report = memory_guard_check(config)
+    if not report.get("ok") or all_users:
+        return report
+    user = get_current_user(config.repo_root)
+    # 固定保护现有个人上下文，并兼容配置声明的其它 user_scoped 目录。
+    scoped_dirs = {"memory-bank/activeContext"}
+    for target in config.guard_targets:
+        if _target_write_policy(config, target.path, target.write_policy) == "user_scoped":
+            scoped_dirs.add(_norm(Path(_norm(target.path)).with_suffix("")))
+    items = report.get("items") or report.get("targets") or []
+    kept, skipped = [], []
+    for item in items:
+        path = Path(_norm(str(item.get("path") or "")))
+        personal = any(directory in path.parents for directory in map(Path, scoped_dirs))
+        if personal and (not user or user == "unknown" or path.stem != user):
+            skipped.append(str(item.get("path") or ""))
+        else:
+            kept.append(item)
+    result = dict(report)
+    result["targets"] = kept
+    if "items" in result:
+        result["items"] = kept
+    result["stats"] = {key: sum(item.get("status") == key for item in kept)
+                       for key in (report.get("stats") or {})}
+    total = dict(report.get("total_budget") or {})
+    total["total_chars"] = sum(item.get("chars") or 0 for item in kept)
+    total["total_tokens_est"] = sum(item.get("tokens_est") or 0 for item in kept)
+    total["status"] = "ok"
+    for metric, limit in (("total_chars", "max_chars"), ("total_tokens_est", "max_tokens")):
+        if isinstance(total.get(limit), int) and total[metric] > total[limit]:
+            total["status"] = "exceeded"
+    total["message"] = "maintenance budget excludes other users' personal files"
+    result["total_budget"] = total
+    result["skipped_other_user_paths"] = skipped
+    return result
+
+
+def optimize_guard_targets(
+    config: MemoryConfig, *, prefer_llm: bool = True, all_users: bool = False
+) -> dict[str, Any]:
+    """Optimize current-user/shared targets; all_users is an explicit admin override.
 
     This is best-effort and safe for startup auto-maintenance: every target is
     backed up before overwrite, and user-scoped activeContext files also get a
     readable archive copy under ``memory-bank/archive/activeContext/<user>``.
     """
 
-    from .memory_guard import memory_guard_check
-
-    guard = memory_guard_check(config)
+    guard = maintenance_guard_check(config, all_users=all_users)
     if not guard.get("ok"):
         return guard
 
@@ -413,7 +454,7 @@ def optimize_guard_targets(config: MemoryConfig, *, prefer_llm: bool = True) -> 
             )
         )
 
-    actions.extend(_optimize_for_total_budget(config, prefer_llm=prefer_llm))
+    actions.extend(_optimize_for_total_budget(config, prefer_llm=prefer_llm, all_users=all_users))
 
     append_event(
         config,
@@ -436,6 +477,7 @@ def optimize_guard_targets(config: MemoryConfig, *, prefer_llm: bool = True) -> 
         "ok": all(a.get("ok", True) for a in actions),
         "actions": actions,
         "count": len(actions),
+        "skipped_other_user_paths": guard.get("skipped_other_user_paths", []),
     }
 
 
@@ -497,12 +539,13 @@ def _optimize_one_path(
     return action
 
 
-def _optimize_for_total_budget(config: MemoryConfig, *, prefer_llm: bool) -> list[dict[str, Any]]:
-    from .memory_guard import memory_guard_check
+def _optimize_for_total_budget(
+    config: MemoryConfig, *, prefer_llm: bool, all_users: bool = False
+) -> list[dict[str, Any]]:
 
     actions: list[dict[str, Any]] = []
     for _round in range(5):
-        guard = memory_guard_check(config)
+        guard = maintenance_guard_check(config, all_users=all_users)
         total = guard.get("total_budget") if isinstance(guard, dict) else None
         if not isinstance(total, dict) or total.get("status") != "exceeded":
             break

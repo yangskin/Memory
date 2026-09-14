@@ -107,6 +107,13 @@ def _cmd_scale_baseline(args: argparse.Namespace) -> dict[str, Any]:
     return _write_baseline(_load(args))
 
 
+def _cmd_guard_optimize(args: argparse.Namespace) -> dict[str, Any]:
+    # 全库写入只通过显式管理参数启用，启动维护保持当前用户范围。
+    from .memory_guard_optimizer import optimize_guard_targets
+
+    return optimize_guard_targets(_load(args), prefer_llm=False, all_users=args.all_users)
+
+
 def _cmd_auto_maintenance(args: argparse.Namespace) -> dict[str, Any]:
     return _run_if_due(_load(args))
 
@@ -489,6 +496,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True, metavar="<command>")
 
     sub.add_parser("guard", help="Run memory_guard_check.").set_defaults(func=_cmd_guard)
+    p_guard_optimize = sub.add_parser("guard-optimize", help="Compact current-user/shared guard targets.")
+    p_guard_optimize.add_argument("--all-users", action="store_true", help="Explicitly allow maintenance of every user's personal files.")
+    p_guard_optimize.set_defaults(func=_cmd_guard_optimize)
     sub.add_parser("health", help="Run memory_health_check.").set_defaults(func=_cmd_health)
     sub.add_parser("config-diagnose", help="Report effective Memory MCP configuration sources.").set_defaults(func=_cmd_config_diagnose)
     sub.add_parser("rebuild-index", help="Rebuild SQLite FTS index.").set_defaults(func=_cmd_rebuild_index)

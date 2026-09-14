@@ -191,3 +191,79 @@ def test_optimize_guard_targets_reduces_total_budget_overflow(tmp_path: Path, mo
     assert any(action.get("reason") == "total_budget_exceeded" for action in result["actions"])
     after = memory_guard_check(config)
     assert after["total_budget"]["status"] == "ok"
+
+
+def _user_guard_config(tmp_path: Path, *, total_chars: int = 10000):
+    config_dir = tmp_path / ".ai-memory"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.json").write_text(json.dumps({
+        "allowed_roots": ["memory-bank"],
+        "guard": {"default_max_tokens": 10000, "total_max_chars": total_chars,
+                  "targets": [{"path": "memory-bank/activeContext.md", "max_chars": 600,
+                               "write_policy": "user_scoped", "policy": "warm_context"}]},
+    }), encoding="utf-8")
+    folder = tmp_path / "memory-bank" / "activeContext"
+    folder.mkdir(parents=True)
+    return load_config(tmp_path), folder
+
+
+def test_guard_maintenance_only_compacts_current_user(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("MEMORY_MCP_USER", "alice")
+    config, folder = _user_guard_config(tmp_path)
+    body = "# Active\n\n## Work\n" + "- detail of active work\n" * 100
+    for name in ("alice", "bob"):
+        (folder / f"{name}.md").write_text(body, encoding="utf-8")
+    bob = (folder / "bob.md").read_bytes()
+    result = optimize_guard_targets(config, prefer_llm=False)
+    assert result["ok"]
+    assert len((folder / "alice.md").read_text(encoding="utf-8")) <= 600
+    assert (folder / "bob.md").read_bytes() == bob
+    assert result["skipped_other_user_paths"] == ["memory-bank/activeContext/bob.md"]
+    archive = tmp_path / "memory-bank" / "archive" / "activeContext"
+    assert list((archive / "alice").glob("*.md"))
+    assert not (archive / "bob").exists()
+
+
+def test_other_user_overflow_does_not_trigger_or_consume_total_budget(tmp_path: Path, monkeypatch) -> None:
+    from servers.memory_server.memory_auto_maintenance import _guard_needs_optimization
+    from servers.memory_server.memory_guard_optimizer import maintenance_guard_check
+
+    monkeypatch.setenv("MEMORY_MCP_USER", "alice")
+    config, folder = _user_guard_config(tmp_path, total_chars=500)
+    (folder / "alice.md").write_text("a" * 300, encoding="utf-8")
+    (folder / "bob.md").write_text("b" * 5000, encoding="utf-8")
+    before = {p.name: p.read_bytes() for p in folder.iterdir()}
+    assert memory_guard_check(config)["total_budget"]["status"] == "exceeded"
+    assert not _guard_needs_optimization(config)
+    assert maintenance_guard_check(config)["total_budget"]["total_chars"] == 300
+    assert optimize_guard_targets(config, prefer_llm=False)["count"] == 0
+    assert {p.name: p.read_bytes() for p in folder.iterdir()} == before
+    assert not (tmp_path / "memory-bank" / "archive" / "activeContext").exists()
+
+
+def test_total_budget_compaction_never_selects_other_user(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("MEMORY_MCP_USER", "alice")
+    config, folder = _user_guard_config(tmp_path, total_chars=500)
+    (folder / "alice.md").write_text("a" * 590, encoding="utf-8")
+    (folder / "bob.md").write_text("b" * 5000, encoding="utf-8")
+    bob = (folder / "bob.md").read_bytes()
+    result = optimize_guard_targets(config, prefer_llm=False)
+    assert any(a.get("reason") == "total_budget_exceeded" for a in result["actions"])
+    assert all(a["path"] == "memory-bank/activeContext/alice.md" for a in result["actions"])
+    assert (folder / "bob.md").read_bytes() == bob
+
+
+def test_unknown_user_skips_personal_files_but_admin_can_opt_in(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("MEMORY_MCP_USER", "unknown")
+    config, folder = _user_guard_config(tmp_path)
+    body = "# Active\n\n## Work\n" + "- detail of active work\n" * 100
+    for name in ("alice", "bob", "unknown"):
+        (folder / f"{name}.md").write_text(body, encoding="utf-8")
+    before = {p.name: p.read_bytes() for p in folder.iterdir()}
+    assert optimize_guard_targets(config, prefer_llm=False)["count"] == 0
+    assert {p.name: p.read_bytes() for p in folder.iterdir()} == before
+    result = optimize_guard_targets(config, prefer_llm=False, all_users=True)
+    assert result["ok"]
+    assert {a["path"] for a in result["actions"]} == {
+        f"memory-bank/activeContext/{name}.md" for name in ("alice", "bob", "unknown")}
+    assert all(len(p.read_text(encoding="utf-8")) <= 600 for p in folder.iterdir())

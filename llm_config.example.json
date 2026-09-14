@@ -1,8 +1,8 @@
 {
-  "_comment": "Copy this file to llm_config.local.json and fill in your API key. The .local.json file is gitignored. Env overrides: MEMORY_LLM_API_KEY / MEMORY_LLM_BASE_URL / MEMORY_LLM_MODEL / MEMORY_LLM_MAX_OUTPUT_TOKENS / MEMORY_LLM_MAX_TOTAL_OUTPUT_TOKENS / MEMORY_LLM_MAX_INPUT_TOKENS / MEMORY_LLM_INPUT_CNY_PER_MTOK / MEMORY_LLM_OUTPUT_CNY_PER_MTOK / MEMORY_LLM_MAX_TOTAL_COST_CNY / MEMORY_LLM_DEFAULT_THINKING / MEMORY_LLM_DEFAULT_REASONING_EFFORT.",
+  "_comment": "Copy this file to llm_config.local.json and fill in your API key. The .local.json file is gitignored. You can also use environment variables MEMORY_LLM_API_KEY / MEMORY_LLM_BASE_URL / MEMORY_LLM_MODEL.",
   "api_key": "sk-REPLACE_ME",
-  "base_url": "https://api.deepseek.com",
-  "model": "deepseek-v4-flash",
+  "base_url": "https://api.lkeap.cloud.tencent.com/plan/v3",
+  "model": "deepseek/deepseek-v4-flash",
   "timeout": 60,
   "extra_headers": {},
 
@@ -24,4 +24,3 @@
   "default_thinking": false,
   "default_reasoning_effort": null
 }
-

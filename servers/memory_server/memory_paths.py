@@ -74,7 +74,7 @@ class PathManager:
         else:
             resolved = _normalize_path(self.config.repo_root / candidate)
 
-        if not any(_is_within(resolved, root) for root in self.config.allowed_roots):
+        if not any(resolved.is_relative_to(_normalize_path(root)) for root in self.config.allowed_roots):
             raise PathSecurityError(f"path is outside allowed_roots: {path_value}")
         if must_exist and not resolved.exists():
             raise FileNotFoundError(f"path does not exist: {path_value}")
@@ -117,9 +117,12 @@ class PathManager:
         include_paths: list[str] | None = None,
         exclude_paths: list[str] | None = None,
     ) -> Iterable[tuple[Path, str]]:
+        # 根目录只在本次遍历内复用；每个候选仍重新解析，保留链接越界检查。
+        repo_root = _normalize_path(self.config.repo_root)
         for root in self._scope_roots(scopes):
             if root.is_file():
-                rel_path = self.to_repo_relative(root)
+                root = _normalize_path(root)
+                rel_path = root.relative_to(repo_root).as_posix()
                 if self._is_excluded(rel_path):
                     continue
                 if not self._matches_patterns(rel_path, include_paths):
@@ -135,7 +138,7 @@ class PathManager:
                 for dir_name in dirs:
                     candidate_dir = _normalize_path(current / dir_name)
                     try:
-                        rel_dir = self.to_repo_relative(candidate_dir)
+                        rel_dir = candidate_dir.relative_to(repo_root).as_posix()
                     except ValueError:
                         # Path leaked out of repo_root after normalization
                         # (symlink to elsewhere, or a stale ``\\?\`` mismatch
@@ -149,7 +152,7 @@ class PathManager:
                 for file_name in files:
                     abs_path = _normalize_path(current / file_name)
                     try:
-                        rel_path = self.to_repo_relative(abs_path)
+                        rel_path = abs_path.relative_to(repo_root).as_posix()
                     except ValueError:
                         continue
                     if self._is_excluded(rel_path):

@@ -171,7 +171,8 @@ def test_run_if_due_skips_when_not_due(tmp_path: Path) -> None:
     assert second.get("skipped") is True or second["actions"] == []
 
 
-def test_run_if_due_repairs_guard_overflow_even_when_interval_not_due(tmp_path: Path) -> None:
+def test_run_if_due_repairs_guard_overflow_even_when_interval_not_due(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("MEMORY_MCP_USER", "alice")
     (tmp_path / ".ai-memory").mkdir(parents=True, exist_ok=True)
     active_dir = tmp_path / "memory-bank" / "activeContext"
     active_dir.mkdir(parents=True, exist_ok=True)
@@ -343,6 +344,6 @@ def test_run_if_due_never_raises_on_action_failure(
     })
     result = run_if_due(config)
 
-    assert result["ok"] is True
+    assert result["ok"] is False
     steps = {a["step"] for a in result["actions"]}
     assert {"health_check", "rebuild_index"}.issubset(steps)

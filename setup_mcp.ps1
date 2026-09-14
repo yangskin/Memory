@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$WorkspaceRoot,
     [string]$RepoRoot,
     [switch]$AbsolutePath
@@ -51,6 +51,7 @@ $memoryRoot = (Resolve-Path $PSScriptRoot).Path
 # Resolve repo root via the shared helper (supports -RepoRoot, $env:MEMORY_REPO_ROOT,
 # .git/.svn/.hg/pyproject.toml/*.uproject/*.code-workspace marker auto-detect).
 . (Join-Path $memoryRoot "scripts\_Resolve-MemoryRoots.ps1")
+. (Join-Path $memoryRoot "scripts\New-WorkspaceAwareMemoryServerEntry.ps1")
 if ([string]::IsNullOrWhiteSpace($RepoRoot) -and -not [string]::IsNullOrWhiteSpace($WorkspaceRoot)) {
     # -WorkspaceRoot is the legacy alias of -RepoRoot.
     $RepoRoot = $WorkspaceRoot
@@ -308,7 +309,7 @@ function Update-CodexMemoryServer {
     Write-Host "Updated Codex MCP config: $Path"
 }
 
-$userServerEntry = @{
+$absoluteUserServerEntry = @{
     command = Convert-ToPosixPath $venvPython
     args = @(
         "-m",
@@ -322,11 +323,21 @@ $userServerEntry = @{
     }
 }
 
+# 用户级配置不能绑定当前工作副本的绝对路径，否则在 Project-A 与 Project-B 分别执行本脚本时，
+# 后执行的一方会把所有客户端都指向自己的根目录。项目内配置继续使用
+# ${workspaceFolder}；用户级配置则从客户端当前工作目录向上定位同一工作副本中的组件。
+$workspaceAwareUserServerEntry = if ($null -ne $memoryRelToRepo) {
+    New-WorkspaceAwareMemoryServerEntry -MemoryRelativePath $memoryRelToRepo
+} else {
+    Write-Host "WARNING: Memory component is outside the repository; user-level MCP config must use absolute paths."
+    $absoluteUserServerEntry
+}
+
 Update-McpJsonServerEntry `
     -Path (Join-Path $WorkspaceRoot ".cursor\mcp.json") `
     -TopKey "mcpServers" `
     -Label "Cursor (project)" `
-    -Entry $userServerEntry `
+    -Entry $serverEntry `
     -CreateIfMissing
 
 $userHomePath = Get-UserHomePath
@@ -335,14 +346,14 @@ if ($userHomePath) {
         -Path (Join-Path $userHomePath ".gongfeng-copilot\mcp.json") `
         -TopKey "mcpServers" `
         -Label "gongfeng-copilot" `
-        -Entry $userServerEntry `
+        -Entry $workspaceAwareUserServerEntry `
         -CreateIfMissing
 
     Update-McpJsonServerEntry `
         -Path (Join-Path $userHomePath ".codebuddy\mcp.json") `
         -TopKey "mcpServers" `
         -Label "CodeBuddy" `
-        -Entry $userServerEntry `
+        -Entry $workspaceAwareUserServerEntry `
         -CreateIfMissing
 
     $cursorDir = Join-Path $userHomePath ".cursor"
@@ -351,7 +362,7 @@ if ($userHomePath) {
             -Path (Join-Path $cursorDir "mcp.json") `
             -TopKey "mcpServers" `
             -Label "Cursor" `
-            -Entry $userServerEntry
+            -Entry $workspaceAwareUserServerEntry
     }
 }
 
@@ -362,8 +373,8 @@ if (-not [string]::IsNullOrWhiteSpace($env:APPDATA)) {
             -Path (Join-Path $vscodeUserDir "mcp.json") `
             -TopKey "servers" `
             -Label "VS Code Copilot user" `
-            -Entry $userServerEntry
+            -Entry $workspaceAwareUserServerEntry
     }
 }
 
-Update-CodexMemoryServer -Path (Get-CodexConfigPath) -Entry $userServerEntry
+Update-CodexMemoryServer -Path (Get-CodexConfigPath) -Entry $workspaceAwareUserServerEntry
