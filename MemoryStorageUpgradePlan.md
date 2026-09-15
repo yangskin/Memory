@@ -170,3 +170,13 @@ python scripts/prepare_memory.py --root <项目克隆根目录>
 ```
 
 当前真实项目再次核对 3,653 个历史来源：全部仍在原路径，SHA-256 无变化，未生成已应用迁移清单。Git 驱动配置不随 clone 同步，未部署的旧克隆仍可能产生普通文本冲突；不能以逐行 union 自动消除。已验证上一版客户端的读取、归档、重打包与新旧交替写入；更早未知版本仍需单独验证。
+
+### 10.6 重启后的在线验收与副本定位修复
+
+真实客户端重启后的 task_context 首次读取 5.844 秒；相同 task_brief 查询关闭 LLM 为 5.465 秒，启用真实 LLM 为 8.100 秒并明确报告 timeout，两者 10 个基础引用 ID 和顺序完全相同。精确历史提交检索 5.425 秒、Top1 正确。SQLite 为 12,957 个逻辑记录、4,180 个源文件，FTS 数量与投影水位一致，quick_check 通过。此次未运行重建来掩盖实际服务状态；检索没有重新解析候选 Markdown，但仍做严格源快照校验。
+
+在线写入暴露了既有测试未覆盖的宿主进程差异：副本目录定位同步调用 Git，在该 MCP 宿主下返回 replica_identity_failed（Git common directory discovery timed out）。实测 Git 包装进程退出后子进程仍存活，调用可超过 subprocess 的 10 秒预算甚至触发客户端 90 秒超时，失败记录未落盘。普通 shell 中相同命令成功，因此不能把所有延迟归因于记忆文件规模，也不能仅凭隔离写入测试确认在线服务写入正常。
+
+修复仅改变副本目录定位：直接解析 `.git` 目录或 gitdir 指针、worktree 的 commondir，保留 GIT_DIR/GIT_COMMON_DIR 的显式覆盖以及祖先发现边界；不再为写入启动 Git 进程。规则来自 [Git 仓库布局](https://git-scm.com/docs/gitrepository-layout)与 [Git 环境变量](https://git-scm.com/docs/git)。既有 memory-replica-id 原位复用；缺失目标、损坏指针或损坏身份明确失败，不能转移到另一个目录生成新身份。没有改变日志格式、索引协议或历史文件。
+
+验证新增真实 Git 仓库写入且禁止启动子进程、独立 gitdir、显式环境路径、损坏元数据不产生替代身份；原有真实 clone/worktree 测试在 Git 建仓完成后同样禁止启动 Git。全量测试与发布结果另记交付证据。当前已运行的 MCP 不会自动重载 Python 模块，修复后须再次重启，再做真实写入、同周追加及写后检索验收，不能以新测试进程替代该最后一步。

@@ -75,7 +75,7 @@ def test_journal_not_relocated_by_legacy_daily_maintenance(repo):
     assert compact['ok'] and path.exists()
 
 
-def test_clone_and_linked_worktree_identity(tmp_path):
+def test_clone_and_linked_worktree_identity(tmp_path, monkeypatch):
     root = tmp_path / 'main'
     root.mkdir()
     def git(*args):
@@ -86,16 +86,16 @@ def test_clone_and_linked_worktree_identity(tmp_path):
         '-c', 'core.hooksPath=', 'commit', '--allow-empty', '-qm', 'base')
     linked = tmp_path / 'linked'
     git('worktree', 'add', '-q', '-b', 'fixture-linked', str(linked))
-    assert get_replica_id(root) == get_replica_id(linked)
     clone = tmp_path / 'clone'
     git('clone', '-q', str(root), str(clone))
+    monkeypatch.setattr(subprocess, 'run', lambda *a, **k: pytest.fail('replica discovery must not spawn Git'))
+    assert get_replica_id(root) == get_replica_id(linked)
     assert get_replica_id(root) != get_replica_id(clone)
 
 
 def test_standalone_replica_does_not_spawn_git(repo, monkeypatch):
-    import servers.memory_server.memory_journal as journal
     monkeypatch.delenv('GIT_DIR', raising=False)
-    monkeypatch.setattr(journal.subprocess, 'run', lambda *a, **k: pytest.fail('standalone writes must not spawn Git'))
+    monkeypatch.setattr(subprocess, 'run', lambda *a, **k: pytest.fail('standalone writes must not spawn Git'))
     first = get_replica_id(repo)
     assert get_replica_id(repo) == first
     assert (repo / '.ai-memory/memory-replica-id').read_text(encoding='ascii').strip() == first
