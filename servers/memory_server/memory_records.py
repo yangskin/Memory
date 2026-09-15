@@ -112,7 +112,7 @@ def _default_status(record_kind: str) -> str:
 
 
 def _record_id(now: datetime) -> str:
-    return f"mem_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    return f"mem_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}"
 
 
 def _slug_user(author: str) -> str:
@@ -193,6 +193,13 @@ def _write_record_to_pack(
         )
 
     manager = PathManager(config)
+    replica_id = None
+    if config.record_packing_layout == "weekly":
+        from .memory_journal import get_replica_id
+        try:
+            replica_id = get_replica_id(config.repo_root)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return error_result("replica_identity_failed", str(exc))
     for pack_index in range(1, 1000):
         rel_path = _target_pack_path(
             record_id,
@@ -205,6 +212,12 @@ def _write_record_to_pack(
             task_id=task_id,
             branch=branch,
         )
+        if replica_id:
+            from .memory_journal import journal_path
+            rel_path = journal_path(
+                _target_path(record_id, record_kind, scope, status, author),
+                author=author, scope=scope, now=now, replica_id=replica_id, index=pack_index,
+            )
         try:
             resolved = manager.resolve(rel_path, must_exist=False, must_be_file=False)
         except PathSecurityError as exc:
@@ -461,7 +474,7 @@ def memory_write_record(
     if effective_schema_version == SCHEMA_VERSION_V2:
         metadata.update(v2_metadata)
 
-    final_content = render_record_markdown(metadata, content_markdown)
+    final_content = render_record_markdown(metadata, content_markdown, sparse=True)
 
     pack_result = _write_record_to_pack(
         config,

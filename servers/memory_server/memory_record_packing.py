@@ -394,6 +394,9 @@ def compact_old_record_packs(
             rel = rel_path.replace("\\", "/")
             if "/packs/" not in rel or _is_archive_pack_rel_path(rel):
                 continue
+            # 周日志允许离线副本补交，常规维护不能移动其稳定路径。
+            if "/packs/journal/" in rel:
+                continue
             pack_date = _pack_date_from_path(abs_path)
             reference_ts = pack_date.timestamp() if pack_date is not None else abs_path.stat().st_mtime
             if reference_ts > cutoff_ts:

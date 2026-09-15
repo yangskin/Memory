@@ -37,16 +37,27 @@ def memory_get(
                     effective_path = resolve_user_path(config, path, current_user)
                 break
 
+    virtual_text = None
+    redirects = []
     try:
         resolved = manager.resolve(effective_path, must_exist=True, must_be_file=True)
     except PathSecurityError as exc:
         return error_result("path_not_allowed", str(exc))
     except FileNotFoundError as exc:
-        return error_result("not_found", str(exc))
+        try:
+            from .memory_pack_migration import read_migrated_path
+            absent = manager.resolve(effective_path, must_exist=False, must_be_file=False)
+            alias = read_migrated_path(config, manager.to_repo_relative(absent))
+            if alias is None:
+                return error_result("not_found", str(exc))
+            virtual_text, redirects = alias
+            resolved = manager.resolve(redirects[0], must_exist=True, must_be_file=True)
+        except (OSError, ValueError, PathSecurityError) as alias_exc:
+            return error_result("record_alias_failed", str(alias_exc))
     except IsADirectoryError as exc:
         return error_result("invalid_path", str(exc))
 
-    text = safe_read_text(resolved, errors="replace")
+    text = virtual_text if virtual_text is not None else safe_read_text(resolved, errors="replace")
     lines = text.splitlines(keepends=True)
     total_lines = len(lines)
 
@@ -89,13 +100,14 @@ def memory_get(
     stat = resolved.stat()
     return ok_result(
         "read completed",
-        path=manager.to_repo_relative(resolved),
+        path=effective_path if redirects else manager.to_repo_relative(resolved),
+        **({"resolved_paths": redirects, "migrated": True} if redirects else {}),
         content=selected,
         start_line=actual_start,
         end_line=actual_end,
         truncated=truncated,
         meta={
-            "size": stat.st_size,
+            "size": len(text.encode("utf-8")) if redirects else stat.st_size,
             "mtime": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
         },
     )

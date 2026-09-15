@@ -32,6 +32,7 @@ def _write_single_record(path: Path, *, record_id: str, author: str, body: str) 
 def _with_record_packing(config, **overrides):
     values = {
         **config.__dict__,
+        "record_packing_layout": "legacy",
         "record_packing_max_record_chars": 2000,
         "record_packing_max_pack_chars": 12000,
         "record_packing_archive_after_days": 0,
@@ -281,4 +282,5 @@ def test_record_packing_is_enabled_by_default_for_legacy_config(tmp_path: Path) 
 
     assert result["ok"] is True
     assert result["packed"] is True
-    assert "/packs/" in result["path"]
+    assert config.record_packing_layout == "weekly"
+    assert "/record-packs/journal/" in result["path"]

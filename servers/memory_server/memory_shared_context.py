@@ -55,7 +55,7 @@ def _compact_injected_context(payload: dict[str, Any], max_tokens: int) -> dict[
     return compact
 
 
-def get_shared_context(store: SyncStore, config: SharedMemoryConfig, args: dict[str, Any], *, force_refresh: bool = False, active: bool = False) -> dict[str, Any] | None:
+def get_shared_context(store: SyncStore, config: SharedMemoryConfig, args: dict[str, Any], *, force_refresh: bool = False, active: bool = False, passive: bool = False) -> dict[str, Any] | None:
     key = cache_key(args)
     store.put_state("default_context_args", {"agent_id": str(args.get("agent_id") or "memory-mcp"), "task_id": args.get("task_id"), "include": args.get("include"), "max_age_minutes": args.get("max_age_minutes"), "max_items": args.get("max_items")})
     cached = store.get_cache(key)
@@ -64,7 +64,7 @@ def get_shared_context(store: SyncStore, config: SharedMemoryConfig, args: dict[
         state = cache_state(cached["fetched_at"], config.fresh_cache_seconds, config.usable_cache_seconds)
         if state == "fresh":
             payload = _compact_injected_context(payload, config.max_injected_tokens)
-            return {"status": state, "source": "cache", **payload}
+            return {**payload, "status": state, "source": "cache"}
     if not config.active or not config.read_enabled:
         return ({"status": "stale", "source": "cache", **_compact_injected_context(__import__("json").loads(cached["payload_json"]), config.max_injected_tokens)} if cached else None)
     disabled = store.get_state("remote_auth_disabled")
@@ -73,6 +73,12 @@ def get_shared_context(store: SyncStore, config: SharedMemoryConfig, args: dict[
         return ({"status": "stale", "source": "cache", **_compact_injected_context(__import__("json").loads(cached["payload_json"]), config.max_injected_tokens)} if cached else None)
     if disabled:
         store.delete_state("remote_auth_disabled")
+    if passive and not active and not force_refresh:
+        # 自动注入属于咨询信息；既有同步 worker 根据 default_context_args 更新缓存。
+        # TLS 初始化和 DNS 可能超过 socket timeout，前台不承担这些等待。
+        payload = _compact_injected_context(json.loads(cached["payload_json"]), config.max_injected_tokens) if cached else {}
+        return {**payload, "status": "stale" if cached else "pending",
+                "source": "cache" if cached else "none", "refresh": "background", "advisory": True}
     request = {"agent_instance_id": str(args.get("agent_id") or "memory-mcp"), "task_id": args.get("task_id"), "include": list(dict.fromkeys(args.get("include") or ["user_brief", "project_brief", "same_task_agents", "my_other_agents", "other_tasks", "project_activity"]))[:6], "max_age_minutes": min(int(args.get("max_age_minutes") or config.recent_window_hours * 60), 10080), "max_items": min(int(args.get("max_items") or config.max_items), 20)}
     timeout = (config.active_query_timeout_ms if active else config.task_context_timeout_ms) / 1000
     status, payload = MemoryHubClient(config).context(request, timeout)

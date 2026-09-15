@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 
@@ -16,6 +17,12 @@ _PRIORITY_KEYS = (
     "status",
     "context_token",
     "task_id",
+    "task_brief",
+    "board_context",
+    "open_board_items",
+    "generation",
+    "provenance",
+    "record_ids",
     "id",
     "path",
     "content",
@@ -42,6 +49,44 @@ def _compact_json(value: Any) -> str:
 def _estimate_tokens(text: str) -> int:
     ascii_chars = sum(1 for char in text if ord(char) < 128)
     return (ascii_chars + 3) // 4 + (len(text) - ascii_chars)
+
+
+def _bounded_brief(text: str, limit: int) -> str:
+    """按栏目保留经验与当前意图，不能只截前缀把核心记忆裁掉。"""
+    if len(text) <= limit:
+        return text
+    matches = list(re.finditer(r"^## [^\n]+", text, re.M))
+    if not matches:
+        return text[:limit] + "...[truncated]"
+    sections = []
+    for index, match in enumerate(matches):
+        header = match.group()
+        body = text[match.end():matches[index+1].start() if index+1 < len(matches) else len(text)].strip()
+        priority, weight = (4, 0.05)
+        if "任务相关经验" in header:
+            priority, weight = 0, 0.45
+        elif "当前意图" in header:
+            priority, weight = 1, 0.15
+        elif "冲突" in header:
+            priority, weight = 2, 0.10
+        elif "Validation" in header:
+            priority, weight = 3, 0.10
+        sections.append((priority, index, weight, header, body))
+    remaining = max(0, limit - len("\n...[truncated sections]"))
+    kept = []
+    for priority, index, weight, header, body in sorted(sections):
+        allowance = min(remaining, max(len(header) + 40, int(limit * weight)))
+        if allowance < len(header) + 20:
+            continue
+        body_limit = allowance - len(header) - 3
+        clipped = body[:body_limit]
+        # 能保留完整行时不截断行内路径；单条过长仍服从响应上限。
+        if len(body) > body_limit and '\n' in clipped:
+            clipped = clipped.rsplit('\n', 1)[0]
+        part = header + '\n' + clipped + '\n'
+        kept.append((index, part))
+        remaining -= len(part) + 1
+    return '\n'.join(part for _, part in sorted(kept)) + "\n...[truncated sections]"
 
 
 def _bounded_value(
@@ -83,7 +128,7 @@ def _bounded_value(
         ordered_keys.extend(key for key in value if key not in ordered_keys)
         selected = ordered_keys[:max_dict_items]
         result = {
-            key: _bounded_value(
+            key: _bounded_brief(value[key], max_string_chars) if key == "brief_markdown" and isinstance(value[key], str) else _bounded_value(
                 value[key],
                 max_dict_items=max_dict_items,
                 max_list_items=max_list_items,

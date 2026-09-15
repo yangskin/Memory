@@ -165,9 +165,10 @@ def test_context_token_injects_user_but_does_not_hide_same_user_tasks(repo: Path
     assert write_b["ok"] is True
     assert write_a["task_id"] == task_a["task_id"]
     assert write_b["task_id"] == task_b["task_id"]
-    assert write_a["path"] != write_b["path"]
-    assert f"/packs/{task_a['task_id']}/" in write_a["path"]
-    assert f"/packs/{task_b['task_id']}/" in write_b["path"]
+    # 同用户/周/克隆合包后，任务隔离必须依靠每条 metadata，而不是文件路径。
+    assert write_a["path"] == write_b["path"]
+    assert write_a["id"] != write_b["id"]
+    assert "/record-packs/journal/" in write_a["path"]
     assert write_a["author"] == "alice"
     assert write_b["author"] == "alice"
     assert got_a["ok"] is True

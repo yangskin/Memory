@@ -17,7 +17,7 @@
 - **工具表面**：普通 agent 使用 `memory_read` / `memory_write`；跨 Agent 留言板使用专用的 `memory_board_read` / `memory_board_write`；任务生命周期使用 `memory_task_sync`。
 - **多人模式**：始终开启。`activeContext` 按用户分文件，`teamContext` / `progress` / `techContext` / `systemPatterns` 只沉淀共享或发布记录。
 - **维护策略**：guard 超限、总预算超限、索引过期、事件膨胀、冷数据 retention 都由 auto-maintenance 处理。
-- **测试状态**：`tests/memory_server` 当前通过 `862 passed, 5 skipped`。
+- **测试状态**：本次存储升级的完整测试、混合客户端和真实检索证据见 [存储升级方案](MemoryStorageUpgradePlan.md)。
 
 实现代码在 `servers/memory_server/`。
 
@@ -53,7 +53,7 @@ powershell -ExecutionPolicy Bypass -File <MemoryRoot>/scripts/bootstrap.ps1
 powershell -ExecutionPolicy Bypass -File <MemoryRoot>/scripts/bootstrap.ps1 -RepoRoot <RepoRoot>
 ```
 
-### 2.1.1 仅部署 venv + 依赖（`deploy.bat` / `deploy.ps1`）
+### 2.1.1 部署环境与准备本地存储（`deploy.bat` / `deploy.ps1`）
 
 只安装 Python 环境，不改 VS Code 配置：
 
@@ -488,15 +488,16 @@ workflow
 
 ### 3.3.1 Raw Record Packing
 
-默认按日期 pack 写 raw record。即使旧项目的 `.ai-memory/config.json` 没有 `record_packing` 段，结构化写入也会按目标目录追加到日期 pack 文件。没有任务信号时，personal 记录仍写入用户每日 pack，例如 `memory-bank/people/alice/packs/20260512-001.md`；带 `task_id` 或 `branch` 时，personal 记录按任务/分支分桶，例如 `memory-bank/people/alice/packs/task-123/20260512-001.md`。shared 记录按 `author + task_id/branch` 分桶，例如 `memory-bank/shared/packs/alice/task-123/20260512-001.md`。
+默认采用周日志：同用户、同范围、同 ISO UTC 周的多个任务/agent 在同一个克隆中追加到同一日志，达到容量后分卷。路径为`memory-bank/archive/record-packs/journal/<scope>-<author_hash>/<year-Wweek>/<replica_id>-001.md`。独立 clone/PC 使用不同的本地随机副本 ID；同一 Git common-dir 的 worktree 共用副本身份。任务身份仍保留在每条记录里，文件名不再按任务增长。
 
-这个策略用于平衡多人/多 agent 冲突和碎片数量：不同任务不会争抢同一个用户每日 pack；同一任务内的多个写入仍合并到同一个日期 pack，避免按 agent run 或单条 record 生成大量碎片文件。每条记录仍保留独立 Front Matter 和 `id`，读取、`search_records`、key-doc rebuild、lineage/governance 会把 pack 内条目展开为逻辑记录。
+保持旧 version=1 pack 和每记录 v1/v2 schema；每条记录独立保存作者、范围、状态和 ID，只有已知空可选字段省略。旧数据无需转换即可读取；显式 `record_packing.layout="legacy"` 保留原任务/日期路径。完整设计、迁移步骤及验收见 [存储升级方案](MemoryStorageUpgradePlan.md)。
 
 配置示例：
 
 ```json
 {
   "record_packing": {
+    "layout": "weekly",
     "max_record_chars": 2000,
     "max_pack_chars": 64000,
     "archive_after_days": 90,
@@ -508,7 +509,23 @@ workflow
 }
 ```
 
-`max_record_chars` 是诊断/调参参考值，不再决定是否打包。写入只受 `max_pack_chars` 限制；当前 pack 超过 `max_pack_chars` 时滚动到 `YYYYMMDD-002.md`。单条记录本身超过 `max_pack_chars` 会被拒绝并返回诊断错误，避免重新生成无限增长的独立 record 文件。
+`max_record_chars` 是诊断/调参参考值，不再决定是否打包。写入只受 `max_pack_chars` 限制；当前 pack 超过 `max_pack_chars` 时滚动到本副本的 `002.md` 分卷。单条记录本身超过 `max_pack_chars` 会被拒绝并返回诊断错误，避免重新生成无限增长的独立 record 文件。
+
+部署入口会执行 `prepare`：在首次使用前完成 SQLite 准备、完整性检查，以及本地 Git 记录合并驱动注册/自测。每个新克隆都要部署；SQLite 和副本身份不提交。查询严格校验源字节，只解析变化文件，再读取 SQLite 完整投影。LLM 在检索之后总结；没有 LLM 也能返回同一组基础证据，默认交互式简报（含 LLM 等待）使用 8 秒预算，超时明确标记并返回确定性证据；`llm_defaults.capabilities.generate_task_brief.interactive_budget_seconds` 可在 `(0,120]` 秒内调整。后台总结不受此交互预算影响。 自动注入的 Board 与共享上下文读取带明确新鲜度的本地缓存，并在后台刷新；首次任务不等待远端咨询信息。需要主动获取远端最新信息时，仍使用 `memory_board_read` 或 `memory_read(operation="shared_context")`。
+
+```powershell
+# 以下命令在 Memory 工具根运行，项目根使用实际路径
+python -m servers.memory_server.cli --root <ProjectRoot> prepare
+# 冷归档跨来源归并：先生成并审查 plan_id，默认不移动或删除原文件
+python -m servers.memory_server.cli --root <ProjectRoot> coalesce-archives
+# 仅所有读取端已升级并支持迁移清单后，显式退役旧路径
+python -m servers.memory_server.cli --root <ProjectRoot> coalesce-archives --plan-id <id> --apply --retire-legacy-paths
+python -m servers.memory_server.cli --root <ProjectRoot> prepare
+# 按计划恢复原始字节；拒绝覆盖迁移之后的变更
+python -m servers.memory_server.cli --root <ProjectRoot> coalesce-archives --plan-id <id> --rollback
+```
+
+归并清单保存在版本化的 `memory-bank/archive/pack-migrations/`；原始备份在本地 `.ai-memory/pack-migration-originals/`，清单中的 SHA-256 对应备份文件。旧路径引用由清单按 ID 解析到新包，行号不保证与原排版相同。混合客户端可互读新旧记录，但旧客户端不理解路径映射；因此未显式传入 `--retire-legacy-paths` 时，应用阶段会返回 `legacy_readers_not_confirmed` 并保留全部旧文件。不能仅因为本机已更新就执行全库退役；部署也不会自动归并历史。周日志使用旧维护器已跳过的归档包子目录，已用上一版客户端验证常规归档/重打包不会移动它。新旧端共用 SQLite 时，新端同时核对传统索引和完整正文投影的水位，必要时重建派生投影；读取事务中发现旧端并发提交时明确要求重试，避免返回过时正文。
 
 长期维护：
 
@@ -530,7 +547,7 @@ python -m servers.memory_server.cli key-doc-jobs
 python -m servers.memory_server.cli key-doc-jobs --drain --max-jobs 5
 ```
 
-归档写为不可变分片：`memory-bank/archive/record-packs/{user}/YYYYMM-{source_sha[:16]}-{fragment:03d}.md`。其中 `{user}` 优先取源 pack 路径中的稳定用户 ID；旧格式路径从 `user_config.local.json` 读取稳定用户 ID（例如 `your-stable-user-id`）。同一源 pack 的重试会得到完全相同的分片；同名用户在不同设备产生不同源内容时会写入不同路径，绝不追加已有归档文件。归档仍属于 `memory-bank` 真源，`search_records`、runtime digest、key-doc rebuild 仍能读取。
+旧 pack 的兼容归档写为不可变分片（周日志不被此流程搬走）：`memory-bank/archive/record-packs/{user}/YYYYMM-{source_sha[:16]}-{fragment:03d}.md`。其中 `{user}` 优先取源 pack 路径中的稳定用户 ID；旧格式路径从 `user_config.local.json` 读取稳定用户 ID（例如 `your-stable-user-id`）。同一源 pack 的重试会得到完全相同的分片；同名用户在不同设备产生不同源内容时会写入不同路径，绝不追加已有归档文件。归档仍属于 `memory-bank` 真源，`search_records`、runtime digest、key-doc rebuild 仍能读取。
 
 关键文档是派生视图：
 
@@ -705,7 +722,7 @@ LLM 能力边界：
 - key-document 与 project-reflection 均使用持久 JSON 队列：`pending → running(lease) → done | pending(retry) | dead`。进程被杀后，下一次启动回收过期 lease；队列保留 `.bak` 恢复副本和 dead letter。
 - 后台 worker 是 daemon，启动有宽限期，所有步骤都有顶层异常隔离。LLM、索引、编码审计或队列故障不会改变 `memory_read` / `memory_write` 的主结果。
 - compact apply 使用 `prepared → committed | conflict` 恢复日志、源 SHA compare-and-swap、原文件备份和原子替换。下次启动会重放源未变化的 prepared 事务。
-- SQLite FTS 保存完整语料文件签名；搜索前校验 source manifest。索引缺失时普通 retrieval 继续 Markdown fallback，索引损坏或过期时可重建。
+- SQLite FTS 保存完整语料文件签名；搜索前校验 source manifest。索引缺失或旧格式时先准备完整投影，外部变化只更新受影响来源。损坏可重建；不能恢复或发现冲突时返回明确错误，不能把失败伪装成正常检索。
 - 所有新记录拒绝 NUL、U+FFFD 和非法 UTF-8。编码修复必须显式指定 codec、默认 dry-run，并先做原始字节级备份。
 
 项目级反思只在 `checkpoint(task_done|test_failed)` 后写入队列。worker 从同一 `task_id` 的结构化记录收集证据（默认最多 256 条 / 1,000,000 字符，利用大上下文但不强制填满），依次执行 extractor 和 adversarial critic；确定性门禁再次校验证据 ID、类型、置信度、秘密信号和重复项。提案动作协议为 `CREATE / UPDATE / MERGE / SUPERSEDE / REJECT`：更新类动作只允许指向尚未被替代的 `project_shared + background_reflection + replaceable=true + authoritative=false` 记录；落盘始终新增记录并写 `supersedes`，绝不原地改写或删除旧记录。只有高置信且具有 `validation_result` 证据，或至少两个不同任务重复支持的提案，才能发布；`REJECT` 不写记录，其余未过门禁的候选只保留在 durable job result，等待 Curator。反思发布后的共享关键文档重建只取 `key_documents.auto_rebuild.targets` 与 `teamContext/progress/techContext/systemPatterns` 的交集；配置仅含 `activeContext` 时不会后台生成任何共享关键文档。

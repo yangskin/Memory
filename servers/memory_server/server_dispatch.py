@@ -223,6 +223,7 @@ def _load_open_board_items_for_task(
     task_id: str,
     max_items: int,
     max_tokens: int,
+    freshness: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     payload = {
         "filter": "unresolved",
@@ -230,12 +231,12 @@ def _load_open_board_items_for_task(
         "max_items": max(1, min(50, max_items * 3)),
     }
     _schedule_board_sync(config)
-    remote = remote_board_query(config, payload)
+    from .memory_board_refresh import cached_board_query
+    remote_items, board_state = cached_board_query(config, payload, query=remote_board_query)
+    if freshness is not None:
+        freshness.update(board_state)
     local = board_query(config, task_id=task_id, filter_mode="unresolved", max_items=max(1, min(50, max_items * 3)))
-    if remote.get("ok"):
-        body = remote.get("remote") if isinstance(remote.get("remote"), dict) else {}
-        remote_items = [dict(item) for item in body.get("items") or [] if isinstance(item, dict)]
-        cache_remote_board_items(config, remote_items)
+    if remote_items is not None:
         local_items = [dict(item) for item in local.get("items") or [] if isinstance(item, dict)]
         raw_items = _merge_board_items(remote_items, local_items, max_items=max(1, min(50, max_items * 3)))
     else:
@@ -950,7 +951,7 @@ def _compact_read_response(operation: str, result: dict[str, Any], *, include_di
             compact["open_board_items"] = result["open_board_items"]
         if "suggested_metadata" in result:
             compact["suggested_metadata"] = result["suggested_metadata"]
-        for key in ("shared_context", "shared_sync"):
+        for key in ("shared_context", "shared_sync", "board_context"):
             if key in result:
                 compact[key] = result[key]
         return _prune_heavy_payload(compact)
@@ -1126,12 +1127,15 @@ def _dispatch_memory_read(config: MemoryConfig, args: dict[str, Any]) -> dict[st
             active_context=active,
             current_task=current,
         )
+        board_state: dict[str, Any] = {}
         board_items = _load_open_board_items_for_task(
             config,
             task_id=str(args.get("task_id") or task.get("task_id") or ""),
             max_items=int(args.get("board_max_items") or 8),
             max_tokens=int(args.get("board_max_tokens") or 500),
+            freshness=board_state,
         )
+        result["board_context"] = board_state
         if board_items:
             result["open_board_items"] = board_items
         if bool(args.get("include_task_brief", True)):
@@ -1194,7 +1198,7 @@ def _dispatch_memory_read(config: MemoryConfig, args: dict[str, Any]) -> dict[st
         try:
             from .memory_shared_context import get_shared_context
             from .memory_sync_store import SyncStore
-            result["shared_context"] = get_shared_context(SyncStore(config.repo_root / ".ai-memory" / "shared-sync.db"), config.shared_memory, {**args, "task_id": task.get("task_id")})
+            result["shared_context"] = get_shared_context(SyncStore(config.repo_root / ".ai-memory" / "shared-sync.db"), config.shared_memory, {**args, "task_id": task.get("task_id")}, passive=True)
         except Exception:
             result["shared_context"] = None
         return _compact_read_response(operation, result, include_diagnostics=include_diagnostics)

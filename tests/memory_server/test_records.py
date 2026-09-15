@@ -25,7 +25,7 @@ def test_write_record_creates_candidate_markdown_with_front_matter(repo: Path) -
     )
 
     assert result["ok"] is True
-    assert result["path"].startswith("memory-bank/candidates/")
+    assert result["path"].startswith("memory-bank/archive/record-packs/journal/")
     assert result["path"].endswith(".md")
 
     record_path = repo / result["path"]
@@ -70,7 +70,7 @@ def test_write_record_accepts_schema_v2_phase3_metadata(repo: Path) -> None:
     )
 
     assert result["ok"] is True
-    assert result["path"].startswith("memory-bank/people/")
+    assert result["path"].startswith("memory-bank/archive/record-packs/journal/")
 
     metadata, body = parse_record_markdown((repo / result["path"]).read_text(encoding="utf-8"))
     assert metadata["schema_version"] == "2.0"
@@ -182,7 +182,7 @@ def test_legacy_write_record_tool_is_cli_only(repo: Path) -> None:
     assert rejected["ok"] is False
     assert rejected["error"] == "unknown_tool"
     assert result["ok"] is True
-    assert result["path"].startswith("memory-bank/people/")
+    assert result["path"].startswith("memory-bank/archive/record-packs/journal/")
     assert (repo / result["path"]).is_file()
 
 
@@ -218,7 +218,7 @@ def test_record_packing_coalesces_small_records_by_date(repo: Path) -> None:
     assert first["packed"] is True
     assert second["packed"] is True
     assert first["path"] == second["path"]
-    assert "/packs/" in first["path"]
+    assert "/journal/" in first["path"]
 
     packed_text = (repo / first["path"]).read_text(encoding="utf-8")
     assert first["id"] in packed_text
@@ -231,6 +231,7 @@ def test_record_packing_coalesces_small_records_by_date(repo: Path) -> None:
 
 def test_shared_record_packing_partitions_by_task_to_reduce_merge_hotspots(repo: Path) -> None:
     config = load_config(repo)
+    config = config.__class__(**{**config.__dict__, "record_packing_layout": "legacy"})
     config = config.__class__(
         **{
             **config.__dict__,
@@ -281,6 +282,7 @@ def test_shared_record_packing_partitions_by_task_to_reduce_merge_hotspots(repo:
 
 def test_personal_record_packing_partitions_by_task_without_per_run_fragments(repo: Path) -> None:
     config = load_config(repo)
+    config = config.__class__(**{**config.__dict__, "record_packing_layout": "legacy"})
     config = config.__class__(
         **{
             **config.__dict__,
@@ -331,6 +333,7 @@ def test_personal_record_packing_partitions_by_task_without_per_run_fragments(re
 
 def test_personal_record_packing_uses_branch_fallback_and_sanitized_task_bucket(repo: Path) -> None:
     config = load_config(repo)
+    config = config.__class__(**{**config.__dict__, "record_packing_layout": "legacy"})
     config = config.__class__(
         **{
             **config.__dict__,

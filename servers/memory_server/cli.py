@@ -36,6 +36,7 @@ from .memory_key_documents import KEY_DOCUMENT_KEYS, rebuild_key_documents
 from .memory_key_document_jobs import drain_key_document_rebuild_jobs, read_key_document_rebuild_jobs
 from .memory_lineage import memory_link_artifact, memory_list_conflicts, memory_trace_lineage
 from .memory_maintenance import memory_delete_record, memory_health_check, memory_migrate_records
+from .memory_result import error_result
 from .memory_record_index import memory_rebuild_index
 from .memory_record_packing import compact_old_record_packs, pack_existing_records
 from .memory_reflection_jobs import (
@@ -101,6 +102,26 @@ def _cmd_config_diagnose(args: argparse.Namespace) -> dict[str, Any]:
 
 def _cmd_rebuild_index(args: argparse.Namespace) -> dict[str, Any]:
     return memory_rebuild_index(_load(args))
+
+
+def _cmd_prepare(args: argparse.Namespace) -> dict[str, Any]:
+    from .memory_prepare import prepare_memory
+    return prepare_memory(_load(args))
+
+
+def _cmd_coalesce_archives(args: argparse.Namespace) -> dict[str, Any]:
+    from .memory_pack_migration import plan_coalescence, apply_coalescence
+    config = _load(args)
+    if args.plan_id:
+        if not args.apply and not args.rollback:
+            return error_result("invalid_input", "plan-id requires --apply or --rollback")
+        return apply_coalescence(config, args.plan_id, rollback=args.rollback, retire_legacy_paths=args.retire_legacy_paths)
+    if args.rollback:
+        return error_result("invalid_input", "rollback requires --plan-id")
+    plan = plan_coalescence(config, older_than_days=args.older_than_days, max_bytes=args.max_bytes)
+    if args.apply and plan.get("ok"):
+        return apply_coalescence(config, plan["plan_id"], retire_legacy_paths=args.retire_legacy_paths)
+    return plan
 
 
 def _cmd_scale_baseline(args: argparse.Namespace) -> dict[str, Any]:
@@ -502,6 +523,16 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("health", help="Run memory_health_check.").set_defaults(func=_cmd_health)
     sub.add_parser("config-diagnose", help="Report effective Memory MCP configuration sources.").set_defaults(func=_cmd_config_diagnose)
     sub.add_parser("rebuild-index", help="Rebuild SQLite FTS index.").set_defaults(func=_cmd_rebuild_index)
+    sub.add_parser("prepare", help="Prepare local SQLite and Git integration without LLM.").set_defaults(func=_cmd_prepare)
+    p_coalesce = sub.add_parser("coalesce-archives", help="Plan cold archive coalescence; explicit apply/rollback.")
+    p_coalesce.add_argument("--older-than-days", type=int, default=7)
+    p_coalesce.add_argument("--max-bytes", type=int, default=524288)
+    p_coalesce.add_argument("--plan-id")
+    p_coalesce.add_argument("--retire-legacy-paths", action="store_true", help="Confirm all readers support migration manifests before removing original paths.")
+    p_coalesce_action = p_coalesce.add_mutually_exclusive_group()
+    p_coalesce_action.add_argument("--apply", action="store_true")
+    p_coalesce_action.add_argument("--rollback", action="store_true")
+    p_coalesce.set_defaults(func=_cmd_coalesce_archives)
     sub.add_parser("scale-baseline", help="Capture .ai-memory/baseline.json snapshot.").set_defaults(func=_cmd_scale_baseline)
     sub.add_parser("auto-maintenance", help="Run startup auto-maintenance if due.").set_defaults(func=_cmd_auto_maintenance)
 

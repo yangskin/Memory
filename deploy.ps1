@@ -424,5 +424,10 @@ if (-not $SkipDownloadModel -and ($DownloadModel -or $envWantDownload)) {
 }
 
 Write-Host ""
+# 本地派生数据库在部署时准备，首次任务不承担全量初始化。
+. (Join-Path $memoryRoot "scripts\_Resolve-MemoryRoots.ps1")
+$storageRoots = Resolve-MemoryRoots -MemoryRoot $memoryRoot -RepoRoot $RepoRoot
+& $venvPython -X utf8 (Join-Path $memoryRoot "scripts\prepare_memory.py") --root $storageRoots.RepoRoot
+if ($LASTEXITCODE -ne 0) { throw "Memory storage preparation failed; deployment is not ready." }
 Write-Host "Python: $venvPython"
 Write-Host "Done."

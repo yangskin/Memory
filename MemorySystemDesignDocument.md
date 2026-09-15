@@ -69,7 +69,7 @@ Memory MCP 的默认产品定位是 agent-first：用户不应记住何时手动
 
 - `.ai-memory/task-contexts.json` 保存 token、session binding、task registry，是本机可重建运行态索引，不进 Git。
 - `.ai-context/current-task/{user}/{context_token}.md` 保存当前任务热摘要，按 token 分文件，不再使用全局 `.ai-context/current-task.md` 表示“当前任务”。
-- 结构化记忆继续写入 `memory-bank/people/{user}/` / `shared/`，并通过 `task_id` 与 `branch` 参与检索过滤。
+- 结构化记忆默认写入用户/范围/周/本地副本日志，通过逐记录 `author` / `scope` / `task_id` / `branch` 参与可见性和检索过滤；旧 `people/{user}/` / `shared/` 目录继续可读。
 - 后续若需要团队级任务清单，可再把稳定 task manifest 派生到 `memory-bank/tasks/{task_id}/`；当前阶段先保证同一 MCP 实例内多 agent 不串任务。
 
 验收门：
@@ -129,7 +129,7 @@ Memory MCP 的默认产品定位是 agent-first：用户不应记住何时手动
 1. **个人工作视图**：`activeContext` target 写入 `memory-bank/activeContext/{user}.md`，严格只选择当前用户 authored records 与该用户 activeContext archive。
 2. **团队工作视图**：新增 `teamContext` target，写入 `memory-bank/teamContext.md`，只选择共享/发布记录，承载跨人焦点、共享决策与协调事项。
 3. **系统沉淀过滤**：`progress` / `techContext` / `systemPatterns` 与 `teamContext` 一样，只从共享/发布记录生成；个人 scratch、session 观察、user_private distilled summary 不进入团队文档。
-4. **自动团队提升**：个人记录默认停留在 `people/{user}`；当写入是高价值团队事实时，系统可额外写一条派生 `project_shared` 摘要。该摘要带 `provenance=auto_team_settlement`、`derived_from_record_ids`、`author`，可审计、可重建、可替换。
+4. **自动团队提升**：个人记录默认保留个人 scope；当写入是高价值团队事实时，系统可额外写一条派生 `project_shared` 摘要。该摘要带 `provenance=auto_team_settlement`、`derived_from_record_ids`、`author`，可审计、可重建、可替换。
 5. **硬跳过规则**：`session` / `user_private` / `archive` / candidate / distilled / 含明显密钥信号的记录不会自动提升；需要共享完整 raw 时仍应显式写共享 scope 或走 publish。
 6. **兼容入口**：历史 `memory-bank/activeContext.md` 读写仍通过 user-scoped policy 重定向到 `activeContext/{user}.md`，但系统重建不再覆盖顶层 `activeContext.md`。
 
@@ -155,8 +155,8 @@ v0.12 MCP 表面固定为：
 | 必填字段 | record/observation 需要 `content_markdown` 或 `content` |
 | 默认字段 | `record_kind=note`、`scope=personal`、`status=raw` |
 | 上下文 | 接受 `context_token`，服务端注入 `user` / `author` / `task_id` / `branch` |
-| 落盘路径 | `scope=personal` 默认写 `memory-bank/people/{user}/mem_*.md` |
-| 共享记忆 | 仅显式 `scope=project_shared|shared|org_shared` 时写 `memory-bank/shared/` |
+| 落盘路径 | 默认写 `memory-bank/archive/record-packs/journal/<scope>-<author_hash>/<ISOweek>/<replica>-NNN.md`，逐记录保存完整身份和范围 |
+| 共享记忆 | 共享可见性由逐记录 `scope=project_shared\|shared\|org_shared` 等现有规则决定，不从物理目录名推断 |
 | 失败模式 | user 未配置、token 无效、schema 非法、写入冲突、磁盘错误均结构化返回，不回退到文件写入 |
 
 以下能力不再作为 MCP 工具暴露，统一迁到 CLI 或内部 API：
@@ -176,7 +176,7 @@ v0.12 MCP 表面固定为：
 | 项 | 验收标准 |
 |---|---|
 | A. 默认工具安全 | 默认 MCP `list_tools` 只出现通用记忆工具与专用 Board 工具，管理能力仍为 CLI-only |
-| B. 单写入入口 | 调 `memory_write(content_markdown=...)` 必须写出 `memory-bank/people/{user}/mem_*.md` 或显式 shared record |
+| B. 单写入入口 | 调 `memory_write(content_markdown=...)` 必须写出带稳定 ID 的个人记录，显式共享或派生提升仍保留来源关系 |
 | C. 无路径逃逸 | MCP `memory_write` schema 不接受 `path` / `mode`；`operation=file` 返回 `admin_cli_required` |
 | D. 多 agent 稳定 | 交错 agent 携带各自 `context_token` 写入时，author/task_id 不串线 |
 | E. 指令一致 | README、Copilot instructions、AGENTS 不再引用 `memory_context.begin_task` 或直接写 `activeContext.md` |
@@ -224,7 +224,10 @@ memory-bank/
   shared/                       # 已发布系统记忆
   people/{user}/                # 个人记忆
   candidates/                   # 系统/skill 候选池
-  archive/                      # 降级与归档
+  archive/                      # 历史归档与兼容存储容器
+    record-packs/journal/        # 活跃周日志；旧维护器跳过，状态由记录元数据决定
+    record-packs/coalesced/      # 显式历史归并目标
+    pack-migrations/            # 旧路径到记录 ID/新包的迁移映射
   compiled/
     runtime/                    # system-digest / people/{user}-digest / task / branch
     publish/                    # *-candidates.jsonl
@@ -235,7 +238,7 @@ memory-bank/
 
 .ai-memory/                     # 不进 Git
   config.json                   # 配置（完全可选）
-  search.db                     # SQLite FTS 派生索引
+  search.db                     # SQLite 完整正文/元数据投影与 FTS 派生索引
   events.jsonl                  # 事件日志
   compile-cache/  temp/  backups/  locks/
   ue_facets.json                # P1-2: UE facet 自动推断词典
@@ -247,7 +250,7 @@ memory-bank/
 
 - **传输**：JSON（MCP 调用）
 - **正文**：Markdown
-- **落盘**：Markdown + YAML Front Matter
+- **落盘**：Markdown + YAML Front Matter；默认用户/范围/周/克隆副本日志，省略已知空可选字段，仍兼容旧 v1 pack 和 v1/v2 记录
 - **派生索引**：SQLite FTS5（CJK bigram/trigram 兜底，无新增依赖）
 - **事件流**：JSONL
 
@@ -256,6 +259,8 @@ memory-bank/
 记录类型：`note` / `event` / `claim_candidate` / `rule_candidate` / `handoff` / `skill_candidate` / `validation_result` / `system_rule` / `archive_record` / `observation` / `artifact_ref` / `incident` / `decision` / `procedure` / `snapshot_daily|weekly|monthly`。
 
 标签为受控词表，只做路由不做真相判定。
+
+当前部署预建、严格增量索引、周日志副本、记录级 Git 合并及旧客户端退役门禁的唯一实施与验收说明见 [存储升级方案](MemoryStorageUpgradePlan.md)。不自动删除旧路径；新端必须同时检查传统索引和完整投影水位，以兼容仍在写入的上一版客户端。自动 Board/共享上下文注入使用带明确新鲜度的缓存与后台刷新，主动读取工具仍可查询远端；咨询信息不能阻塞本地任务读取，也不能替代 Task Graph 权威判定。
 
 ## 7. 写入模型
 
@@ -292,7 +297,7 @@ memory-bank/
 - **真源**：Markdown + JSONL + Front Matter；**派生索引**：SQLite FTS（CJK bigram/trigram）
 - **流程**：解析 Front Matter → 元数据/tag 过滤 → FTS 全文 → 重排
 - **预算策略**：入口必须接受 `max_tokens` / `max_chars` / `max_items`；按预算逐条装配（不是简单 `top_k`）；返回必须含 `budget_report` / `dropped_candidates` / `evidence_refs`
-- **预筛优化**（v0.5.11）：索引健康时先用 SQLite metadata/facet 缩小候选集，再回 Markdown 真源做确定性排序；索引异常时无损回退全量扫描
+- **完整增量投影**：严格源内容发现 → 只解析变化文件 → 在同一 SQLite 事务中更新记录/FTS/来源 → 权限与 facet 过滤后读取完整记录，确定性排序。部署预建索引，正常检索不重读候选 Markdown；源损坏/同 ID 内容冲突明确报错。迁移与验收合同见 [存储升级方案](MemoryStorageUpgradePlan.md)。
 - **回退**：标签缺失时仍可按 `scope` / `author` / 时间范围 / 关键词 / 全文检索兜底
 
 ## 10. 验证与发布治理（兼容层，已 attic）
@@ -379,7 +384,7 @@ CLI 负责所有高级/同步/维护能力：
 
 ## 13. Git 策略
 
-- **消费项目可进 Git**：`memory-bank/shared/` / `memory-bank/people/{user}/` / `memory-bank/candidates/` / 经审查的 `.ai-memory/config.json`
+- **消费项目可进 Git**：经过审查的 `memory-bank` 原始记录与 pack（包括周日志/历史迁移映射）及 `.ai-memory/config.json`；排除 compiled、临时内容和任何秘密
 - **消费项目不进 Git**：`.ai-context/` / `.ai-memory/` 中除配置外的运行状态（含 search.db / events.jsonl / backups / temp / compile-cache / locks / *.api_key / llm_config.local.json）
 - **Memory MCP 源码仓库不进 Git**：整个 `.ai-memory/`、`.ai-context/`、本机配置以及任何消费项目的名称、路径、资产、记忆和测试数据；由 `scripts/check_public_tree.py` 与 CI 阻断回归。
 

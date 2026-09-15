@@ -29,6 +29,9 @@ try {
 
     $env:PYTHONPATH = $mcpRoot
     & $venvPython -m servers.memory_server --help | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Memory MCP import check failed." }
+    & $venvPython -X utf8 (Join-Path $mcpRoot "scripts\prepare_memory.py") --root $RepoRoot
+    if ($LASTEXITCODE -ne 0) { throw "Memory storage preparation failed; deployment is not ready." }
     Write-Host "Memory MCP deploy completed."
     Write-Host "Repo root  : $RepoRoot"
     Write-Host "Plugin root: $mcpRoot"

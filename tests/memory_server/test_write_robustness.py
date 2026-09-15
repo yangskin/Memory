@@ -97,7 +97,7 @@ def test_atomic_write_strict_mode_propagates_data_fsync_error(tmp_path: Path) ->
     # Original content is preserved (the rename never ran).
     assert target.read_text(encoding="utf-8") == "original\n"
     # No leftover tmp files.
-    leftovers = [p for p in tmp_path.iterdir() if p.name.startswith(".out.md.")]
+    leftovers = [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
     assert leftovers == []
 
 
@@ -125,7 +125,7 @@ def test_memory_write_tmp_lives_next_to_target(workspace: Path) -> None:
 
     def spy_open(path: str, flags: int, *args, **kwargs):
         # Record any tmp file created with O_EXCL inside _atomic_write_text.
-        if (flags & os.O_EXCL) and Path(path).name.startswith(".notes.md."):
+        if (flags & os.O_EXCL) and Path(path).name.endswith(".tmp"):
             seen_tmp.append(Path(path))
         return real_open(path, flags, *args, **kwargs)
 

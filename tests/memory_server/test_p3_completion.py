@@ -504,11 +504,11 @@ def test_retrieve_context_uses_record_index_prefilter_for_metadata_and_facets(re
     assert result["ok"] is True
     assert result["stats"]["prefilter"]["enabled"] is True
     assert result["stats"]["prefilter"]["candidate_paths"] == 1
-    assert result["stats"]["scanned_files"] == 1
+    assert result["stats"]["scanned_files"] == 0
     assert [item["id"] for item in result["selected_records"]] == [target["id"]]
 
 
-def test_retrieve_context_falls_back_when_record_index_is_missing(repo: Path) -> None:
+def test_retrieve_context_prepares_record_index_when_missing(repo: Path, monkeypatch) -> None:
     config = load_config(repo)
     target = memory_write_record(
         config,
@@ -523,6 +523,9 @@ def test_retrieve_context_falls_back_when_record_index_is_missing(repo: Path) ->
     )
     assert target["ok"] is True
 
+    from servers.memory_server import memory_record_index as index
+    monkeypatch.setattr(index, "_db_path", lambda _: repo / ".ai-memory/missing-index.db")
+    assert not index._db_path(config).exists()
     result = memory_retrieve_context(
         config,
         query="fallback procedure",
@@ -534,6 +537,7 @@ def test_retrieve_context_falls_back_when_record_index_is_missing(repo: Path) ->
     )
 
     assert result["ok"] is True
-    assert result["stats"]["prefilter"]["enabled"] is False
-    assert result["stats"]["prefilter"]["fallback_reason"] == "index_missing"
+    assert result["stats"]["prefilter"]["enabled"] is True
+    assert result["stats"]["scanned_files"] == 0
+    assert "fallback_reason" not in result["stats"]["prefilter"]
     assert target["id"] in {item["id"] for item in result["selected_records"]}

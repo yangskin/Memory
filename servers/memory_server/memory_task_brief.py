@@ -6,12 +6,14 @@ import ast
 import hashlib
 import json
 import re
+import time
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from .memory_config import MemoryConfig
-from .memory_llm import LLMRequestError, extract_text
+from .memory_llm import LLMClient, LLMRequestError, extract_text
 from .memory_llm_pipeline import SqliteDistillCache
 from .memory_llm_runner import run_llm_capability
 from .memory_record_index import record_corpus_watermark
@@ -463,6 +465,7 @@ def _visible_evidence(
         reverse=True,
     )
     return records[:limit], {
+        "corpus_watermark": ((relevant if relevant.get("ok") else latest).get("stats") or {}).get("prefilter", {}).get("corpus_watermark"),
         "retrieval_failed": 0 if relevant.get("ok") else 1,
         "corrupt_excluded": corrupt,
         "secret_excluded": secrets,
@@ -1447,6 +1450,7 @@ def build_task_brief(
 ) -> dict[str, Any]:
     """生成任务意图与权威信息地图；任何增强失败都不得破坏基础读能力。"""
 
+    started_at = time.monotonic()
     del active_context  # v3 明确禁止把 Active Context 原文复制进简报。
     mode = brief_mode if brief_mode in _MODE_DEFAULTS else "standard"
     defaults = _MODE_DEFAULTS[mode]
@@ -1649,13 +1653,33 @@ def build_task_brief(
 
     llm_outcome = None
     if use_llm:
-        def call_llm(client: Any, profile: Any) -> dict[str, Any]:
-            response = client.chat(_llm_prompt(llm_evidence), max_tokens=profile.max_tokens, thinking=False)
+        from .memory_brief_deadline import within_budget
+        options = (config.llm_defaults or {}).get("capabilities", {}).get("generate_task_brief", {})
+        raw_budget = options.get("interactive_budget_seconds", 8.0) if isinstance(options, dict) else 8.0
+        try:
+            budget_seconds = float(raw_budget)
+            if not 0 < budget_seconds <= 120:
+                raise ValueError("invalid budget")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("generate_task_brief.interactive_budget_seconds must be in (0, 120]") from exc
+        deadline = started_at + budget_seconds
+
+        def generate(client: Any, profile: Any) -> dict[str, Any]:
+            # 该客户端为本次增强独享，交互预算内不做隐式多次网络重试。
+            if isinstance(client, LLMClient):
+                client.config = replace(client.config, max_retries=0)
+            def chat(messages):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise LLMRequestError("task brief enhancement timeout")
+                return client.chat(messages, max_tokens=profile.max_tokens, thinking=False,
+                                   timeout=min(remaining, profile.timeout or remaining))
+            response = chat(_llm_prompt(llm_evidence))
             raw_text = extract_text(response)
             try:
                 parsed = _parse_llm_brief_response(raw_text)
             except LLMRequestError:
-                repair = client.chat(
+                repair = chat(
                     [
                         {
                             "role": "system",
@@ -1663,11 +1687,12 @@ def build_task_brief(
                         },
                         {"role": "user", "content": _clean(raw_text, limit=4000)},
                     ],
-                    max_tokens=profile.max_tokens,
-                    thinking=False,
                 )
                 parsed = _parse_llm_brief_response(extract_text(repair))
             return _validated_llm_intent(parsed, allowed_ids)
+
+        def call_llm(client: Any, profile: Any) -> dict[str, Any]:
+            return within_budget(lambda: generate(client, profile), deadline - time.monotonic())
 
         llm_outcome = run_llm_capability(
             config,
@@ -1766,7 +1791,8 @@ def build_task_brief(
         generation["error"] = _plain(llm_outcome.error, limit=300)
     if llm_outcome and llm_outcome.meta:
         generation["meta"] = llm_outcome.meta
-    source_watermark = _safe_watermark(config)
+    # 使用本次取证的水位，不在等待 LLM 后重复扫描或冒用更新后的水位。
+    source_watermark = evidence_stats.get("corpus_watermark") or _safe_watermark(config)
     result = ok_result(
         "task brief generated",
         operation="task_brief",

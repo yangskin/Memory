@@ -134,7 +134,8 @@ def _atomic_write_text(target: Path, content: str, *, fsync_strict: bool = False
             the rename / write itself can fail.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = target.parent / f".{target.name}.{uuid.uuid4().hex[:8]}.tmp"
+    # 临时文件名不重复目标长名称，避免合法 Git 路径因附加后缀越过 Windows 路径上限。
+    tmp_path = target.parent / f".{uuid.uuid4().hex}.tmp"
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
     if hasattr(os, "O_BINARY"):
         flags |= os.O_BINARY  # Windows: avoid CR/LF translation

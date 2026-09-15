@@ -119,6 +119,7 @@ DEFAULT_CONFIG_CONTENT: dict[str, Any] = {
         "archive_after_days": 90,
     },
     "record_packing": {
+        "layout": "weekly",
         "max_record_chars": 2_000,
         "max_pack_chars": 64_000,
         "archive_after_days": 90,
@@ -329,6 +330,7 @@ class MemoryConfig:
     llm_defaults: dict[str, Any] | None = None
     shared_memory: Any = None
     record_packing_max_record_chars: int = 2_000
+    record_packing_layout: str = "weekly"
     record_packing_max_pack_chars: int = 64_000
     record_packing_archive_after_days: int = 90
     record_packing_archive_pack_max_chars: int = 1_048_576
@@ -604,6 +606,9 @@ def _parse_record_packing(raw: Any) -> dict[str, Any]:
     defaults = DEFAULT_CONFIG_CONTENT["record_packing"]
     if not isinstance(raw, dict):
         raw = {}
+    layout = raw.get("layout", "weekly")
+    if layout not in {"weekly", "legacy"}:
+        raise ValueError("record_packing.layout must be weekly or legacy")
 
     def _positive_int(name: str) -> int:
         value = raw.get(name, defaults[name])
@@ -615,6 +620,7 @@ def _parse_record_packing(raw: Any) -> dict[str, Any]:
     max_pack_chars = max(_positive_int("max_pack_chars"), max_record_chars * 2)
     archive_pack_max_chars = max(_positive_int("archive_pack_max_chars"), max_pack_chars)
     return {
+        "record_packing_layout": layout,
         "record_packing_max_record_chars": max_record_chars,
         "record_packing_max_pack_chars": max_pack_chars,
         "record_packing_archive_after_days": _positive_int("archive_after_days"),
@@ -1009,6 +1015,14 @@ def _parse_llm_defaults(raw: Any) -> dict[str, Any] | None:
             for inner_key in ("enabled", "timeout", "max_tokens"):
                 if inner_key in cap_overrides and cap_overrides[inner_key] is not None:
                     inner[inner_key] = cap_overrides[inner_key]
+            if cap_name == "generate_task_brief" and "interactive_budget_seconds" in cap_overrides:
+                try:
+                    value = float(cap_overrides["interactive_budget_seconds"])
+                    if isinstance(cap_overrides["interactive_budget_seconds"], bool) or not 0 < value <= 120:
+                        raise ValueError("invalid interactive budget")
+                except (TypeError, ValueError) as exc:
+                    raise MemoryConfigError("generate_task_brief.interactive_budget_seconds must be in (0, 120]") from exc
+                inner["interactive_budget_seconds"] = value
             if inner:
                 cleaned_caps[str(cap_name).strip()] = inner
         if cleaned_caps:

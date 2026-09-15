@@ -580,17 +580,23 @@ def _collect_records(
         prefilter_stats = {
             "enabled": True,
             "candidate_paths": len(include_rel_paths),
+            "corpus_watermark": prefilter.get("corpus_watermark"),
             **(prefilter.get("stats") or {}),
         }
     else:
-        prefilter_stats = {
-            "enabled": False,
-            "fallback_reason": prefilter.get("error"),
-            "message": prefilter.get("message"),
-        }
+        # 无法证明索引完整/新鲜时显式失败，避免缺失记录或重复 ID 被隐藏。
+        return prefilter
 
     try:
-        records, scan_stats = _iter_records(config, include_rel_paths=include_rel_paths)
+        if prefilter.get("ok") and "records" in prefilter:
+            from .memory_corpus import CompilableRecord, first_heading
+            records = [CompilableRecord(path=item["path"], metadata=item["metadata"],
+                                        body=item["body"].strip(), title=first_heading(item["body"]))
+                       for item in prefilter["records"]]
+            scan_stats = {"scanned_files": 0, "skipped_non_records": 0,
+                          "skipped_read_errors": 0, "indexed_records": len(records)}
+        else:
+            records, scan_stats = _iter_records(config, include_rel_paths=include_rel_paths)
     except (PathSecurityError, FileNotFoundError) as exc:
         return error_result("path_error", str(exc))
 

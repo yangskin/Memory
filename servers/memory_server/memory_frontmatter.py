@@ -17,6 +17,35 @@ _PACK_ENTRY_START_RE = re.compile(r"^<!-- memory-record-pack-entry id=([^ >]+) -
 _PACK_ENTRY_END_RE = re.compile(r"^<!-- /memory-record-pack-entry id=([^ >]+) -->$")
 PACK_HEADER = "<!-- memory-record-pack version=1 -->"
 
+# 仅这些已定义的可选字段可在完整记录中省略；未知字段及显式更新指令不归一。
+OPTIONAL_RECORD_FIELDS = frozenset({
+    "tags", "confidence", "source_refs", "task_id", "branch", "validated_by",
+    "last_used_at", "classifier_model", "classifier_prompt_version", "occurred_at",
+    "valid_from", "valid_to", "memory_tier", "cognitive_level", "derived_from_record_ids",
+    "derived_from_snapshot_ids", "derived_from_revision_ids", "supersedes", "conflicts_with",
+    "related_artifact_ids", "importance_score", "asset_paths", "map_names", "plugin_names",
+    "module_names", "class_names", "blueprint_paths", "system_area", "provenance",
+    "immutable", "authoritative", "replaceable", "model", "distilled_at",
+})
+
+
+def sparse_record_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """压缩完整记录表示，不应用于 patch/更新指令；false 和 0 必须保留。"""
+    return {key: value for key, value in metadata.items()
+            if key not in OPTIONAL_RECORD_FIELDS or not (value is None or value == [] or value == "")}
+
+
+def canonical_record(metadata: dict[str, Any], body: str) -> tuple[dict[str, Any], str]:
+    """合并/迁移比较逻辑内容，兼容旧全字段与新稀疏表示。"""
+    normalized = sparse_record_metadata(metadata)
+    for key in ("immutable", "authoritative", "replaceable"):
+        if isinstance(normalized.get(key), bool):
+            normalized[key] = "true" if normalized[key] else "false"
+    # 标签是集合，来源与正文的顺序则保留。
+    if isinstance(normalized.get("tags"), list):
+        normalized["tags"] = sorted(set(normalized["tags"]))
+    return normalized, body.strip()
+
 
 def _parse_scalar(raw_value: str) -> Any:
     value = raw_value.strip()
@@ -204,7 +233,9 @@ def dump_front_matter(metadata: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def render_record_markdown(metadata: dict[str, Any], body: str) -> str:
+def render_record_markdown(metadata: dict[str, Any], body: str, *, sparse: bool = False) -> str:
+    if sparse:
+        metadata = sparse_record_metadata(metadata)
     return f"---\n{dump_front_matter(metadata)}\n---\n\n{body.strip()}\n"
 
 

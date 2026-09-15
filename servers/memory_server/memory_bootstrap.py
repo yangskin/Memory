@@ -140,6 +140,13 @@ def health_green_light(repo_root: Path) -> dict[str, Any]:
     else:
         checks.append({"step": "validate_user", **user_check})
 
+    if user_check is None:
+        from .memory_prepare import prepare_memory
+        try:
+            checks.append({"step": "prepare_storage", **prepare_memory(config)})
+        except Exception as exc:
+            checks.append({"step": "prepare_storage", "ok": False, "error": "prepare_failed", "message": str(exc)})
+
     return {
         "ok": all(c.get("ok") is True for c in checks),
         "checks": checks,

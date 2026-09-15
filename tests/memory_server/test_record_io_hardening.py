@@ -55,7 +55,7 @@ def test_atomic_write_text_success(tmp_path):
     _atomic_write_text(target, "hello\n")
     assert target.read_text(encoding="utf-8") == "hello\n"
     # No leftover tmp files.
-    leftovers = list(tmp_path.glob(".out.txt.*.tmp"))
+    leftovers = list(tmp_path.glob(".*.tmp"))
     assert leftovers == []
 
 
@@ -82,7 +82,7 @@ def test_atomic_write_uses_oexcl_on_tmp(tmp_path, monkeypatch):
 
     monkeypatch.setattr(uuid, "uuid4", lambda: _FixedHexUUID())
     # Pre-create the tmp file the helper would try to use.
-    blocking = target.parent / f".{target.name}.{fixed_hex}.tmp"
+    blocking = target.parent / f".{_FixedHexUUID.hex}.tmp"
     blocking.write_text("squatting", encoding="utf-8")
 
     with pytest.raises(OSError):
@@ -158,5 +158,5 @@ def test_write_same_record_round_trip(tmp_path):
     assert out["ok"] is True
     assert "updated body" in abs_path.read_text(encoding="utf-8")
     # No leftover tmp files in record dir.
-    leftovers = list(abs_path.parent.glob(f".{abs_path.name}.*.tmp"))
+    leftovers = list(abs_path.parent.glob(".*.tmp"))
     assert leftovers == []

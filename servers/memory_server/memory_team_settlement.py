@@ -329,8 +329,7 @@ def maybe_auto_settle_team_record(
 
     tags = _clean_tags(decision.get("tags")) or _clean_tags(args.get("tags"))
     tags = [tag for tag in tags if tag in set(config.tag_allowed_tags or [])]
-    if "mcp" in (config.tag_allowed_tags or []) and "mcp" not in tags:
-        tags.append("mcp")
+    # 来源由 provenance 表达，不能把所有派生摘要误标为 MCP 主题。
 
     promoted = memory_write_record(
         config,

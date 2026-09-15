@@ -7,13 +7,14 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from contextlib import nullcontext
 
 from .memory_config import MemoryConfig
 from .memory_paths import PathManager, PathSecurityError
 from .memory_record_io import _atomic_write_text, safe_read_text
 from .memory_locks import file_lock
 from .memory_request_id import content_sha
-from .memory_frontmatter import parse_record_pack_entries
+from .memory_frontmatter import parse_record_pack_entries, canonical_record
 from .memory_identity import canonical_identity
 from .memory_result import error_result, ok_result
 from .memory_task_context import get_task_ids_for_user
@@ -72,10 +73,7 @@ def _record_corpus_snapshot(config: MemoryConfig) -> dict[str, str]:
     for abs_path, rel_path in manager.iter_files(scopes=["memory-bank"], include_paths=["memory-bank/**/*.md"]):
         if not _is_record_source_path(rel_path):
             continue
-        try:
-            raw = abs_path.read_bytes()
-        except OSError:
-            continue
+        raw = abs_path.read_bytes()
         # mtime+size 会漏掉保留时间戳且等长的外部改写。索引是可重建派生物，
         # 这里用原始字节摘要换取确定的新鲜度判断。
         snapshot[rel_path] = f"{len(raw)}:{hashlib.sha256(raw).hexdigest()}"
@@ -248,6 +246,11 @@ def _reset_corrupted_index(config: MemoryConfig) -> None:
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
+    # 完整逻辑记录投影保留每个物理来源，重复来源删除后仍能选出剩余真源。
+    conn.execute("""CREATE TABLE IF NOT EXISTS memory_record_payloads (
+        path TEXT NOT NULL, id TEXT NOT NULL, metadata_json TEXT NOT NULL,
+        body TEXT NOT NULL, PRIMARY KEY(path, id))""")
+    conn.execute("CREATE INDEX IF NOT EXISTS payload_record_id ON memory_record_payloads(id)")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS memory_records (
@@ -458,6 +461,19 @@ def _metadata_search_values(metadata: dict[str, Any]) -> list[str]:
     return values
 
 
+def _parse_index_source(text: str, rel_path: str) -> list[tuple[dict[str, Any], str]]:
+    # 受管理的 pack 必须完整；普通 Markdown 文档可以没有记录 front matter。
+    if "memory-record-pack" in text or "/packs/" in rel_path or "/record-packs/" in rel_path:
+        from .memory_git_merge import read_pack
+        return [(item.metadata, item.body) for item in read_pack(text).values()]
+    try:
+        return parse_record_pack_entries(text)
+    except ValueError:
+        if text.startswith("---\n"):
+            raise ValueError(f"invalid record source: {rel_path}")
+        return []
+
+
 def _iter_record_files(config: MemoryConfig) -> tuple[list[tuple[str, dict[str, Any], str]], dict[str, int]]:
     manager = PathManager(config)
     records: list[tuple[str, dict[str, Any], str]] = []
@@ -474,10 +490,9 @@ def _iter_record_files(config: MemoryConfig) -> tuple[list[tuple[str, dict[str, 
             continue
         try:
             text = safe_read_text(abs_path, errors="strict")
-            parsed_entries = parse_record_pack_entries(text)
-        except (OSError, UnicodeError, ValueError):
-            stats["skipped_read_errors"] += 1
-            continue
+            parsed_entries = _parse_index_source(text, rel_path)
+        except (OSError, UnicodeError):
+            raise
         added = 0
         for metadata, body in parsed_entries:
             if not metadata.get("id") or not metadata.get("record_kind"):
@@ -521,7 +536,7 @@ def _deduplicate_record_ids(
 
         paths = [row[0] for row in rows]
         equivalent = all(
-            row[1] == canonical[1] and row[2] == canonical[2]
+            canonical_record(row[1], row[2]) == canonical_record(canonical[1], canonical[2])
             for row in rows[1:]
         )
         detail = {
@@ -540,6 +555,11 @@ def _deduplicate_record_ids(
 
 
 def memory_rebuild_index(config: MemoryConfig, *, _attempt: int = 0) -> dict[str, Any]:
+    with file_lock(config.repo_root, _db_path(config)):
+        return _rebuild_index_locked(config, _attempt=_attempt)
+
+
+def _rebuild_index_locked(config: MemoryConfig, *, _attempt: int = 0) -> dict[str, Any]:
     """Rebuild the SQLite FTS index from record Markdown files."""
     try:
         source_snapshot = _record_corpus_snapshot(config)
@@ -548,7 +568,10 @@ def memory_rebuild_index(config: MemoryConfig, *, _attempt: int = 0) -> dict[str
         return error_result("path_not_allowed", str(exc))
     except FileNotFoundError as exc:
         return error_result("not_found", str(exc))
+    except (OSError, ValueError) as exc:
+        return error_result("invalid_record_source", str(exc))
 
+    source_records = records
     records, exact_duplicates, conflicts = _deduplicate_record_ids(records)
     stats["duplicate_record_ids"] = len(exact_duplicates)
     stats["deduplicated_records"] = sum(
@@ -575,6 +598,12 @@ def memory_rebuild_index(config: MemoryConfig, *, _attempt: int = 0) -> dict[str
             conn.execute("DELETE FROM memory_records")
             conn.execute("DELETE FROM memory_records_fts")
             conn.execute("DELETE FROM memory_index_sources")
+            conn.execute("DELETE FROM memory_record_payloads")
+            conn.executemany(
+                "INSERT OR REPLACE INTO memory_record_payloads VALUES (?, ?, ?, ?)",
+                [(path, str(meta["id"]), json.dumps(meta, ensure_ascii=False), body)
+                 for path, meta, body in source_records],
+            )
             for rel_path, metadata, body in records:
                 tags = [str(tag) for tag in metadata.get("tags", []) if str(tag)]
                 title = _first_heading(body)
@@ -641,6 +670,8 @@ def memory_rebuild_index(config: MemoryConfig, *, _attempt: int = 0) -> dict[str
             )
             watermark = _snapshot_watermark(source_snapshot)
             _set_meta(conn, "corpus_watermark", watermark)
+            _set_meta(conn, "projection_version", "1")
+            _set_meta(conn, "projection_watermark", watermark)
             _set_meta(conn, "built_at", datetime.now(timezone.utc).isoformat())
             _set_meta(conn, "config_hash", config.config_hash)
             conn.execute("COMMIT")
@@ -671,8 +702,8 @@ def memory_rebuild_index(config: MemoryConfig, *, _attempt: int = 0) -> dict[str
     )
 
 
-def _index_record_rows(config: MemoryConfig, rows: list[tuple[str, dict[str, Any], str]]) -> None:
-    with _connect(config) as conn:
+def _index_record_rows(config: MemoryConfig, rows: list[tuple[str, dict[str, Any], str]], *, connection=None) -> None:
+    with (nullcontext(connection) if connection is not None else _connect(config)) as conn:
         _ensure_schema(conn)
         for rel_path, metadata, body in rows:
             tags = [str(tag) for tag in metadata.get("tags", []) if str(tag)]
@@ -727,90 +758,13 @@ def _index_record_rows(config: MemoryConfig, rows: list[tuple[str, dict[str, Any
 
 
 def memory_update_index(config: MemoryConfig, *, paths: list[str]) -> dict[str, Any]:
-    if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths) or not paths:
-        return error_result("invalid_input", "paths must be a non-empty list of strings")
-    manager = PathManager(config)
-    rows: list[tuple[str, dict[str, Any], str]] = []
-    skipped = 0
-    try:
-        for path in paths:
-            abs_path = manager.resolve(path, must_exist=True, must_be_file=True)
-            rel_path = manager.to_repo_relative(abs_path)
-            text = safe_read_text(abs_path, errors="strict")
-            parsed_entries = parse_record_pack_entries(text)
-            added = 0
-            for metadata, body in parsed_entries:
-                if not metadata.get("id") or not metadata.get("record_kind"):
-                    continue
-                rows.append((rel_path, metadata, body))
-                added += 1
-            if added == 0:
-                skipped += 1
-        with _connect(config) as conn:
-            _ensure_schema(conn)
-            for path in paths:
-                normalized = path.replace("\\", "/")
-                conn.execute("DELETE FROM memory_records WHERE path = ?", (normalized,))
-                conn.execute("DELETE FROM memory_records_fts WHERE path = ?", (normalized,))
-        _index_record_rows(config, rows)
-        current_snapshot = _record_corpus_snapshot(config)
-        with _connect(config) as conn:
-            _ensure_schema(conn)
-            for path in paths:
-                normalized = path.replace("\\", "/")
-                signature = current_snapshot.get(normalized)
-                if signature is None:
-                    conn.execute("DELETE FROM memory_index_sources WHERE path = ?", (normalized,))
-                else:
-                    conn.execute(
-                        "INSERT INTO memory_index_sources (path, signature) VALUES (?, ?) "
-                        "ON CONFLICT(path) DO UPDATE SET signature = excluded.signature",
-                        (normalized, signature),
-                    )
-            indexed_snapshot = _index_source_snapshot(conn)
-            if indexed_snapshot == current_snapshot:
-                _set_meta(conn, "corpus_watermark", _snapshot_watermark(current_snapshot))
-                _set_meta(conn, "built_at", datetime.now(timezone.utc).isoformat())
-                _set_meta(conn, "config_hash", config.config_hash)
-                _clear_dirty_paths(config, [path.replace("\\", "/") for path in paths])
-            else:
-                mark_index_dirty(config, reason="incremental index does not cover the complete corpus", paths=paths)
-    except PathSecurityError as exc:
-        return error_result("path_not_allowed", str(exc))
-    except FileNotFoundError as exc:
-        return error_result("not_found", str(exc))
-    except (OSError, ValueError, sqlite3.Error) as exc:
-        return error_result("index_failed", f"failed to update index: {exc}")
-
-    return ok_result(
-        "index updated",
-        indexed_records=len(rows),
-        skipped_records=skipped,
-        db_path=_db_path(config).relative_to(config.repo_root).as_posix(),
-    )
+    from .memory_index_incremental import refresh_paths
+    return refresh_paths(config, paths)
 
 
 def ensure_index_fresh(config: MemoryConfig) -> dict[str, Any]:
-    """Ensure the derived index exactly matches the immutable Markdown corpus."""
-    db_file = _db_path(config)
-    dirty = _dirty_path(config).exists()
-    if not db_file.exists() or not _is_index_healthy(config):
-        return memory_rebuild_index(config)
-    try:
-        current_snapshot = _record_corpus_snapshot(config)
-        with _connect(config) as conn:
-            _ensure_schema(conn)
-            indexed_snapshot = _index_source_snapshot(conn)
-    except (OSError, PathSecurityError, sqlite3.Error) as exc:
-        return error_result("index_check_failed", f"failed to verify record index freshness: {exc}")
-    if dirty or indexed_snapshot != current_snapshot:
-        return memory_rebuild_index(config)
-    return ok_result(
-        "record index is fresh",
-        db_path=db_file.relative_to(config.repo_root).as_posix(),
-        corpus_watermark=_snapshot_watermark(current_snapshot),
-        indexed_sources=len(indexed_snapshot),
-    )
+    from .memory_index_incremental import ensure_fresh
+    return ensure_fresh(config)
 
 
 def _escape_fts5_token(token: str) -> str:
@@ -922,13 +876,10 @@ def prefilter_record_paths(
 ) -> dict[str, Any]:
     """Return candidate record paths from the derived SQLite metadata index.
 
-    This is an optimization only. Callers must treat failures as a signal to
-    fall back to Markdown scanning, and must re-validate records against the
-    Markdown source of truth before returning user-visible results.
+    源字节水位已验证；返回事务一致的完整投影。损坏源或同 ID 冲突必须
+    报错，不能把不完整或歧义内容作为可信上下文。
     """
     db_file = _db_path(config)
-    if not db_file.exists():
-        return error_result("index_missing", "record index does not exist")
     freshness = ensure_index_fresh(config)
     if not freshness.get("ok"):
         return freshness
@@ -973,20 +924,36 @@ def prefilter_record_paths(
             params.append(_facet_like_pattern(value))
         where.append("(" + " OR ".join(clauses) + ")")
 
-    sql = "SELECT path FROM memory_records WHERE " + " AND ".join(where) + " ORDER BY path"
+    sql = ("SELECT r.path, r.id, p.metadata_json, p.body FROM (SELECT * FROM memory_records WHERE "
+           + " AND ".join(where) + ") AS r LEFT JOIN memory_record_payloads AS p "
+           "ON p.path=r.path AND p.id=r.id ORDER BY r.path, r.id")
     try:
         with _connect(config) as conn:
             _ensure_schema(conn)
+            # 数据与水位来自同一读事务，不能把新水位贴到旧检索结果上。
+            conn.execute("BEGIN")
             rows = conn.execute(sql, params).fetchall()
-    except sqlite3.Error as exc:
+            watermark = conn.execute("SELECT value FROM memory_index_meta WHERE key='corpus_watermark'").fetchone()
+            projection = conn.execute("SELECT value FROM memory_index_meta WHERE key='projection_watermark'").fetchone()
+            # 旧端不持有新端文件锁；严格检查同一 SQLite 快照，避免旧正文配上新水位。
+            if watermark is None or projection is None or watermark[0] != projection[0]:
+                return error_result("index_projection_incomplete", "legacy writer changed the index after freshness verification; retry the read")
+            if any(row[2] is None for row in rows):
+                return error_result("index_projection_incomplete", "record payloads do not match index rows")
+            payloads = [{"path": str(path), "metadata": json.loads(metadata), "body": body}
+                        for path, record_id, metadata, body in rows]
+    except (sqlite3.Error, ValueError) as exc:
         return error_result("index_failed", f"failed to prefilter record paths: {exc}")
 
     paths = [str(row[0]) for row in rows]
     return ok_result(
         "record paths prefiltered",
         paths=paths,
+        records=payloads,
+        corpus_watermark=watermark[0] if watermark else None,
         stats={
             "prefiltered_records": len(paths),
+            "changed_sources": freshness.get("changed_sources", 0),
             "db_path": db_file.relative_to(config.repo_root).as_posix(),
         },
     )
