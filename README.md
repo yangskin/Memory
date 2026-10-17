@@ -810,3 +810,12 @@ python -m pytest -q tests/memory_server/test_startup_performance.py tests/memory
 验证入口：`python scripts/check_public_tree.py`、`python -m pytest tests`；Hub 在独立开发环境运行 `python -m pytest memory_hub/tests/unit`。发布器对精确提交树执行门禁及本地 MCP 全量测试，再以快进提交推送，不发布消费项目历史、凭据或运行记忆。修复验证与发布结果在任务交付记录中确认。
 
 剩余风险：更新已部署服务需要单独执行既有部署流程；仅同步源码不会自动更新线上服务。
+
+
+### 状态消息命名空间与重复发布验证（2026-10-17）
+
+目标：避免新状态摘要功能绑定消费项目名称，同时保留已有设备状态与执行消息的中文摘要。公开网页按 `<namespace>.hub-health/1` 或 `<namespace>.codex-execution/1` 的完整协议格式识别；命名空间由生产方提供，不写入项目专用常量。未知类型、版本或非法命名空间仍作为普通留言安全转义，不猜测消息结构。
+
+实现与验证任务：网页与前端回归样本通用化；发布器在精确候选提交上先跑隐私/vendor 审计、再跑 `node --test memory_hub/tests/unit/test_shared_page_rendering.cjs` 和四组 MCP Python 全量测试，全部通过后才快进推送。新增 Node.js 前置检查，缺失时明确失败，不静默跳过。源码审计同时覆盖未跟踪的 HTML/JS/CJS/MJS，防止新网页文件在提交前漏检。发布成功后再次完整执行发布器，确认相同目录树只报告无需推送。
+
+本轮验证结果见任务交付日志；更新源码不等于部署线上服务。现有设备消息命名空间不需要迁移，后续公开网页与测试禁止新增消费项目专用名称。

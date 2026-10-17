@@ -588,7 +588,77 @@
   function boardMetaTag(cls, text) {
     return '<span class="' + cls + '">' + esc(text) + "</span>";
   }
+  function boardStatusProtocol(protocol) {
+    // 命名空间属于消息生产方，只识别公开的类型和版本，不绑定消费项目名称。
+    if (typeof protocol !== "string") return "";
+    var match = /^[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9][A-Za-z0-9_-]*)*\.(hub-health|codex-execution)\/1$/.exec(protocol);
+    return match ? match[1] : "";
+  }
+  function boardStatusPayload(post) {
+    try {
+      var data = JSON.parse(post.content);
+      if (data && boardStatusProtocol(data.protocol)) return data;
+    } catch (err) { /* 普通留言按原文显示。 */ }
+    if (["hub-health", "codex-execution"].indexOf(post.author_agent_id) >= 0) {
+      return { invalid: true };
+    }
+    return null;
+  }
+  function boardStatusName(state) {
+    return ({ running: "运行中", executing: "执行中", idle: "空闲", polling: "等待任务",
+      starting: "启动中", reconnecting: "重连中", waiting_update: "等待更新",
+      waiting_execution_gate: "等待执行条件", stopped: "已停止", backoff: "异常退出，等待重试",
+      needs_attention: "需要处理", attention: "需要处理", error: "异常",
+      waiting_for_approval: "等待批准", waiting_for_user: "等待用户", unknown: "状态未知" })[state] || "状态未知";
+  }
+  function boardStatusFresh(stamp, seconds) {
+    var age = (Date.now() - Date.parse(stamp)) / 1000;
+    return Number.isFinite(age) && age >= -60 && age <= seconds;
+  }
+  function boardStatusSummary(post) {
+    var data = boardStatusPayload(post);
+    if (!data) return null;
+    if (data.invalid) return "状态摘要暂不可用：数据不完整，请等待下一次更新。";
+    var isHealth = boardStatusProtocol(data.protocol) === "hub-health";
+    var lines = ["设备：" + (typeof data.device === "string" ? data.device : "未标明")];
+    if (!boardStatusFresh(data.observed_at, 180) ||
+        (post.expires_at && Date.parse(post.expires_at) <= Date.now())) {
+      lines.push("状态已过期，当前通讯与执行情况未知。");
+      return lines.join("\n");
+    }
+    if (isHealth) {
+      var services = data.services || {};
+      lines.push("通讯：" + [["bridge", "派发"], ["receiver", "接收"], ["replies", "回信"]].map(function (entry) {
+        return entry[1] + "" + boardStatusName((services[entry[0]] || {}).state);
+      }).join("；") + "。");
+    }
+    var snapshot = isHealth ? data.codex_execution : data;
+    var instances = snapshot && Array.isArray(snapshot.instances) ? snapshot.instances : [];
+    if (!instances.length) {
+      lines.push("任务：未绑定对话，执行状态未知。");
+    } else {
+      instances.slice(0, 8).forEach(function (row) {
+        if (!row || typeof row !== "object") { lines.push("任务：状态数据不完整。"); return; }
+        var execution = row.execution || {};
+        var fresh = snapshot.freshness !== "stale" && boardStatusFresh(
+          execution.observed_at || execution.checked_at, 180);
+        lines.push("任务：" + (typeof row.task === "string" ? row.task : "未命名") + " · " +
+          (fresh ? boardStatusName(execution.state) : "状态已过期，执行情况未知") + "。");
+        var report = row.reported;
+        if (report) {
+          if (fresh && report.freshness === "current_turn" && boardStatusFresh(report.reported_at, 600)) {
+            if (typeof report.step === "string" && report.step) lines.push("进度：" + report.step.slice(0, 240));
+            if (typeof report.blocker === "string" && report.blocker) lines.push("阻塞：" + report.blocker.slice(0, 360));
+          } else lines.push("旧进度已过时，不代表当前执行情况。");
+        }
+      });
+    }
+    return lines.join("\n");
+  }
   function renderBoardPost(post, isRoot) {
+    var summary = boardStatusSummary(post);
+    if (summary !== null) return '<div class="board-post"><div class="meta">' + boardMetaTag("type-tag note", "状态摘要") +
+      '<span class="when">' + fmtTime(post.created_at) + '</span></div><div class="body">' + esc(summary) + "</div></div>";
     var html = '<div class="board-post' + (isRoot ? "" : " reply") + '">';
     html += '<div class="meta">';
     html += boardMetaTag("type-tag " + typeClass(post.post_type), post.post_type);
@@ -607,7 +677,7 @@
     if (statusFilter === "resolved" && post.status !== "resolved") return false;
     if (query) {
       var q = query.toLowerCase();
-      var hay = [post.content, post.task_id, post.author_user_id, post.author_agent_id, post.post_type]
+      var hay = [boardStatusSummary(post), post.content, post.task_id, post.author_user_id, post.author_agent_id, post.post_type]
         .join(" ").toLowerCase();
       if (hay.indexOf(q) < 0) return false;
     }
@@ -646,7 +716,7 @@
       });
       var root = posts[0];
       html += '<div class="board-thread">';
-      html += '<div class="thread-head">线程 ' + esc(tid) + " · " + posts.length + " 条</div>";
+      html += '<div class="thread-head">' + (boardStatusPayload(root) ? '设备状态' : '线程 ' + esc(tid)) + " · " + posts.length + " 条</div>";
       posts.forEach(function (p, idx) { html += renderBoardPost(p, idx === 0); });
       html += "</div>";
     });

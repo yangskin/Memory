@@ -95,6 +95,11 @@ class TestCleanTree:
         _write(tree / "notes.md", f"contact {IDENTITY} for details\n")
         assert audit_script.audit(tree) == ["private identity: notes.md"]
 
+    @pytest.mark.parametrize("suffix", [".html", ".js", ".cjs", ".mjs"])
+    def test_untracked_web_sources_are_scanned(self, tree: Path, suffix: str) -> None:
+        _write(tree / ("page" + suffix), f"const project = '{PROJECT_ID}';\n")
+        assert audit_script.audit(tree) == [f"private project id: page{suffix}"]
+
     def test_untracked_non_source_files_are_not_scanned(self, tree: Path) -> None:
         _write(tree / "scratch.log", f"{IDENTITY}\n")
         assert audit_script.audit(tree) == []
