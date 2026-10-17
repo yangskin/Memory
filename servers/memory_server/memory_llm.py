@@ -413,6 +413,15 @@ class LLMClient:
         self.total_estimated_cost_cny: float = 0.0
         self.retry_count: int = 0
         self.last_retry_reason: str | None = None
+        self.request_observer = None
+        self.request_context: dict[str, Any] = {}
+
+    def _notify_request(self, payload: dict[str, Any]) -> None:
+        if callable(self.request_observer):
+            try:
+                self.request_observer({**self.request_context, "model": self.config.model, **payload})
+            except Exception:
+                pass
 
     def reset_usage(self) -> None:
         """Reset cumulative usage counters."""
@@ -512,9 +521,12 @@ class LLMClient:
         msg_list = list(messages)
 
         # Input-side pre-check: estimate prompt tokens to bound input billing.
+        estimated_prompt = self.estimate_prompt_tokens(msg_list)
         if self.config.max_input_tokens_per_call > 0:
-            estimated_prompt = self.estimate_prompt_tokens(msg_list)
             if estimated_prompt > self.config.max_input_tokens_per_call:
+                self._notify_request({"status": "input_too_large", "network_sent": False,
+                                      "input_tokens_estimate": estimated_prompt,
+                                      "input_tokens": 0, "output_tokens": 0, "retry_reason": "input_limit"})
                 raise LLMInputTooLarge(
                     f"estimated prompt tokens {estimated_prompt} exceed per-call "
                     f"input cap {self.config.max_input_tokens_per_call}; chunk the "
@@ -568,9 +580,28 @@ class LLMClient:
             except LLMRequestError as exc:
                 status, body_text = 0, ""
                 network_error = exc
-            should_retry = attempt < max_retries and (
-                network_error is not None or (status >= 500 and status != 501)
-            )
+            transient = (network_error is not None and (network_error.status is None or network_error.status == 429
+                         or (network_error.status >= 500 and network_error.status != 501))) or status == 429 or (status >= 500 and status != 501)
+            should_retry = attempt < max_retries and transient
+            response_usage = None
+            invalid_response = False
+            if network_error is None and 200 <= status < 300:
+                try:
+                    decoded = json.loads(body_text)
+                    response_usage = decoded.get("usage") if isinstance(decoded, dict) else None
+                    invalid_response = not isinstance(decoded, dict)
+                except (ValueError, TypeError):
+                    invalid_response = True
+            known_usage = isinstance(response_usage, dict)
+            self._notify_request({
+                "status": "invalid_response" if invalid_response else "ok" if network_error is None and 200 <= status < 300 else "request_failed",
+                "network_sent": True, "request_attempt": attempt + 1, "http_status": status or None,
+                "input_tokens_estimate": estimated_prompt,
+                "input_tokens": response_usage.get("prompt_tokens") if known_usage else None,
+                "output_tokens": response_usage.get("completion_tokens") if known_usage else None,
+                "usage_reported": known_usage, "will_retry": should_retry,
+                "retry_reason": "invalid_json_response" if invalid_response else "network" if network_error is not None else f"http_{status}" if status >= 400 else None,
+            })
             if not should_retry:
                 if network_error is not None:
                     raise network_error

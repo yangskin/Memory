@@ -1,7 +1,8 @@
 ﻿param(
     [string]$WorkspaceRoot,
     [string]$RepoRoot,
-    [switch]$AbsolutePath
+    [switch]$AbsolutePath,
+    [switch]$CodexOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -73,6 +74,8 @@ if (!(Test-Path $venvPython)) {
     throw "Python venv not found: $venvPython. Run <MemoryRoot>/deploy.ps1 first."
 }
 
+# Codex 专用接入不改其它客户端或项目 JSON，也不改变任何审批策略。
+if (-not $CodexOnly) {
 if (!(Test-Path $vscodeDir)) {
     New-Item -ItemType Directory -Path $vscodeDir -Force | Out-Null
 }
@@ -160,6 +163,8 @@ Remove-Item $tempJsonPath -Force
 
 Write-Host "Updated VS Code MCP config: $mcpJsonPath"
 Write-Host "Registered server: project-memory-mcp"
+
+}
 
 function Get-UserHomePath {
     $candidates = @(
@@ -281,6 +286,11 @@ function Update-CodexMemoryServer {
     if (Test-Path $Path) {
         $content = Get-Content $Path -Raw -Encoding UTF8
     }
+    if ($CodexOnly -and $content.Contains("project-memory-mcp")) {
+        # 专用接入只补缺失入口；既有策略、禁用选择和非标准表写法都留给显式核对。
+        Write-Host "已有 Codex Memory 配置，保持原文不变；请运行 memory_check.py 核对实际连接与许可。"
+        return
+    }
     $content = Remove-TomlSection -Content $content -SectionName "mcp_servers.project-memory-mcp"
     $content = Remove-TomlSection -Content $content -SectionName "mcp_servers.project-memory-mcp.env"
 
@@ -333,6 +343,7 @@ $workspaceAwareUserServerEntry = if ($null -ne $memoryRelToRepo) {
     $absoluteUserServerEntry
 }
 
+if (-not $CodexOnly) {
 Update-McpJsonServerEntry `
     -Path (Join-Path $WorkspaceRoot ".cursor\mcp.json") `
     -TopKey "mcpServers" `
@@ -375,6 +386,8 @@ if (-not [string]::IsNullOrWhiteSpace($env:APPDATA)) {
             -Label "VS Code Copilot user" `
             -Entry $workspaceAwareUserServerEntry
     }
+}
+
 }
 
 Update-CodexMemoryServer -Path (Get-CodexConfigPath) -Entry $workspaceAwareUserServerEntry

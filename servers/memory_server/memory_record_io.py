@@ -12,6 +12,7 @@ projections in ``memory_compiler``).
 from __future__ import annotations
 
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -229,13 +230,15 @@ def iter_parsed_records(
     """Iterate every record file and parse Markdown + Front Matter.
 
     Returns a list of ``ParsedRecord`` and a stats dict with keys
-    ``scanned_files``, ``skipped_non_records`` and ``skipped_read_errors``.
-    Files without ``id`` or ``record_kind`` metadata are skipped.
+    ``scanned_files``, ``skipped_non_records``, ``skipped_parse_errors`` and
+    ``skipped_read_errors``. Ordinary Markdown is not a parse error; identifiable
+    record/pack files with invalid syntax or required metadata are parse errors.
     """
     records: list[ParsedRecord] = []
     stats = {
         "scanned_files": 0,
         "skipped_non_records": 0,
+        "skipped_parse_errors": 0,
         "skipped_read_errors": 0,
     }
     if include_rel_paths is not None:
@@ -257,13 +260,18 @@ def iter_parsed_records(
         stats["scanned_files"] += 1
         try:
             text = safe_read_text(abs_path, errors="strict")
-            packed_file = "<!-- memory-record-pack-entry " in text
-            parsed_entries = parse_record_pack_entries(text)
-        except ValueError:
-            stats["skipped_non_records"] += 1
-            continue
         except (OSError, UnicodeError):
             stats["skipped_read_errors"] += 1
+            continue
+        packed_file = "<!-- memory-record-pack" in text or "<!-- /memory-record-pack-entry" in text
+        front_matter = text[4:].partition("\n---\n")[0] if text.startswith("---\n") else ""
+        record_shaped = packed_file or bool(re.search(r"(?m)^(?:id|record_kind):", front_matter))
+        try:
+            parsed_entries = parse_record_pack_entries(text)
+            if record_shaped and any(not meta.get("id") or not meta.get("record_kind") for meta, _body in parsed_entries):
+                raise ValueError("record metadata is incomplete")
+        except ValueError:
+            stats["skipped_parse_errors" if record_shaped else "skipped_non_records"] += 1
             continue
         added = 0
         for metadata, body in parsed_entries:

@@ -3,8 +3,18 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import hmac
 from dataclasses import dataclass
 from typing import Any
+
+
+# 默认拒绝已泄露凭据；本机用户明确授权的精确哈希例外只从本机 canonical 配置读取。
+COMPROMISED_TOKEN_SHA256 = frozenset({"8e05155739fdf6aad8ea228b47e443f536fa99f4a54a1e6987bd23c8bbb03e56"})
+
+
+def token_is_compromised(value: str) -> bool:
+    return hashlib.sha256(value.strip().encode("utf-8")).hexdigest() in COMPROMISED_TOKEN_SHA256
 
 
 @dataclass(frozen=True)
@@ -15,6 +25,7 @@ class SharedMemoryConfig:
     user_id: str = ""
     token_env: str = "MEMORY_HUB_TOKEN"
     local_token: str = ""
+    legacy_token_allow_sha256: str = ""
     upload_enabled: bool = True
     upload_interval_seconds: int = 30
     upload_batch_size: int = 20
@@ -35,7 +46,16 @@ class SharedMemoryConfig:
     @property
     def token(self) -> str | None:
         value = os.getenv(self.token_env, "").strip()
-        return value or self.local_token.strip() or None
+        selected = value or self.local_token.strip()
+        if not selected:
+            return None
+        if token_is_compromised(selected):
+            # 用户明确要求恢复本机旧凭据；只放行授权的这个值，仍须服务端实际鉴权。
+            fingerprint = hashlib.sha256(selected.encode("utf-8")).hexdigest()
+            allowed = self.legacy_token_allow_sha256
+            if len(allowed) != 64 or any(c not in "0123456789abcdef" for c in allowed) or not hmac.compare_digest(fingerprint, allowed):
+                return None
+        return selected
 
     @property
     def active(self) -> bool:
@@ -64,6 +84,7 @@ def parse_shared_memory_config(raw: Any) -> SharedMemoryConfig:
         user_id=str(raw.get("user_id") or "").strip(),
         token_env=str(raw.get("token_env") or "MEMORY_HUB_TOKEN"),
         local_token=str(raw.get("token") or ""),
+        legacy_token_allow_sha256=str(raw.get("legacy_token_allow_sha256") or ""),
         upload_enabled=bool(raw.get("upload_enabled", True)),
         upload_interval_seconds=integer("upload_interval_seconds", 30),
         upload_batch_size=min(20, integer("upload_batch_size", 20)),

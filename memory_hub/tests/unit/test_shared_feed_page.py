@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+import shutil
+import subprocess
 from types import SimpleNamespace
+
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -96,3 +101,12 @@ def test_shared_feed_round_robins_recent_events_across_users() -> None:
     selected = _fair_shared_events(events, 3)
 
     assert [event.event_id for event in selected] == ["d1", "a1", "b1"]
+
+
+def test_shared_page_rendering_behaviors() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required for the dashboard JavaScript regression tests")
+    script = Path(__file__).with_name("test_shared_page_rendering.cjs")
+    result = subprocess.run([node, "--test", str(script)], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr

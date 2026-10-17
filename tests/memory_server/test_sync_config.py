@@ -1,10 +1,44 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+
+import pytest
 
 from servers.memory_server import memory_config
 from servers.memory_server.memory_config import load_config
 from servers.memory_server.memory_sync_config import parse_shared_memory_config
+
+
+def test_explicit_local_config_never_reads_hub_credentials_but_default_still_fails(repo, monkeypatch):
+    load_config(repo)
+    credential = memory_config.local_hub_credentials_path(repo)
+    credential.parent.mkdir(parents=True, exist_ok=True)
+    credential.write_text('{"enabled":true,"token":"fixture-not-used"}', encoding='utf-8')
+    read = Path.read_bytes
+    read_text = Path.read_text
+    attempted = []
+    def guarded(path):
+        if path == credential:
+            attempted.append(path)
+            raise PermissionError('fixture denied')
+        return read(path)
+    monkeypatch.setattr(Path, 'read_bytes', guarded)
+    def guarded_text(path, *args, **kwargs):
+        if path == credential:
+            attempted.append(path)
+            raise PermissionError('fixture denied')
+        return read_text(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'read_text', guarded_text)
+    with pytest.raises(memory_config.MemoryConfigError):
+        load_config(repo)
+    attempted.clear()
+    local = load_config(repo, local_only=True)
+    assert not local.shared_memory.enabled and not attempted
+    # 本地模式不掩盖公共配置损坏。
+    local.config_path.write_text('{invalid-json', encoding='utf-8')
+    with pytest.raises(memory_config.MemoryConfigError):
+        load_config(repo, local_only=True)
 
 
 def test_shared_memory_is_inactive_without_configuration(monkeypatch) -> None:

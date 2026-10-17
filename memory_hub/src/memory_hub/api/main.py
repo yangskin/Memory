@@ -12,6 +12,7 @@ from sqlalchemy import text
 
 from memory_hub.config import load_settings
 from memory_hub.auth.rate_limit import TokenRateLimiter
+from memory_hub.api.routes_enrollment import router as enrollment_router
 from memory_hub.api.routes_board import router as board_router
 from memory_hub.db.session import create_session_factory
 from memory_hub.api.routes_context import router as context_router
@@ -53,6 +54,7 @@ def create_app() -> FastAPI:
         app.include_router(context_router)
         app.include_router(board_router)
         app.include_router(tasks_router)
+        app.include_router(enrollment_router)
 
     @app.get("/shared", include_in_schema=False)
     def shared_page() -> FileResponse:

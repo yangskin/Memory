@@ -105,6 +105,8 @@ DEFAULT_CONFIG_CONTENT: dict[str, Any] = {
     "reflection": {
         "enabled": False,
         "trigger_phases": ["task_done", "test_failed"],
+        "debounce_seconds": 300.0,
+        "max_wait_seconds": 1800.0,
         "max_evidence_records": 256,
         "max_evidence_chars": 1_000_000,
         "max_candidates": 8,
@@ -417,21 +419,42 @@ def _local_shared_memory_config_path(repo_root: Path) -> Path:
     return memory_root / "shared_memory.local.json"
 
 
+def local_hub_credentials_path(repo_root: Path) -> Path:
+    """每台电脑自己的凭据目录；与旧的误入库文件分离，Git 更新不会删除它。"""
+    return _local_shared_memory_config_path(repo_root).parent / "local" / "shared_memory.json"
+
+
 def _load_local_shared_memory(repo_root: Path) -> dict[str, Any]:
     """Load remote-server configuration, preferring the dedicated file.
 
     Priority:
-      1. ``shared_memory.local.json`` (independent, gitignored).
-      2. Legacy ``user_config.local.json["shared_memory"]``.
+      1. ``local/shared_memory.json``（每机本地，升级不覆盖）。
+      2. 旧版 ``shared_memory.local.json``，供安装入口验证后迁移。
+      3. 旧版 ``user_config.local.json["shared_memory"]``。
+      已泄露 token 在 SharedMemoryConfig.token 中统一拒绝。
     """
     result: dict[str, Any] = {}
-    try:
-        data = json.loads(_local_shared_memory_config_path(repo_root).read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            nested = data.get("shared_memory")
-            result = dict(nested) if isinstance(nested, dict) else dict(data)
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        pass
+    canonical = local_hub_credentials_path(repo_root)
+    canonical_used = False
+    for path in (canonical, _local_shared_memory_config_path(repo_root)):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                nested = data.get("shared_memory")
+                result = dict(nested) if isinstance(nested, dict) else dict(data)
+                if path == canonical:
+                    canonical_used = True
+                    # 已建立新配置后不因空内容重新启用旧连接。
+                    result = result or {"enabled": False, "token": ""}
+                if result:
+                    break
+            elif path == canonical:
+                raise MemoryConfigError("本机 Hub 凭据配置必须是 JSON 对象")
+        except FileNotFoundError:
+            pass
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            if path == canonical:
+                raise MemoryConfigError("本机 Hub 凭据配置不可读或格式无效") from exc
 
     if not result:
         try:
@@ -444,6 +467,9 @@ def _load_local_shared_memory(repo_root: Path) -> dict[str, Any]:
 
     if not result:
         return {}
+
+    if not canonical_used:
+        result.pop("legacy_token_allow_sha256", None)
 
     # user_id 始终复用 user 配置（user_config.local.json）中的本地身份，不应在
     # 远端连接文件中重复配置。仅当 user 配置缺失（且连接文件显式提供了
@@ -459,9 +485,13 @@ def _load_local_shared_memory(repo_root: Path) -> dict[str, Any]:
     return result
 
 
-def _config_sources_hash(repo_root: Path, config_path: Path) -> str:
+def _config_sources_hash(repo_root: Path, config_path: Path, *, local_only: bool = False) -> str:
     digest = hashlib.sha256()
-    for path in (config_path, _local_shared_memory_config_path(repo_root), _local_user_config_path(repo_root)):
+    paths = ((config_path,) if local_only else
+             (config_path, local_hub_credentials_path(repo_root), _local_shared_memory_config_path(repo_root), _local_user_config_path(repo_root)))
+    if local_only:
+        digest.update(b'local-only-config\0')
+    for path in paths:
         digest.update(str(path).encode("utf-8"))
         try:
             digest.update(path.read_bytes())
@@ -523,6 +553,8 @@ def _validate_runtime_blocks(config: dict[str, Any]) -> None:
     if not isinstance(phases, list) or not all(isinstance(item, str) and item.strip() for item in phases):
         raise MemoryConfigError("config field reflection.trigger_phases must be a list of non-empty strings")
     for key, minimum, integer in (
+        ("debounce_seconds", 0.0, False),
+        ("max_wait_seconds", 0.0, False),
         ("max_evidence_records", 1.0, True),
         ("max_evidence_chars", 1000.0, True),
         ("max_candidates", 1.0, True),
@@ -534,6 +566,8 @@ def _validate_runtime_blocks(config: dict[str, Any]) -> None:
         ("archive_after_days", 0.0, True),
     ):
         require_number("reflection", reflection, key, minimum=minimum, integer=integer)
+    if reflection["max_wait_seconds"] < reflection["debounce_seconds"]:
+        raise MemoryConfigError("reflection.max_wait_seconds must be >= reflection.debounce_seconds")
     for key in ("min_confidence", "publish_min_confidence"):
         if float(reflection[key]) > 1.0:
             raise MemoryConfigError(f"config field reflection.{key} must be <= 1.0")
@@ -856,7 +890,7 @@ def _ensure_config_file(config_path: Path) -> None:
             pass
 
 
-def load_config(repo_root: str | Path, config_path: str | Path | None = None) -> MemoryConfig:
+def load_config(repo_root: str | Path, config_path: str | Path | None = None, *, local_only: bool = False) -> MemoryConfig:
     root = Path(repo_root).resolve()
     _ensure_layout(root)
 
@@ -881,14 +915,22 @@ def load_config(repo_root: str | Path, config_path: str | Path | None = None) ->
         raise MemoryConfigError(f"config root must be a JSON object: {resolved_config_path}")
 
     merged = _deep_merge(DEFAULT_CONFIG_CONTENT, loaded)
-    local_shared_memory = _load_local_shared_memory(root)
-    if local_shared_memory:
-        merged["shared_memory"] = _deep_merge(merged["shared_memory"], local_shared_memory)
+    # 授权例外不能从跟踪配置、旧连接或 user_config 注入，只接受当前机器独立文件。
+    if isinstance(merged.get("shared_memory"), dict):
+        merged["shared_memory"].pop("legacy_token_allow_sha256", None)
+    if local_only:
+        # 显式本地诊断模式完全不加载或哈希 Hub 凭据；普通 MCP/Hub 默认路径不变。
+        merged["shared_memory"] = dict(DEFAULT_CONFIG_CONTENT["shared_memory"])
+    else:
+        local_shared_memory = _load_local_shared_memory(root)
+        if local_shared_memory:
+            merged["shared_memory"] = _deep_merge(merged["shared_memory"], local_shared_memory)
     _validate_runtime_blocks(merged)
     config_hash = hashlib.sha256(
         json.dumps(merged, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    config_source_hash = _config_sources_hash(root, resolved_config_path)
+    config_source_hash = (_config_sources_hash(root, resolved_config_path, local_only=True)
+                          if local_only else _config_sources_hash(root, resolved_config_path))
     guard = merged.get("guard", {}) if isinstance(merged.get("guard"), dict) else {}
 
     allowed_roots_raw = merged.get("allowed_roots", DEFAULT_ALLOWED_ROOTS)

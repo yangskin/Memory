@@ -240,6 +240,13 @@ Hub 管理员的服务器部署、运维、备份和 Token 签发方式见
 #### 2.3.2 Task Graph 协作与查询
 
 启用 Hub 后，跨 Agent 协作只通过专用 `memory_task_sync` 读取和推进 Task Graph：
+
+`sync` / `history` 在共享模式下分别读取 Hub 的 `task-graph` / `task-events`，
+返回 `source="remote"` 与 `authoritative=true`。连接、权限或响应格式失败会明确报错，
+不会以本地空库或旧状态代替远端领取状态；禁用共享模式时仍使用本地任务库。
+定向读取以正式任务目录补齐 Graph 占位节点的版本与当前 Attempt。读取不修改任务生命周期。
+跨机器首次执行命令时，若本地派生投影缺失或落后，仅回放该任务已被 Hub 接受的 Timeline；
+不重新向 Hub 发送创建或分配事件，实际新命令仍由 Hub 裁决。
 `sync` 返回 `{roots,nodes,edges,cursor}`，生命周期命令使用同一图中的 Task、Attempt、
 Submission 与 Review 记录。它是执行协调的派生投影，不是新的记忆真源，也不会改变本地离线
 读写、Brief、Board 或 `shared_context` 的既有语义。详细接口和部署侧说明见
@@ -770,3 +777,36 @@ python -m pytest -q tests/memory_server/test_startup_performance.py tests/memory
 ```
 
 测试覆盖真实 stdio 在维护阻塞期间的握手与工具发现、维护竞争、失败重试、未变索引复用、最近记忆按需读取，以及 symlink/Windows junction 的路径边界。性能对比应使用相同记录副本，分别报告握手和首次工具调用；维护到期状态、后台任务与是否启用 LLM 应保持一致。首次检索仍需检查真实内容，LLM 耗时也仍计入完整任务简报，不承诺固定毫秒级返回。
+
+
+### 旧记录包审计注释与 checkpoint 持久化诊断（2026-10-17）
+
+严格记录包读取兼容旧 Markdown writer 生成的精确 `<!-- last overwritten by <user> at YYYY-MM-DD HH:MM UTC -->` 审计注释，校验日期并保留注释。记录边界、ID、schema、重复冲突和完整性校验继续执行；未知注释、包外正文、未闭合条目仍失败。记录合并/重渲染保留审计注释及重复次数，不改记录正文。冷归档 coalescence 当前清单只追踪记录，遇带审计注释的非 journal 来源会明确拒绝，避免丢掉审计信息；不自动删除或迁移原件。索引格式错误现在带必要来源路径，不输出原始正文。
+
+可从新的项目 Python 进程运行只读管理命令，核对 MCP checkpoint 真正持久化的状态：
+
+```powershell
+# cwd=MCP/Memory；--root 指向当前宿主项目
+.\.venv\Scripts\python.exe -m servers.memory_server.cli --root C:\Projects\ExampleProject task-status --task-id <实际Memory任务ID>
+```
+
+该入口只读取当前本机用户可见的任务，返回 task_id、status、last_phase、last_checkpoint_at、completed_at、updated_at，不输出目标或正文，不修改 task-context store。未知/其他用户任务返回 task_not_found。`record` 与无正文 `checkpoint` 分开调用；总结回读和 task-status 都须成功，不能仅用 checkpoint 应答代替持久化核验。
+
+
+`task-status` 使用明确的本地配置模式；`retrieve-context` 和 `rebuild-index` 可在子命令前显式加全局 `--local-only`。这三种本地诊断不加载或哈希独立Hub凭据文件，输出config_mode=local_only，不需要扩大凭据ACL。该选项禁止用于worker/同步/其它管理动作，普通MCP/Hub的默认load_config仍完整加载并校验凭据，无法读取时继续明确失败，不自动转入本地模式。
+
+```powershell
+.\.venv\Scripts\python.exe -m servers.memory_server.cli --root C:\Projects\ExampleProject --local-only retrieve-context --query <验证标识> --user <实际本机用户> --include-scopes personal
+```
+
+在Codex受限终端执行时，工作区写根须仍为完整宿主项目；可以在命令中切换cwd到MCP/Memory以导入模块，不将Memory子目录误当整个工作区，否则项目根下的状态文件锁会因超出写根被正确拒绝。
+
+### 公开发布审计修复（2026-10-17）
+
+目标与范围：清理消费项目专用路径、示例名称及设备申请请求头，保留隐私与 vendor 门禁。公开 Hub 的设备状态查询统一使用 `X-Memory-Enrollment-Secret`；客户端和服务端必须同步更新，旧名称不再接受，不自动降低认证要求。
+
+公开 Hub 的路由、认证与事务测试保持自包含；消费项目客户端的端到端集成测试应放在消费项目仓库，不能依赖公开源码树以外的工具目录。
+
+验证入口：`python scripts/check_public_tree.py`、`python -m pytest tests`；Hub 在独立开发环境运行 `python -m pytest memory_hub/tests/unit`。发布器对精确提交树执行门禁及本地 MCP 全量测试，再以快进提交推送，不发布消费项目历史、凭据或运行记忆。修复验证与发布结果在任务交付记录中确认。
+
+剩余风险：更新已部署服务需要单独执行既有部署流程；仅同步源码不会自动更新线上服务。

@@ -46,6 +46,9 @@ def plan_coalescence(config: MemoryConfig, *, older_than_days=7, max_bytes=52428
                 continue
             raw = absolute.read_bytes()
             records = read_pack(raw.decode('utf-8'))
+            if records.audit_comments:
+                # 当前迁移清单只追踪记录正文，不能静默丢掉旧文件的审计信息。
+                raise ValueError(f'legacy audit annotations require explicit migration; source preserved: {relative}')
             dates = {key: datetime.fromisoformat(str(item.metadata['created_at']).replace('Z', '+00:00'))
                      for key, item in records.items()}
             if any(value.tzinfo is None for value in dates.values()):

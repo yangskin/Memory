@@ -16,6 +16,7 @@ from memory_hub.db.models import (
 def test_required_tables_and_event_idempotency_constraint_are_declared() -> None:
     assert set(Base.metadata.tables) == {
         "access_tokens",
+        "device_enrollments",
         "memory_events",
         "board_posts",
         "brief_jobs",

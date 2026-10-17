@@ -10,6 +10,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 from uuid import NAMESPACE_URL, uuid5
 
 from .memory_config import MemoryConfig
@@ -88,7 +89,8 @@ def _node_id(node_type: str, node_key: str) -> str:
 
 
 def _command_hash(args: dict[str, Any]) -> str:
-    return "sha256:" + hashlib.sha256(_json(args).encode("utf-8")).hexdigest()
+    prefix = "hub_projection:" if args.get("_hub_projection") is True else ""
+    return prefix + "sha256:" + hashlib.sha256(_json(args).encode("utf-8")).hexdigest()
 
 
 def _store_path(config: MemoryConfig) -> Path:
@@ -1299,12 +1301,233 @@ def _authorize_hub_task_event(config: MemoryConfig, task_event: dict[str, Any]) 
     )
 
 
+def _valid_hub_event(event: Any) -> bool:
+    if not isinstance(event, dict):
+        return False
+    strings = ("command_id", "task_id", "event_type", "actor_id", "occurred_at")
+    integers = ("seq", "expected_version", "task_version", "assignment_epoch")
+    return (all(isinstance(event.get(key), str) and event[key] for key in strings)
+            and all(type(event.get(key)) is int and event[key] >= 0 for key in integers)
+            and (event.get("expected_assignment_epoch") is None or type(event["expected_assignment_epoch"]) is int and event["expected_assignment_epoch"] >= 0)
+            and isinstance(event.get("payload"), dict))
+
+
+def _valid_hub_task(task: Any) -> bool:
+    if not isinstance(task, dict):
+        return False
+    strings = ("task_id", "title", "objective", "acceptance", "priority")
+    attempt = task.get("current_attempt")
+    valid_attempt = attempt is None or (isinstance(attempt, dict)
+        and all(isinstance(attempt.get(key), str) and attempt[key] for key in ("attempt_id", "assignee", "status"))
+        and type(attempt.get("epoch")) is int and attempt["epoch"] >= 1)
+    return (all(isinstance(task.get(key), str) for key in strings)
+            and task.get("state") in TASK_STATES and type(task.get("version")) is int and task["version"] >= 1
+            and type(task.get("assignment_epoch")) is int and task["assignment_epoch"] >= 0 and valid_attempt)
+
+
+def _read_hub_tasks(shared: Any, args: dict[str, Any], action: str) -> dict[str, Any]:
+    """共享任务读取只认 Hub；连接失败不得用本地空库伪装成功。"""
+
+    if not getattr(shared, "active", False) or not getattr(shared, "read_enabled", True):
+        return error_result("task_authority_unavailable", "Hub task reads require active shared memory with reads enabled", source="remote")
+    try:
+        params: dict[str, Any] = {}
+        task_id = _text(args.get("task_id"), field="task_id", maximum=256)
+        if task_id:
+            params["task_id"] = task_id
+        cursor = _integer(args["cursor"], field="cursor") if args.get("cursor") not in (None, "") else 0
+        if action == "sync":
+            agent_id = _text(args.get("agent_id"), field="agent_id", maximum=256)
+            if agent_id:
+                params["agent_id"] = agent_id
+            endpoint = "task-graph"
+        else:
+            limit = _integer(args["max_items"], field="max_items", minimum=1) if args.get("max_items") is not None else 50
+            params.update(cursor=cursor, max_items=min(limit, MAX_HISTORY_EVENTS))
+            endpoint = "task-events"
+    except ValueError as exc:
+        return error_result("invalid_input", str(exc))
+    timeout = max(0.1, float(getattr(shared, "active_query_timeout_ms", 1200)) / 1000)
+    status, response = MemoryHubClient(shared).get(
+        f"/v1/projects/{quote(shared.project_id, safe='')}/{endpoint}", params, timeout,
+    )
+    if status != 200:
+        return error_result(
+            "task_authority_unavailable" if status in RETRYABLE_TASK_AUTHORITY_STATUSES else "task_authority_rejected",
+            "Hub task read failed; local task state was not substituted",
+            source="remote", remote_status=status, retryable=status in RETRYABLE_TASK_AUTHORITY_STATUSES,
+        )
+    # 仅校验读取合同，不导入投影或推进任何任务生命周期。
+    valid = isinstance(response, dict) and isinstance(response.get("cursor"), str) and response["cursor"].isdigit()
+    if action == "sync":
+        valid = valid and response.get("version") == TASK_SYNC_VERSION and isinstance(response.get("roots"), dict)
+        valid = valid and all(isinstance(response.get(key), list) for key in ("nodes", "edges"))
+        valid = valid and all(isinstance(response["roots"].get(key), list) for key in ("current", "assigned", "review", "attention"))
+        valid = valid and all(isinstance(node, dict) and all(isinstance(node.get(key), str) for key in ("id", "type", "key"))
+                              and isinstance(node.get("metadata"), dict) for node in response.get("nodes", []))
+        valid = valid and all(isinstance(edge, dict) for edge in response.get("edges", []))
+    else:
+        valid = valid and isinstance(response.get("events"), list) and all(_valid_hub_event(event) for event in response.get("events", []))
+    if not valid:
+        return error_result("task_authority_invalid_response", "Hub task read returned an invalid Graph Bundle or Timeline", source="remote", remote_status=status)
+    provenance = {"source": "remote", "authoritative": True, "remote_status": status}
+    if action == "sync" and task_id:
+        # Graph 引用节点可能只有 external 占位；定向读取用正式任务目录补齐本体版本。
+        catalog_cursor = None
+        matches = []
+        for _page in range(50):
+            query = {"state": "all", "q": task_id, "limit": 100}
+            if catalog_cursor is not None:
+                query["cursor"] = catalog_cursor
+            catalog_status, catalog = MemoryHubClient(shared).get(
+                f"/v1/projects/{quote(shared.project_id, safe='')}/tasks", query, timeout,
+            )
+            if catalog_status != 200 or not isinstance(catalog.get("items"), list):
+                return error_result("task_authority_unavailable", "Hub task catalog could not confirm the requested task", source="remote", remote_status=catalog_status)
+            matches = [item for item in catalog["items"] if isinstance(item, dict) and item.get("task_id") == task_id]
+            if matches:
+                break
+            next_cursor = catalog.get("next_cursor")
+            if not next_cursor:
+                return error_result("task_not_found", "Requested task was not found in the Hub catalog", source="remote")
+            if not isinstance(next_cursor, str) or next_cursor == catalog_cursor:
+                return error_result("task_authority_invalid_response", "Hub task catalog cursor did not advance", source="remote")
+            catalog_cursor = next_cursor
+        if len(matches) != 1:
+            return error_result("task_read_limit", "Hub task catalog exceeded the bounded exact task search", source="remote")
+        task = matches[0]
+        if not _valid_hub_task(task):
+            return error_result("task_authority_invalid_response", "Hub task catalog omitted lifecycle fields", source="remote")
+        for node in response["nodes"]:
+            if node.get("type") == "task" and node.get("key") == task_id:
+                node["name"] = task["title"]
+                node["metadata"] = {key: task[key] for key in ("title", "objective", "acceptance", "priority", "state", "version", "assignment_epoch")}
+                node["metadata"]["current_attempt"] = (task.get("current_attempt") or {}).get("attempt_id")
+        provenance["task_snapshot"] = task
+    if action == "sync":
+        return ok_result("Hub task graph bundle read", bundle=response, **provenance)
+    return ok_result("Hub task history read", events=response["events"], cursor=response["cursor"], **provenance)
+
+
+def _matches_accepted_hub_command(args: dict[str, Any], event: dict[str, Any], action: str) -> bool:
+    """对已接受事件比较原命令意图，不把服务器派生 ID 当成调用方必填参数。"""
+
+    if args.get("action", "sync").strip().lower() != action:
+        return False
+    requested_task_id = _text(args.get("task_id"), field="task_id", maximum=256)
+    if action == "create" and not requested_task_id:
+        command_id = _text(args.get("command_id"), field="command_id", required=True, maximum=256)
+        requested_task_id = "task_" + hashlib.sha256(command_id.encode("utf-8")).hexdigest()[:20]
+    actor_id = _text(args.get("actor_id") or args.get("agent_id"), field="actor_id", required=True, maximum=256)
+    if requested_task_id != event["task_id"] or actor_id != event["actor_id"]:
+        return False
+    if args.get("expected_version") != event["expected_version"]:
+        return False
+    if action != "create" and args.get("expected_assignment_epoch") != event.get("expected_assignment_epoch"):
+        return False
+    defaults = {
+        "create": {"title": "", "objective": "", "acceptance": "", "priority": "normal", "depends_on": [], "produced_memory": [], "parent_task_id": None},
+        "assign": {"assignee": ""}, "reassign": {"assignee": ""}, "claim": {}, "decline": {},
+        "report": {"summary": ""}, "block": {"reason": ""}, "resume": {},
+        "submit": {"summary": "", "evidence": []}, "review": {"decision": "", "summary": ""}, "cancel": {"reason": ""},
+    }
+    payload = event["payload"]
+    for key, default in defaults[action].items():
+        value = args.get(key, default)
+        if key == "priority":
+            value = value or "normal"
+        if isinstance(default, list):
+            value = _string_list(value, field=key)
+        else:
+            value = _text(value, field=key, maximum=8192)
+            if key == "parent_task_id" or (key == "reason" and action == "cancel"):
+                value = value or None
+        if value != payload.get(key, default):
+            return False
+    for key in ("attempt_id", "submission_id", "review_id"):
+        requested_id = _text(args.get(key), field=key, maximum=256)
+        if requested_id and requested_id != payload.get(key):
+            return False
+    return True
+
+
+def _hydrate_hub_task(store: TaskSyncStore, shared: Any, args: dict[str, Any]) -> dict[str, Any] | None:
+    """只把指定任务已被 Hub 接受的事件补入本地派生投影，不发送新建/改派命令。"""
+
+    task_id = _text(args.get("task_id"), field="task_id", maximum=256)
+    if not task_id and str(args.get("action")).strip().lower() == "create":
+        command_id = _text(args.get("command_id"), field="command_id", required=True, maximum=256)
+        task_id = "task_" + hashlib.sha256(command_id.encode("utf-8")).hexdigest()[:20]
+    if not task_id:
+        return error_result("invalid_input", "task_id is required")
+    expected = _integer(args.get("expected_version"), field="expected_version")
+    requested_command_id = _text(args.get("command_id"), field="command_id", required=True, maximum=256)
+    with store._connect() as connection:
+        row = connection.execute("SELECT version FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+        local_version = int(row["version"]) if row is not None else 0
+    if local_version == expected:
+        return None
+    actions = {"TaskCreated": "create", "TaskAssigned": "assign", "TaskReassigned": "reassign",
+               "TaskClaimed": "claim", "TaskDeclined": "decline", "TaskReported": "report",
+               "TaskBlocked": "block", "TaskResumed": "resume", "TaskSubmitted": "submit",
+               "TaskReviewed": "review", "TaskCancelled": "cancel"}
+    cursor = 0
+    accepted_retry = None
+    for _page in range(50):
+        history = _read_hub_tasks(shared, {"task_id": task_id, "cursor": cursor, "max_items": MAX_HISTORY_EVENTS}, "history")
+        if not history.get("ok"):
+            return history
+        events = history["events"]
+        if not events:
+            if accepted_retry is not None:
+                with store._connect() as connection:
+                    connection.execute(
+                        "INSERT INTO task_commands(command_id,command_hash,result_json,created_at) VALUES(?,?,?,?) "
+                        "ON CONFLICT(command_id) DO UPDATE SET command_hash=excluded.command_hash,result_json=excluded.result_json",
+                        (requested_command_id, _command_hash(args), _json(accepted_retry), _now()),
+                    )
+            return accepted_retry
+        for event in events:
+            if event.get("task_id") != task_id or event.get("event_type") not in actions:
+                return error_result("task_projection_conflict", "Hub Timeline contains an unsupported or unrelated task event")
+            version = event.get("task_version")
+            if type(version) is not int or version < 1:
+                return error_result("task_projection_conflict", "Hub Timeline omitted task_version")
+            if event.get("command_id") == requested_command_id:
+                if not _matches_accepted_hub_command(args, event, actions[event["event_type"]]):
+                    return error_result("command_id_conflict", "command_id was already accepted by Hub with different input")
+                accepted_retry = ok_result(
+                    "Hub already accepted task command", action=actions[event["event_type"]], task_id=task_id,
+                    version=version, assignment_epoch=event["assignment_epoch"], idempotent=True,
+                    source="remote", shared_sync={"enabled": True, "mode": "hub_authoritative", "queued": False},
+                )
+            if version <= local_version:
+                continue
+            if event.get("expected_version") != local_version or version != local_version + 1:
+                return error_result("task_projection_conflict", "Hub Timeline is not contiguous with the local task projection")
+            command = {**event["payload"], "_hub_projection": True, "action": actions[event["event_type"]], "task_id": task_id,
+                       "command_id": event["command_id"], "actor_id": event["actor_id"],
+                       "expected_version": event["expected_version"],
+                       "expected_assignment_epoch": event.get("expected_assignment_epoch")}
+            imported = store.execute(command)
+            if not imported.get("ok") or imported.get("version") != version or imported.get("assignment_epoch") != event.get("assignment_epoch"):
+                return error_result("task_projection_conflict", "Could not replay the accepted Hub event into the local task projection")
+            local_version = version
+        next_cursor = int(history["cursor"])
+        if next_cursor <= cursor:
+            return error_result("task_projection_conflict", "Hub Timeline cursor did not advance")
+        cursor = next_cursor
+    return error_result("task_projection_limit", "Hub Timeline exceeded the bounded import; no new task command was sent")
+
+
 def task_sync(config: MemoryConfig, args: dict[str, Any]) -> dict[str, Any]:
     """Execute a task command locally, with Hub authority in shared mode."""
 
     try:
         action = str(args.get("action") or "sync").strip().lower()
         shared = getattr(config, "shared_memory", None)
+        if action in {"sync", "history"} and bool(getattr(shared, "enabled", False)):
+            return _read_hub_tasks(shared, args, action)
         authorize = None
         if action in TASK_MUTATION_ACTIONS and bool(getattr(shared, "enabled", False)):
             if not bool(getattr(shared, "active", False)):
@@ -1329,7 +1552,18 @@ def task_sync(config: MemoryConfig, args: dict[str, Any]) -> dict[str, Any]:
                             "remote_status": authority.get("remote_status", 0),
                         },
                     )
+        if action in TASK_MUTATION_ACTIONS and bool(getattr(shared, "active", False)):
+            store = TaskSyncStore(_store_path(config))
+            with store._connect() as connection:
+                cached = connection.execute("SELECT command_hash FROM task_commands WHERE command_id=?", (_text(args.get("command_id"), field="command_id", required=True, maximum=256),)).fetchone()
+            if cached is not None and not str(cached["command_hash"]).startswith("hub_projection:"):
+                return store.execute(args)
+            hydration_error = _hydrate_hub_task(store, shared, args)
+            if hydration_error is not None:
+                return hydration_error
         return TaskSyncStore(_store_path(config), authorize=authorize).execute(args)
+    except ValueError as exc:
+        return error_result("invalid_input", str(exc))
     except (OSError, sqlite3.Error) as exc:
         return error_result("task_store_unavailable", str(exc))
 

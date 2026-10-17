@@ -36,7 +36,9 @@ from .memory_key_documents import KEY_DOCUMENT_KEYS, rebuild_key_documents
 from .memory_key_document_jobs import drain_key_document_rebuild_jobs, read_key_document_rebuild_jobs
 from .memory_lineage import memory_link_artifact, memory_list_conflicts, memory_trace_lineage
 from .memory_maintenance import memory_delete_record, memory_health_check, memory_migrate_records
-from .memory_result import error_result
+from .memory_result import error_result, ok_result
+from .memory_events import get_current_user
+from .memory_task_context import get_task_history
 from .memory_record_index import memory_rebuild_index
 from .memory_record_packing import compact_old_record_packs, pack_existing_records
 from .memory_reflection_jobs import (
@@ -82,7 +84,8 @@ def _resolve_root(arg_root: str | None) -> Path:
 
 
 def _load(args: argparse.Namespace) -> MemoryConfig:
-    return load_config(_resolve_root(args.root), config_path=args.config)
+    local_only = args.command == 'task-status' or getattr(args, 'local_only', False)
+    return load_config(_resolve_root(args.root), config_path=args.config, local_only=local_only)
 
 
 # ── Subcommand handlers ───────────────────────────────────────────────
@@ -98,6 +101,17 @@ def _cmd_health(args: argparse.Namespace) -> dict[str, Any]:
 
 def _cmd_config_diagnose(args: argparse.Namespace) -> dict[str, Any]:
     return config_diagnose(_load(args))
+
+
+def _cmd_task_status(args: argparse.Namespace) -> dict[str, Any]:
+    """从持久化任务索引只读当前用户的阶段元数据，不输出任务正文。"""
+    config = _load(args)
+    rows = get_task_history(config, user=get_current_user(config.repo_root))
+    row = next((item for item in rows if item['task_id'] == args.task_id), None)
+    if row is None:
+        return error_result('task_not_found', 'task is not visible to the current local user')
+    fields = ('task_id', 'status', 'last_phase', 'last_checkpoint_at', 'completed_at', 'updated_at')
+    return ok_result('persisted task status read', config_mode='local_only', task={key: row.get(key) for key in fields})
 
 
 def _cmd_rebuild_index(args: argparse.Namespace) -> dict[str, Any]:
@@ -511,6 +525,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Memory MCP CLI for admin, sync, rebuild, diagnose, lineage, retrieval, and LLM-enhance flows.",
     )
     parser.add_argument("--root", help="Repository root (defaults to current working directory).")
+    parser.add_argument("--local-only", action="store_true", help="Explicit local retrieval/index diagnostics; do not load Hub credentials.")
     parser.add_argument("--config", help="Path to .ai-memory/config.json (defaults to <root>/.ai-memory/config.json).")
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output (indent=2).")
 
@@ -522,6 +537,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_guard_optimize.set_defaults(func=_cmd_guard_optimize)
     sub.add_parser("health", help="Run memory_health_check.").set_defaults(func=_cmd_health)
     sub.add_parser("config-diagnose", help="Report effective Memory MCP configuration sources.").set_defaults(func=_cmd_config_diagnose)
+    p_task_status = sub.add_parser("task-status", help="Read current user's persisted checkpoint metadata without task content.")
+    p_task_status.add_argument("--task-id", required=True)
+    p_task_status.set_defaults(func=_cmd_task_status)
     sub.add_parser("rebuild-index", help="Rebuild SQLite FTS index.").set_defaults(func=_cmd_rebuild_index)
     sub.add_parser("prepare", help="Prepare local SQLite and Git integration without LLM.").set_defaults(func=_cmd_prepare)
     p_coalesce = sub.add_parser("coalesce-archives", help="Plan cold archive coalescence; explicit apply/rollback.")
@@ -767,6 +785,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
+    if args.local_only and args.command not in {'task-status', 'retrieve-context', 'rebuild-index'}:
+        return _emit(error_result('invalid_local_only_command', 'local-only is limited to task-status, retrieve-context and rebuild-index'), pretty=args.pretty)
     handler: Callable[[argparse.Namespace], dict[str, Any]] = args.func
     try:
         result = handler(args)
@@ -774,6 +794,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = {"ok": False, "error": "cli_exception", "message": f"{type(exc).__name__}: {exc}"}
     if not isinstance(result, dict):
         result = {"ok": False, "error": "invalid_result", "message": "handler did not return a dict"}
+    if args.local_only:
+        result['config_mode'] = 'local_only'
     return _emit(result, pretty=args.pretty)
 
 

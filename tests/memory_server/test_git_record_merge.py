@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from servers.memory_server.memory_frontmatter import PACK_HEADER, render_record_markdown, render_record_pack_entry
-from servers.memory_server.memory_git_merge import merge_packs, read_pack
+from servers.memory_server.memory_git_merge import merge_packs, read_pack, render_pack
 from servers.memory_server.memory_prepare import install_merge_driver, prepare_memory
 from servers.memory_server.memory_config import load_config
 
@@ -42,6 +42,40 @@ def test_conflict_or_corruption_is_never_silently_union_merged(bad):
 def test_record_deletion_requires_explicit_resolution():
     with pytest.raises(ValueError, match='removal'):
         merge_packs(pack('base', 'removed'), pack('base'), pack('base', 'removed', 'new'))
+
+
+def test_legacy_writer_audit_is_validated_and_preserved_by_render_and_merge():
+    audit = '<!-- last overwritten by alice at 2026-10-11 05:01 UTC -->'
+    original = pack('base') + '\n' + audit + '\n'
+    parsed = read_pack(original.replace('\n', '\r\n'))
+    assert set(parsed) == {'base'} and parsed.audit_comments == (audit,)
+    assert audit in render_pack(parsed, compact=True)
+    merged = merge_packs(original, original + pack('a').split('\n\n', 1)[1], pack('base', 'b'))
+    assert set(read_pack(merged)) == {'base', 'a', 'b'}
+    assert merged.count(audit) == 1
+    assert merged == merge_packs(original, pack('base', 'b'), original + pack('a').split('\n\n', 1)[1])
+    assert merged == merge_packs(original, merged, merged)
+    repeated = original + audit + '\n'
+    assert merge_packs(repeated, repeated, repeated).count(audit) == 2
+
+
+@pytest.mark.parametrize('tail', [
+    '<!-- unrelated comment -->',
+    '<!-- last overwritten by alice at 2026-99-11 05:01 UTC -->',
+    '<!-- last overwritten by alice at yesterday -->',
+    '<!-- last overwritten by alice at 2026-10-11 05:01 UTC -->private content',
+    '<!-- last overwritten by alice at 2026-10-11 05:01 UTC',
+])
+def test_unknown_or_malformed_audit_never_masks_corruption(tail):
+    with pytest.raises(ValueError):
+        read_pack(pack('base') + tail + '\n')
+
+
+def test_audit_does_not_make_an_empty_or_truncated_pack_valid():
+    audit = '<!-- last overwritten by alice at 2026-10-11 05:01 UTC -->\n'
+    for text in (PACK_HEADER + '\n' + audit, pack('base').replace('/memory-record-pack-entry', '/broken') + audit):
+        with pytest.raises(ValueError):
+            read_pack(text)
 
 
 def test_real_git_merges_same_path_add_add_after_local_install(tmp_path):

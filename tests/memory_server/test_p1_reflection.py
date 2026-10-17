@@ -33,6 +33,8 @@ def _reflection_config(repo: Path, *, auto_targets: list[str] | None = None):
     raw["reflection"] = {
         "enabled": True,
         "trigger_phases": ["task_done", "test_failed"],
+        "debounce_seconds": 0,
+        "max_wait_seconds": 0,
         "min_confidence": 0.8,
         "publish_min_confidence": 0.95,
         "publish_repeated_tasks": 2,
@@ -180,7 +182,7 @@ def test_two_pass_reflection_uses_extractor_then_adversarial_critic() -> None:
 
         def complete_text(self, prompt, *, system, max_tokens):
             self.calls.append((prompt, system, max_tokens))
-            return json.dumps({"summary": "ok", "proposals": []})
+            return json.dumps({"summary": "ok", "proposals": [{"supporting_record_ids": ["e1"]}]})
 
     client = Client()
     profile = type("Profile", (), {"max_tokens": 256})()
@@ -208,7 +210,7 @@ def test_two_pass_reflection_bounds_candidates_by_effective_client_token_cap() -
 
         def complete_text(self, prompt, *, system, max_tokens):
             self.calls.append((prompt, system, max_tokens))
-            return json.dumps({"summary": "ok", "proposals": []})
+            return json.dumps({"summary": "ok", "proposals": [{"supporting_record_ids": ["e1"]}]})
 
     client = Client()
     profile = type("Profile", (), {"max_tokens": 2048})()

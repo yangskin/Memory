@@ -52,7 +52,7 @@ def test_fresh_postgresql_database_upgrades_to_head(monkeypatch) -> None:
             )))
             projection_state = connection.scalar(text("SELECT to_regclass('public.graph_projection_states')"))
 
-        assert revision == "0012_brief_token_budget"
+        assert revision == "0013_device_enrollment"
         assert task_tables == {
             "task_agents",
             "task_attempts",

@@ -465,7 +465,11 @@ def _parse_index_source(text: str, rel_path: str) -> list[tuple[dict[str, Any], 
     # 受管理的 pack 必须完整；普通 Markdown 文档可以没有记录 front matter。
     if "memory-record-pack" in text or "/packs/" in rel_path or "/record-packs/" in rel_path:
         from .memory_git_merge import read_pack
-        return [(item.metadata, item.body) for item in read_pack(text).values()]
+        try:
+            return [(item.metadata, item.body) for item in read_pack(text).values()]
+        except ValueError as exc:
+            # 只带来源路径和格式错误，不附加原始正文。
+            raise ValueError(f'invalid record source: {rel_path}: {exc}') from exc
     try:
         return parse_record_pack_entries(text)
     except ValueError:

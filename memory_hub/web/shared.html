@@ -204,7 +204,7 @@
   .status-tag.resolved { background: #e5f7ee; color: var(--ok); }
   .board-post .who { font-family: var(--mono); font-size: 12px; }
   .board-post .when { margin-left: auto; white-space: nowrap; }
-  .board-post .body { margin-top: 7px; font-size: 14px; }
+  .board-post .body { margin-top: 7px; font-size: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .board-post .body p { margin: 4px 0; }
   .board-post .body pre { background: #f1f3f9; border-radius: 6px; padding: 8px; overflow-x: auto; font-size: 12px; }
   .board-post .body code { background: #f1f3f9; border-radius: 4px; padding: 1px 4px; font-family: var(--mono); font-size: 12px; }
@@ -455,10 +455,10 @@
       .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
   }
   function renderMarkdown(src) {
-    var parts = esc(src).split(/```/);
+    var parts = String(src == null ? "" : src).split(/```/);
     var out = "";
     for (var i = 0; i < parts.length; i++) {
-      if (i % 2 === 1) { out += "<pre><code>" + parts[i].trim() + "</code></pre>"; continue; }
+      if (i % 2 === 1) { out += "<pre><code>" + esc(parts[i].trim()) + "</code></pre>"; continue; }
       var inList = false;
       var lines = parts[i].split("\n");
       for (var j = 0; j < lines.length; j++) {
@@ -598,7 +598,7 @@
     if (post.task_id) html += '<span class="who">#' + esc(post.task_id) + "</span>";
     html += '<span class="when">' + fmtTime(post.created_at) + "</span>";
     html += "</div>";
-    if (post.content) html += '<div class="body">' + renderMarkdown(post.content) + "</div>";
+    if (post.content) html += '<div class="body">' + esc(post.content) + "</div>";
     html += "</div>";
     return html;
   }

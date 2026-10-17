@@ -134,3 +134,44 @@ def test_event_identity_recovers_from_corrupt_file_and_bounds_fields(tmp_path) -
     assert len(event["agent_id"]) == 256
     assert event["source_node_id"]
     assert json.loads(identity_path.read_text(encoding="utf-8"))["source_node_id"] == event["source_node_id"]
+
+
+def test_get_encodes_query_uses_auth_and_has_no_body(monkeypatch) -> None:
+    captured = {}
+
+    class Response:
+        status = 200
+        def read(self):
+            return b'{"events": [], "cursor": "0"}'
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return None
+
+    def fake_urlopen(request, *, timeout, context):
+        captured.update(url=request.full_url, method=request.method, body=request.data,
+                        auth=request.get_header("Authorization"), timeout=timeout)
+        return Response()
+
+    monkeypatch.setattr("servers.memory_server.memory_sync_client.urlopen", fake_urlopen)
+    client = MemoryHubClient(SharedMemoryConfig(enabled=True, server_url="https://hub.example",
+                            project_id="p", local_token="test-token"))
+    status, result = client.get("/v1/projects/p/task-events", {"task_id": "task &other", "cursor": 3}, 1.2)
+    assert status == 200 and result["events"] == []
+    assert captured == {"url": "https://hub.example/v1/projects/p/task-events?task_id=task+%26other&cursor=3",
+                        "method": "GET", "body": None, "auth": "Bearer test-token", "timeout": 1.2}
+
+
+def test_get_rejects_nonobject_json(monkeypatch) -> None:
+    class Response:
+        status = 200
+        def read(self):
+            return b'[]'
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return None
+    monkeypatch.setattr("servers.memory_server.memory_sync_client.urlopen", lambda *_args, **_kwargs: Response())
+    client = MemoryHubClient(SharedMemoryConfig(enabled=True, server_url="https://hub.example",
+                            project_id="p", local_token="test-token"))
+    assert client.get("/task-events", {}, 1) == (0, {"error": "invalid_json_object"})

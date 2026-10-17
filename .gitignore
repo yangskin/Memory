@@ -41,3 +41,6 @@ memory_hub/certs/*
 vendor/models/*/*
 !vendor/models/README.md
 !vendor/models/.gitkeep
+
+# 每台设备的 Hub 凭据；不随安装包分发。
+/local/

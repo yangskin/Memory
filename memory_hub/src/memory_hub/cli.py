@@ -20,6 +20,8 @@ def main() -> int:
     create_parser.add_argument("--project", required=True)
     create_parser.add_argument("--user", required=True)
     create_parser.add_argument("--scope", action="append", required=True)
+    grant_parser = token_subparsers.add_parser("grant-device-approval")
+    grant_parser.add_argument("--token-id", required=True)
     revoke_parser = token_subparsers.add_parser("revoke")
     revoke_parser.add_argument("--token-id", required=True)
     list_parser = token_subparsers.add_parser("list")
@@ -36,6 +38,18 @@ def main() -> int:
             session.add(AccessToken(token_id=token_id, token_secret_hash=secret_hash, token_prefix=token[:20], user_id=args.user, project_id=args.project, scopes=args.scope))
             session.commit()
         print(token)
+    elif args.command == "token" and args.token_command == "grant-device-approval":
+        settings = load_settings()
+        if not settings.database_url:
+            parser.error("MEMORY_HUB_DATABASE_URL is required for token storage")
+        from memory_hub.db.repositories import active_token
+        with create_session_factory(settings.database_url)() as session:
+            item = active_token(session, args.token_id)
+            if item is None:
+                parser.error("unknown or inactive token id")
+            item.scopes = sorted(set(item.scopes) | {"devices:approve"})
+            session.commit()
+        print("device approval enabled; token unchanged")
     elif args.command == "token" and args.token_command == "revoke":
         settings = load_settings()
         if not settings.database_url:

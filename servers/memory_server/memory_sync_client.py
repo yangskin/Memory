@@ -7,6 +7,7 @@ import ssl
 from email.message import Message
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from .memory_sync_config import SharedMemoryConfig
@@ -24,15 +25,25 @@ class MemoryHubClient:
         self.config = config
 
     def post(self, path: str, payload: dict[str, Any], timeout_seconds: float) -> tuple[int, dict[str, Any]]:
+        return self._request("POST", path, payload, timeout_seconds)
+
+    def get(self, path: str, params: dict[str, Any], timeout_seconds: float) -> tuple[int, dict[str, Any]]:
+        query = urlencode(params)
+        return self._request("GET", f"{path}?{query}" if query else path, None, timeout_seconds)
+
+    def _request(self, method: str, path: str, payload: dict[str, Any] | None, timeout_seconds: float) -> tuple[int, dict[str, Any]]:
         if not self.config.active:
             return 0, {"error": "shared_memory_disabled"}
         headers = {"Authorization": f"Bearer {self.config.token}", "Content-Type": "application/json"}
         if self.config.user_id:
             headers["X-Memory-User-ID"] = self.config.user_id
-        request = Request(f"{self.config.server_url}{path}", data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+        request = Request(f"{self.config.server_url}{path}", data=json.dumps(payload).encode("utf-8") if payload is not None else None, headers=headers, method=method)
         try:
             with urlopen(request, timeout=timeout_seconds, context=_SSL_CONTEXT) as response:
-                return response.status, json.loads(response.read().decode("utf-8"))
+                body = json.loads(response.read().decode("utf-8"))
+                if not isinstance(body, dict):
+                    return 0, {"error": "invalid_json_object"}
+                return response.status, body
         except HTTPError as exc:
             body = self._http_error_body(exc)
             retry_after = self._retry_after_seconds(exc.headers)

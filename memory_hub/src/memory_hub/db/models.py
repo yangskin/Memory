@@ -30,6 +30,24 @@ class AccessToken(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class DeviceEnrollment(Base):
+    """待审批设备仅保存凭据哈希；明文始终留在申请设备。"""
+
+    __tablename__ = "device_enrollments"
+    __table_args__ = (Index("idx_enrollment_project_created", "project_id", "created_at"),)
+
+    enrollment_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    device_name: Mapped[str] = mapped_column(String(96), nullable=False)
+    token_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    token_secret_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    poll_secret_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    approved_by: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class MemoryEvent(Base):
     __tablename__ = "memory_events"
     __table_args__ = (

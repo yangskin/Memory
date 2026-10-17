@@ -10,6 +10,7 @@ from .memory_identity import canonical_identity
 from .memory_key_document_jobs import enqueue_key_document_rebuild
 from .memory_record_io import iter_parsed_records
 from .memory_reflection import publish_reflection_proposal, reflect_task
+from .memory_reflection_state import acknowledge_reflection_delivery
 from .memory_result import error_result, ok_result
 
 _STATE_REL = Path(".ai-memory") / "jobs" / "project-reflection.json"
@@ -84,6 +85,9 @@ def enqueue_project_reflection(
             payload=payload,
             dedupe_key=f"task:{task}",
             merge=_merge,
+            debounce_seconds=float(config.reflection.get("debounce_seconds", 300)),
+            max_wait_seconds=float(config.reflection.get("max_wait_seconds", 1800)),
+            single_flight=True,
         )
     except (DurableQueueCorruption, OSError, ValueError) as exc:
         return error_result("queue_unavailable", f"project reflection could not be queued: {exc}", queued=False)
@@ -148,7 +152,8 @@ def drain_project_reflection_jobs(
         token = str(job.get("lease_token") or "")
         try:
             with queue.lease_guard(str(job.get("job_id")), token, lease_seconds=lease_seconds) as lease_state:
-                reflection = reflect_task(config, task_id=task_id, prior_support=_prior_support(state))
+                reflection = reflect_task(config, task_id=task_id, prior_support=_prior_support(state),
+                                          job_id=str(job.get("job_id")), job_attempt=int(job.get("attempts") or 1))
             if lease_state.get("lost"):
                 original = reflection if isinstance(reflection, dict) else {}
                 reflection = error_result(
@@ -162,19 +167,9 @@ def drain_project_reflection_jobs(
                 )
         except Exception as exc:  # noqa: BLE001 - background failure isolation boundary
             reflection = error_result("worker_exception", f"project reflection raised: {type(exc).__name__}: {exc}")
-        if reflection.get("ok"):
-            finish = queue.succeed(str(job.get("job_id")), token, result=reflection)
-        else:
-            finish = queue.fail(
-                str(job.get("job_id")),
-                token,
-                error=str(reflection.get("error") or "project reflection failed"),
-                retry_base_seconds=retry_base,
-                result=reflection,
-            )
         published = [item for item in reflection.get("published", []) if isinstance(item, dict) and item.get("ok") and not item.get("duplicate")]
         key_document_rebuild: dict[str, Any] | None = None
-        if published:
+        if reflection.get("ok") and published:
             reflection_targets = _configured_reflection_key_document_targets(config)
             if reflection_targets:
                 key_document_rebuild = enqueue_key_document_rebuild(
@@ -193,19 +188,41 @@ def drain_project_reflection_jobs(
                     skipped=True,
                     targets=[],
                 )
+        if key_document_rebuild is not None and not key_document_rebuild.get("ok"):
+            reflection = {**reflection, "ok": False, "error": "reflection_delivery_deferred", "retryable": True,
+                          "delivery_error": key_document_rebuild.get("error")}
+        delivery_ack = None
+        if reflection.get("ok"):
+            finish = queue.succeed(str(job.get("job_id")), token, result=reflection)
+            if finish.get("ok"):
+                delivery_ack = acknowledge_reflection_delivery(
+                    config, task_id=task_id, evidence_hash=reflection.get("evidence_hash"),
+                )
+        else:
+            finish = queue.fail(
+                str(job.get("job_id")), token,
+                error=str(reflection.get("error") or "project reflection failed"),
+                retry_base_seconds=retry_base, result=reflection,
+                retryable=reflection.get("retryable", True),
+            )
         item = {
             "job_id": job.get("job_id"),
             "task_id": task_id,
-            "ok": bool(reflection.get("ok") and finish.get("ok")),
+            "ok": bool(reflection.get("ok") and finish.get("ok")
+                       and (delivery_ack is None or delivery_ack.get("ok"))),
             "reflection": reflection,
             "queue_update": finish,
             "key_document_rebuild": key_document_rebuild,
+            "delivery_ack": delivery_ack,
         }
         processed.append(item)
         _safe_append_event(
             config,
             "project_reflection_finished",
-            {"job_id": job.get("job_id"), "task_id": task_id, "ok": item["ok"], "published": len(published)},
+            {"job_id": job.get("job_id"), "task_id": task_id, "ok": item["ok"], "published": len(published),
+             "skip_reason": reflection.get("skip_reason"), "suppressed": bool(reflection.get("suppressed")),
+             "error": reflection.get("error"), "llm_status": reflection.get("llm_status"),
+             "retryable": reflection.get("retryable"), "evidence_count": reflection.get("evidence_count")},
             status="ok" if item["ok"] else "error",
         )
     curator_result: dict[str, Any] | None = None

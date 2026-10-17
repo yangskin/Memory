@@ -63,6 +63,16 @@ def test_source_change_after_plan_is_not_deleted(repo):
     assert 'new data' in paths[0].read_text(encoding='utf-8')
 
 
+def test_coalescence_refuses_to_drop_legacy_file_audit(repo):
+    paths = seed(repo, 1)
+    audit = '<!-- last overwritten by alice at 2020-01-01 00:00 UTC -->\n'
+    original = paths[0].read_bytes() + b'\n' + audit.encode()
+    paths[0].write_bytes(original)
+    result = plan_coalescence(load_config(repo))
+    assert not result['ok'] and 'audit' in result['message']
+    assert paths[0].read_bytes() == original
+
+
 def test_tampered_plan_cannot_drop_source_record(repo):
     config = load_config(repo)
     seed(repo)

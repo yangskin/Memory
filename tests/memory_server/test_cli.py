@@ -26,6 +26,30 @@ def test_cli_health(monkeypatch: pytest.MonkeyPatch, repo: Path) -> None:
     assert payload["ok"] is True
 
 
+def test_cli_task_status_reads_persisted_checkpoint_and_no_body(monkeypatch, repo):
+    from servers.memory_server.memory_config import load_config
+    from servers.memory_server.memory_task_context import begin_or_resolve_task, mark_task_checkpoint
+    config = load_config(repo)
+    task = begin_or_resolve_task(config, agent_id='test', user_goal='private-goal-do-not-print')
+    assert task['ok']
+    assert mark_task_checkpoint(config, task['context_token'], 'task_done')['ok']
+    monkeypatch.setattr(cli, 'get_current_user', lambda root: task['user'])
+    code, result = _run(monkeypatch, repo, 'task-status', '--task-id', task['task_id'])
+    assert code == 0 and result['task']['last_phase'] == 'task_done'
+    assert result['task']['status'] == 'completed' and result['task']['completed_at']
+    assert set(result['task']) == {'task_id', 'status', 'last_phase', 'last_checkpoint_at', 'completed_at', 'updated_at'}
+    monkeypatch.setattr(cli, 'get_current_user', lambda root: 'another-user')
+    code, result = _run(monkeypatch, repo, 'task-status', '--task-id', task['task_id'])
+    assert code == 1 and result['error'] == 'task_not_found'
+
+
+def test_cli_local_only_is_explicit_and_limited(monkeypatch, repo):
+    code, result = _run(monkeypatch, repo, '--local-only', 'retrieve-context', '--query', 'fixture')
+    assert code == 0 and result['config_mode'] == 'local_only'
+    code, result = _run(monkeypatch, repo, '--local-only', 'worker-once')
+    assert code == 1 and result['error'] == 'invalid_local_only_command'
+
+
 def test_cli_guard(monkeypatch: pytest.MonkeyPatch, repo: Path) -> None:
     code, payload = _run(monkeypatch, repo, "guard")
     assert code == 0

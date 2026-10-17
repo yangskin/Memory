@@ -323,6 +323,7 @@ def run_llm_capability(
     fallback: Callable[[], Any] | None = None,
     client_factory: ClientFactory | None = None,
     force_enabled: bool = False,
+    attribution: Mapping[str, Any] | None = None,
 ) -> LLMRunResult:
     """Execute ``callable_`` under the unified LLM policy envelope.
 
@@ -335,6 +336,13 @@ def run_llm_capability(
 
     import time as _time
 
+    factory = client_factory or _default_client_factory
+
+    def attributed_factory(profile: CapabilityProfile) -> Any:
+        client = factory(profile)
+        client.request_observer = lambda payload: _emit_request_event(config, capability, attribution or {}, payload)
+        return client
+
     start = _time.perf_counter()
     try:
         result = _run_llm_capability_inner(
@@ -342,13 +350,23 @@ def run_llm_capability(
             capability,
             callable_,
             fallback=fallback,
-            client_factory=client_factory,
+            client_factory=attributed_factory if attribution is not None else client_factory,
             force_enabled=force_enabled,
         )
     finally:
         latency_ms = int((_time.perf_counter() - start) * 1000)
-    _emit_llm_event(config, capability, locals().get("result"), latency_ms)
+    _emit_llm_event(config, capability, locals().get("result"), latency_ms, attribution)
     return result
+
+
+def _emit_request_event(config: MemoryConfig, capability: str, attribution: Mapping[str, Any],
+                        payload: Mapping[str, Any]) -> None:
+    try:
+        from .memory_events import append_event
+        append_event(config, "llm_request_completed", {"capability": capability, **attribution, **payload},
+                     status="ok" if payload.get("status") == "ok" else "error")
+    except Exception as exc:
+        logger.debug("LLM request event suppressed: %s", type(exc).__name__)
 
 
 def _emit_llm_event(
@@ -356,6 +374,7 @@ def _emit_llm_event(
     capability: str,
     result: LLMRunResult | None,
     latency_ms: int,
+    attribution: Mapping[str, Any] | None = None,
 ) -> None:
     """Best-effort: append one ``llm_capability_invoked`` event row.
 
@@ -375,6 +394,7 @@ def _emit_llm_event(
         "status": result.status,
         "fallback_used": bool(result.fallback_used),
         "latency_ms": int(latency_ms),
+        **(attribution or {}),
     }
     if result.error:
         payload["error"] = str(result.error)[:240]
@@ -384,6 +404,8 @@ def _emit_llm_event(
         # in dashboards; full usage stays in the in-memory result.
         payload["call_count"] = int(usage.get("call_count", 0) or 0)
         payload["total_tokens"] = int(usage.get("total_tokens", 0) or 0)
+        payload["input_tokens"] = int(usage.get("total_prompt_tokens", 0) or 0)
+        payload["output_tokens"] = int(usage.get("total_completion_tokens", 0) or 0)
         if "retry_count" in usage:
             payload["retry_count"] = int(usage.get("retry_count", 0) or 0)
         if "total_estimated_cost_cny" in usage:
@@ -479,14 +501,20 @@ def _run_llm_capability_inner(
     try:
         from .memory_llm import (
             LLMBudgetExceeded,
+            LLMInputTooLarge,
             LLMError,
             LLMRequestError,
         )
     except Exception:  # pragma: no cover — defensive
-        LLMError = LLMRequestError = LLMBudgetExceeded = Exception  # type: ignore[assignment]
+        LLMError = LLMRequestError = LLMBudgetExceeded = LLMInputTooLarge = Exception  # type: ignore[assignment]
 
     try:
         value = callable_(client, profile)
+    except LLMInputTooLarge as exc:
+        return _maybe_fallback(
+            LLMRunResult(ok=False, status="input_too_large", capability=capability,
+                         error=str(exc), meta={**_safe_usage(client), "retryable": False}), fallback,
+        )
     except LLMBudgetExceeded as exc:
         return _maybe_fallback(
             LLMRunResult(
@@ -494,7 +522,7 @@ def _run_llm_capability_inner(
                 status=STATUS_BUDGET,
                 capability=capability,
                 error=str(exc),
-                meta=_safe_usage(client),
+                meta={**_safe_usage(client), "retryable": False},
             ),
             fallback,
         )
@@ -510,7 +538,9 @@ def _run_llm_capability_inner(
                 status=STATUS_TIMEOUT if is_timeout else STATUS_FAILED,
                 capability=capability,
                 error=str(exc),
-                meta=_safe_usage(client),
+                meta={**_safe_usage(client), "http_status": exc.status,
+                      "retryable": exc.status is None or 200 <= exc.status < 300
+                      or exc.status == 429 or (exc.status >= 500 and exc.status != 501)},
             ),
             fallback,
         )

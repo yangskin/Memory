@@ -8,8 +8,12 @@ from typing import Any, Iterable
 from .memory_config import MemoryConfig
 from .memory_corpus import first_heading
 from .memory_llm_runner import run_llm_capability
-from .memory_locks import file_lock
+from .memory_locks import LockTimeoutError, file_lock
 from .memory_record_io import iter_parsed_records
+from .memory_reflection_state import (
+    REFLECTION_VERSION, read_reflection_state, reflection_config_revision,
+    reflection_state_path, save_reflection_state,
+)
 from .memory_records import memory_write_record
 from .memory_request_id import content_sha
 from .memory_result import error_result, ok_result
@@ -91,39 +95,57 @@ def collect_task_evidence(config: MemoryConfig, *, task_id: str) -> dict[str, An
             excluded.append({"record_id": record_id, "reason": "secret_signal"})
             continue
         selected.append(record)
-    selected.sort(key=lambda item: (_record_time(item.metadata), str(item.metadata.get("id") or "")))
-    selected = selected[-max_records:]
+    selected.sort(key=lambda item: (
+        item.metadata.get("provenance") == "auto_team_settlement",
+        _record_time(item.metadata), str(item.metadata.get("id") or ""),
+    ))
     evidence: list[dict[str, Any]] = []
-    used_chars = 0
-    for record in reversed(selected):
+    record_versions: dict[str, str] = {}
+    for record in selected:
         metadata = record.metadata
-        remaining = max_chars - used_chars
-        if remaining <= 0:
-            break
-        body = record.body.strip()[:remaining]
-        used_chars += len(body)
-        evidence.append(
-            {
-                "id": str(metadata.get("id") or ""),
-                "record_kind": str(metadata.get("record_kind") or ""),
-                "scope": str(metadata.get("scope") or ""),
-                "status": str(metadata.get("status") or ""),
-                "confidence": metadata.get("confidence"),
-                "system_area": metadata.get("system_area"),
-                "occurred_at": _record_time(metadata),
-                "body": body,
-            }
-        )
-    evidence.reverse()
-    serialized = json.dumps(evidence, ensure_ascii=False, sort_keys=True)
-    return ok_result(
-        "task reflection evidence collected",
-        task_id=task_id,
-        evidence=evidence,
-        evidence_hash=content_sha(serialized),
-        excluded=excluded,
-        stats={**stats, "eligible_records": len(evidence), "evidence_chars": used_chars},
-    )
+        record_id = str(metadata.get("id") or "")
+        sources = metadata.get("derived_from_record_ids") or []
+        if (metadata.get("provenance") == "auto_team_settlement"
+                and isinstance(sources, list) and sources
+                and all(str(source) in record_versions for source in sources)):
+            excluded.append({"record_id": record_id, "reason": "source_already_included"})
+            continue
+        version = content_sha(json.dumps({"metadata": metadata, "body": record.body.strip()},
+                                        ensure_ascii=False, sort_keys=True))
+        if record_id in record_versions:
+            if record_versions[record_id] != version:
+                return error_result("conflicting_record_versions", "task evidence contains conflicting versions of one record",
+                                    task_id=task_id, retryable=False)
+            continue
+        record_versions[record_id] = version
+        evidence.append({
+            "id": record_id,
+            "record_kind": str(metadata.get("record_kind") or ""),
+            "scope": str(metadata.get("scope") or ""),
+            "status": str(metadata.get("status") or ""),
+            "confidence": metadata.get("confidence"),
+            "system_area": metadata.get("system_area"),
+            "occurred_at": _record_time(metadata),
+            "supersedes": metadata.get("supersedes") or [],
+            "conflicts_with": metadata.get("conflicts_with") or [],
+            "valid_to": metadata.get("valid_to"),
+            "body": record.body.strip(),
+        })
+    used_chars = sum(len(item["body"]) for item in evidence)
+    details = {
+        "task_id": task_id,
+        "evidence_hash": content_sha(json.dumps(record_versions, sort_keys=True)),
+        "record_versions": record_versions,
+        "excluded": excluded,
+        "stats": {**stats, "eligible_records": len(evidence), "evidence_chars": used_chars},
+    }
+    if stats.get("skipped_read_errors") or stats.get("skipped_parse_errors"):
+        return error_result("evidence_read_incomplete", "record files could not all be read and parsed; no evidence watermark will advance",
+                            retryable=True, **details)
+    if len(evidence) > max_records or used_chars > max_chars:
+        return error_result("evidence_collection_limit", "complete task evidence exceeds collection limits; batching is required",
+                            retryable=False, pending_record_ids=list(record_versions), **details)
+    return ok_result("task reflection evidence collected", evidence=evidence, **details)
 
 
 def _bool_value(value: Any) -> bool:
@@ -347,6 +369,8 @@ def _run_two_pass(
         f"Existing replaceable reflection memories JSON:\n{json.dumps(existing_memories or [], ensure_ascii=False)}\n"
         f"Evidence JSON:\n{evidence_json}"
     )
+    client.request_context = {"stage": "extract", "stage_evidence_count": len(evidence),
+                              "stage_evidence_chars": sum(len(item["body"]) for item in evidence)}
     extracted_text = client.complete_text(
         extraction_prompt,
         system=EXTRACT_SYSTEM_PROMPT,
@@ -355,20 +379,32 @@ def _run_two_pass(
     extracted = _extract_json_object(extracted_text)
     if extracted is None:
         raise ValueError("reflection extractor did not return a JSON object")
-    evidence_index = [
-        {"id": item["id"], "record_kind": item["record_kind"], "body": item["body"][:2000]}
-        for item in evidence
-    ]
+    if not isinstance(extracted.get("proposals"), list):
+        raise ValueError("reflection extractor did not return a proposals array")
+    if not extracted["proposals"]:
+        return {"frame": extracted, "critic_skipped": True,
+                "model": str(getattr(client_config, "model", "unknown"))}
+    referenced_ids = {
+        str(record_id) for proposal in extracted["proposals"] if isinstance(proposal, dict)
+        for field in ("supporting_record_ids", "validation_evidence_ids", "contradicts_record_ids")
+        for record_id in (proposal.get(field) if isinstance(proposal.get(field), list) else [])
+    }
+    evidence_index = [item for item in evidence if item["id"] in referenced_ids]
+    target_ids = {str(record_id) for proposal in extracted["proposals"] if isinstance(proposal, dict)
+                  for record_id in (proposal.get("target_record_ids") if isinstance(proposal.get("target_record_ids"), list) else [])}
+    critic_memories = [item for item in (existing_memories or []) if item["id"] in target_ids]
     critic_prompt = json.dumps(
         {
             "task_id": task_id,
             "output_constraints": output_constraints,
             "evidence": evidence_index,
-            "existing_memories": existing_memories or [],
+            "existing_memories": critic_memories,
             "candidate_frame": extracted,
         },
         ensure_ascii=False,
     )
+    client.request_context = {"stage": "critic", "stage_evidence_count": len(evidence_index),
+                              "stage_evidence_chars": sum(len(item["body"]) for item in evidence_index)}
     criticised_text = client.complete_text(
         critic_prompt,
         system=CRITIC_SYSTEM_PROMPT,
@@ -548,15 +584,100 @@ def publish_reflection_proposal(
     return result
 
 
+def _register_changed_evidence(config: MemoryConfig, *, task_id: str, result: dict[str, Any]) -> None:
+    latest = collect_task_evidence(config, task_id=task_id)
+    if not latest.get("ok"):
+        result["follow_up_check_error"] = latest.get("error")
+    if (latest.get("evidence_hash") and latest["evidence_hash"] != result.get("evidence_hash")
+            and latest.get("retryable") is not True):
+        from .memory_reflection_jobs import enqueue_project_reflection
+        result["follow_up"] = enqueue_project_reflection(
+            config, task_id=task_id, user=None, trigger="evidence_changed_during_reflection",
+        )
+
+
 def reflect_task(
     config: MemoryConfig,
     *,
     task_id: str,
     prior_support: dict[str, set[str]] | None = None,
+    job_id: str | None = None,
+    job_attempt: int = 1,
 ) -> dict[str, Any]:
-    evidence_result = collect_task_evidence(config, task_id=task_id)
-    if not evidence_result.get("ok"):
-        return evidence_result
+    path = reflection_state_path(config, task_id)
+    try:
+        with file_lock(config.repo_root, path, timeout=0.0):
+            state = read_reflection_state(path)
+            pending = (state.get("pending_results") or {}).get(job_id) if job_id else None
+            if pending:
+                replayed = dict(pending["result"])
+                replayed["result_replayed"] = True
+                _register_changed_evidence(config, task_id=task_id, result=replayed)
+                return replayed
+            evidence_result = collect_task_evidence(config, task_id=task_id)
+            evidence_hash = evidence_result.get("evidence_hash")
+            if not evidence_hash or (not evidence_result.get("ok") and evidence_result.get("retryable")):
+                return evidence_result
+            signature = content_sha(f"{REFLECTION_VERSION}:{evidence_hash}")
+            processed = state.get("processed") or {}
+            if processed.get("signature") == signature:
+                if not processed.get("delivered", True) and isinstance(processed.get("result"), dict):
+                    replayed = dict(processed["result"])
+                    replayed["result_replayed"] = True
+                    if job_id:
+                        state.setdefault("pending_results", {})[job_id] = processed
+                        save_reflection_state(config, path, state)
+                    return replayed
+                return ok_result("reflection skipped: no new evidence", task_id=task_id,
+                                 skipped=True, skip_reason="no_new_evidence", evidence_hash=evidence_hash)
+            blocked_signature = content_sha(f"{signature}:{reflection_config_revision(config)}")
+            blocked = state.get("blocked") or {}
+            if blocked.get("signature") == blocked_signature:
+                return error_result(str(blocked.get("error") or "reflection_blocked"),
+                                    "reflection deferred until evidence or configuration changes",
+                                    task_id=task_id, retryable=False, suppressed=True,
+                                    evidence_hash=evidence_hash, llm_status=blocked.get("llm_status"),
+                                    pending_record_ids=list(blocked.get("record_versions") or {}))
+            result = evidence_result if not evidence_result.get("ok") else _reflect_evidence_task(
+                config, task_id=task_id, evidence_result=evidence_result,
+                prior_support=prior_support, job_id=job_id, job_attempt=job_attempt,
+            )
+            entry = {
+                "signature": signature,
+                "record_versions": evidence_result.get("record_versions") or {},
+                "reflection_version": REFLECTION_VERSION,
+            }
+            result.setdefault("evidence_hash", evidence_hash)
+            if result.get("ok"):
+                state["processed"] = {**entry, "result": dict(result), "delivered": job_id is None}
+                if job_id:
+                    state.setdefault("pending_results", {})[job_id] = state["processed"]
+                state.pop("blocked", None)
+            elif result.get("retryable") is False:
+                state["blocked"] = {**entry, "signature": blocked_signature, "error": result.get("error"),
+                                    "llm_status": result.get("llm_status")}
+            else:
+                return result
+            save_reflection_state(config, path, state)
+            if evidence_result.get("ok") and not result.get("skipped"):
+                _register_changed_evidence(config, task_id=task_id, result=result)
+            return result
+    except LockTimeoutError:
+        return error_result("reflection_busy", "another process is reflecting this task", task_id=task_id, retryable=True)
+    except (OSError, UnicodeError, ValueError) as exc:
+        return error_result("reflection_state_unavailable", f"reflection state cannot be safely used: {type(exc).__name__}",
+                            task_id=task_id, retryable=False)
+
+
+def _reflect_evidence_task(
+    config: MemoryConfig,
+    *,
+    task_id: str,
+    evidence_result: dict[str, Any],
+    prior_support: dict[str, set[str]] | None = None,
+    job_id: str | None = None,
+    job_attempt: int = 1,
+) -> dict[str, Any]:
     evidence = list(evidence_result.get("evidence") or [])
     if not evidence:
         return ok_result("reflection skipped because the task has no eligible evidence", skipped=True, task_id=task_id)
@@ -572,6 +693,9 @@ def reflect_task(
             existing_memories=existing_memories,
             max_candidates=max(1, int(config.reflection.get("max_candidates", 8))),
         ),
+        attribution={"task_id": task_id, "job_id": job_id, "job_attempt": job_attempt,
+                     "evidence_count": len(evidence),
+                     "evidence_chars": evidence_result["stats"]["evidence_chars"]},
     )
     if not run.ok:
         return error_result(
@@ -579,6 +703,8 @@ def reflect_task(
             run.error or f"project_reflection ended with status {run.status}",
             llm_status=run.status,
             task_id=task_id,
+            retryable=bool(run.meta.get("retryable", run.status in {"timeout", "failed"})),
+            usage=run.meta.get("usage"),
         )
     value = run.value if isinstance(run.value, dict) else {}
     frame = value.get("frame") if isinstance(value.get("frame"), dict) else {}

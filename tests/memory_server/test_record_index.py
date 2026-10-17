@@ -6,6 +6,26 @@ from pathlib import Path
 from servers.memory_server.memory_config import load_config
 from servers.memory_server.memory_record_index import build_search_text, memory_rebuild_index, memory_search_records
 from servers.memory_server.memory_records import memory_write_record
+
+
+def test_legacy_audit_pack_indexes_all_records_and_preserves_source(repo):
+    from test_git_record_merge import pack
+    path = repo / 'memory-bank/archive/record-packs/alice/legacy.md'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    raw = (pack('one', 'two') + '\n<!-- last overwritten by alice at 2026-10-11 05:01 UTC -->\n').encode()
+    path.write_bytes(raw)
+    result = memory_rebuild_index(load_config(repo))
+    assert result['ok'] and result['indexed_records'] == 2, result
+    assert path.read_bytes() == raw
+
+
+def test_invalid_pack_diagnostic_has_source_path_without_body(repo):
+    path = repo / 'memory-bank/archive/record-packs/alice/broken.md'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('<!-- memory-record-pack version=1 -->\nprivate-body-outside-frame', encoding='utf-8')
+    result = memory_rebuild_index(load_config(repo))
+    assert not result['ok'] and 'alice/broken.md' in result['message']
+    assert 'private-body' not in result['message']
 from servers.memory_server.server import _dispatch_tool
 
 

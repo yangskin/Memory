@@ -582,7 +582,7 @@ def test_hub_rejection_rolls_back_the_local_task_command(tmp_path, monkeypatch) 
             "actor_id": "agent:worker",
         },
     )
-    history = task_sync(config, {"action": "history", "task_id": "task-authority"})
+    history = task_sync(SimpleNamespace(repo_root=tmp_path), {"action": "history", "task_id": "task-authority"})
 
     assert created["shared_sync"]["mode"] == "hub_authoritative"
     assert assigned["shared_sync"]["mode"] == "hub_authoritative"
@@ -629,7 +629,7 @@ def test_hub_retries_a_transient_authority_failure_without_duplicate_local_event
             "title": "Transient authority task",
         },
     )
-    history = task_sync(config, {"action": "history", "task_id": "task-transient-authority"})
+    history = task_sync(SimpleNamespace(repo_root=tmp_path), {"action": "history", "task_id": "task-transient-authority"})
 
     assert created["ok"] is True
     assert created["shared_sync"]["mode"] == "hub_authoritative"

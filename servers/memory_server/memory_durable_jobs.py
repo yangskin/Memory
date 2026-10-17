@@ -198,15 +198,21 @@ class DurableJobQueue:
         dedupe_key: str | None = None,
         merge: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
         max_attempts: int | None = None,
+        debounce_seconds: float = 0.0,
+        max_wait_seconds: float | None = None,
+        single_flight: bool = False,
     ) -> dict[str, Any]:
         try:
             json.dumps({"kind": kind, "payload": payload, "dedupe_key": dedupe_key}, ensure_ascii=False)
         except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError(f"durable job payload must be JSON serializable: {exc}") from exc
         attempts = max(1, int(max_attempts or self.config.worker.get("max_attempts", 4)))
+        quiet = max(0.0, float(debounce_seconds))
+        maximum_wait = max(quiet, float(max_wait_seconds)) if max_wait_seconds is not None else quiet
         with file_lock(self.config.repo_root, self.path):
+            now_dt = _now_dt()
             state, recovered = self._read_unlocked()
-            self._reclaim_expired_unlocked(state, now=_now_dt())
+            self._reclaim_expired_unlocked(state, now=now_dt)
             if dedupe_key:
                 for job_id in state.get("queue", []):
                     job = state["jobs"].get(str(job_id))
@@ -221,8 +227,13 @@ class DurableJobQueue:
                     except (TypeError, ValueError, OverflowError) as exc:
                         raise ValueError(f"merged durable job payload must be JSON serializable: {exc}") from exc
                     job["payload"] = merged_payload
-                    job["updated_at"] = _now()
+                    job["updated_at"] = now_dt.isoformat()
                     job["config_hash"] = self.config.config_hash
+                    job["single_flight"] = bool(single_flight or job.get("single_flight"))
+                    if quiet > 0 and int(job.get("attempts") or 0) == 0:
+                        first = _parse_time(job.get("created_at")) or now_dt
+                        due = min(now_dt + timedelta(seconds=quiet), first + timedelta(seconds=maximum_wait))
+                        job["available_at"] = due.isoformat()
                     self._write_unlocked(state)
                     return ok_result(
                         "durable job coalesced",
@@ -233,7 +244,7 @@ class DurableJobQueue:
                         job=dict(job),
                     )
             job_id = f"{self.name[:4]}_{new_request_id().replace('-', '')}"
-            now = _now()
+            now = now_dt.isoformat()
             job = {
                 "job_id": job_id,
                 "kind": str(kind),
@@ -242,7 +253,8 @@ class DurableJobQueue:
                 "dedupe_key": dedupe_key,
                 "attempts": 0,
                 "max_attempts": attempts,
-                "available_at": now,
+                "available_at": (now_dt + timedelta(seconds=quiet)).isoformat(),
+                "single_flight": bool(single_flight),
                 "created_at": now,
                 "updated_at": now,
                 "config_hash": self.config.config_hash,
@@ -273,6 +285,11 @@ class DurableJobQueue:
                     continue
                 available = _parse_time(job.get("available_at")) or now
                 if available > now:
+                    continue
+                if job.get("single_flight") and job.get("dedupe_key") and any(
+                    other.get("status") == "running" and other.get("dedupe_key") == job["dedupe_key"]
+                    for other in state["jobs"].values()
+                ):
                     continue
                 token = new_request_id()
                 job["status"] = "running"
@@ -351,6 +368,7 @@ class DurableJobQueue:
         error: str,
         retry_base_seconds: float,
         result: dict[str, Any] | None = None,
+        retryable: bool = True,
     ) -> dict[str, Any]:
         return self._finish(
             job_id,
@@ -359,6 +377,7 @@ class DurableJobQueue:
             result=result or {},
             error=error,
             retry_base_seconds=retry_base_seconds,
+            retryable=retryable,
         )
 
     def _finish(
@@ -370,6 +389,7 @@ class DurableJobQueue:
         result: dict[str, Any],
         error: str | None,
         retry_base_seconds: float = 0.0,
+        retryable: bool = True,
     ) -> dict[str, Any]:
         try:
             json.dumps(result, ensure_ascii=False)
@@ -398,7 +418,8 @@ class DurableJobQueue:
                 job["last_error"] = str(error or "durable job failed")[:4000]
                 attempts = int(job.get("attempts") or 0)
                 max_attempts = max(1, int(job.get("max_attempts") or 1))
-                if attempts >= max_attempts:
+                job["retryable"] = bool(retryable)
+                if not retryable or attempts >= max_attempts:
                     job["status"] = "dead"
                     job["finished_at"] = now.isoformat()
                     if job_id not in state["dead_letter"]:

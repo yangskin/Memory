@@ -219,3 +219,14 @@ docker compose -p <project-id> exec api memory-hub token revoke --token-id <toke
 ```bash
 python scripts/check_public_tree.py
 ```
+## 新设备申请与管理员批准
+
+`device-enrollments` 提供无 Token 的待审批申请与持查询秘密的状态查询。初次申请不授予项目权限。管理员接口需同项目 `devices:approve`，核对配对码后创建只有 `events:write` / `context:read` 的独立凭据，身份绑定批准者。服务端只收到并保存秘密哈希，Token 明文由申请设备保存。
+
+在**现有**部署目录同步本次源码后执行：
+
+```sh
+sh Enable-DeviceEnrollment.sh <compose-project> <admin-token-id>
+```
+
+脚本先备份数据库，再更新 API/迁移和检查健康，最后为指定已有 Token 增加审批权限。Token ID 用既有 `token list` 查询，不传明文、不更换管理员 Token。单独授权可用 `memory-hub token grant-device-approval --token-id <id>`。不要重新 bootstrap 生产服务。消费项目应提供申请与管理员审批入口，审批者核对配对码，批准后客户端才可保存凭据继续使用。状态查询请求头为 `X-Memory-Enrollment-Secret`，服务端与客户端必须使用匹配版本；不接受旧的项目专用请求头。公开仓库不依赖消费项目的脚本或部署状态文档。
