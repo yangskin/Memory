@@ -28,6 +28,7 @@ class _BoardRequest(BaseModel):
         "agent_instance_id",
         "status",
         "post_type",
+        "cursor",
         mode="before",
         check_fields=False,
     )
@@ -85,5 +86,7 @@ class BoardQueryRequest(_BoardRequest):
     post_type: str | None = Field(default=None, pattern=r"^(note|question|request|warning|handoff|proposal|reply)$")
     thread_id: UUID | None = None
     max_items: int = Field(default=20, ge=1, le=50)
+    # 可选翻页游标：只来自上一次响应的 next_cursor，且必须与同一组过滤条件配合使用。
+    cursor: str | None = Field(default=None, max_length=512)
     include_content: bool = False
     include_references: bool = False

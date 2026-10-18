@@ -86,6 +86,22 @@ claim/review/reassign 伪装为有效；Hub 不可用时只有 `report` / `submi
 Context 默认 10 项、最大 20 项且最多 6 个 include 区段。完整正文、structured brief 和 Board
 references 都是显式 opt-in，Web 面板自行请求 UI 所需的 Task Graph 与事件详情。
 
+Board 查询支持可选 `cursor` 分页：单页上限仍为 50，响应附带 `has_more` 与 `next_cursor`，
+按 `(created_at, post_id)` 倒序稳定翻页；不传 `cursor` 时响应与旧版一致（`total` 仍是本页条数）。
+`expires_at` 已到的帖子在 `board/query` 中隐藏。客户端翻页必须自带页数硬顶。
+
+Board 保留策略：worker 启动后立即清理一次，之后按 `BOARD_PURGE_INTERVAL_SECONDS`（默认 28800，即每 8 小时一次，最小 60）
+执行两类清理，两类各自有独立的保留期和开关：
+
+1. 整线程清理：只删除整条线程内全部为 `resolved` 且最近变更早于 `BOARD_RETENTION_DAYS`（默认 30，`0` 关闭）的帖子；
+   线程内只要有 open 帖就整条保留，open 帖永远不会被自动清理。
+2. 逐帖清理心跳类重复帖：这类帖共用一条固定线程，线程里永远有一条 open 的当前心跳，整线程规则永远清不掉旧心跳，
+   因此按单帖判断：`post_type=note`、状态非 open、`expires_at` 已到期、且 `updated_at` 早于
+   `BOARD_NOTE_RETENTION_HOURS`（默认 8，`0` 关闭）才删除；若帖子的 `post_id` 仍被其它帖当作 `thread_id` 引用则保留。
+   任务、请求、回复永远只受整线程规则约束。
+
+每类每轮最多 20 批、每批 500 条；两类任一出错只记日志并回滚该批，不影响另一类，也不影响 brief 处理循环。
+
 MCP dispatcher 对所有扩展参数做运行时 clamp，最终序列化边界再限制为 12,000 字符和保守
 估算 3,000 tokens。超限响应递归削减列表、字段、字符串与深度，但保持有效 JSON 和核心
 状态字段。该治理仅限制派生视图和传输，不删除 append-only Event 历史；大型项目通过任务、

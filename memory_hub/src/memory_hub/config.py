@@ -25,6 +25,11 @@ class Settings:
     brief_output_token_budget: int
     brief_daily_token_budget: int
     brief_max_attempts: int
+    # 已结案线程的保留天数；0 表示关闭整线程清理。open 的帖子永远不会被清理。
+    board_retention_days: int
+    # 已处理且已过期的 note（心跳类重复帖）的保留小时数；0 表示关闭逐帖清理。
+    board_note_retention_hours: int
+    board_purge_interval_seconds: int
 
 
 def load_settings() -> Settings:
@@ -46,4 +51,7 @@ def load_settings() -> Settings:
         brief_output_token_budget=max(128, int(os.getenv("BRIEF_OUTPUT_TOKEN_BUDGET", "800"))),
         brief_daily_token_budget=max(1024, int(os.getenv("BRIEF_DAILY_TOKEN_BUDGET", "100000"))),
         brief_max_attempts=max(1, int(os.getenv("BRIEF_MAX_ATTEMPTS", "5"))),
+        board_retention_days=max(0, int(os.getenv("BOARD_RETENTION_DAYS", "30"))),
+        board_note_retention_hours=max(0, int(os.getenv("BOARD_NOTE_RETENTION_HOURS", "8"))),
+        board_purge_interval_seconds=max(60, int(os.getenv("BOARD_PURGE_INTERVAL_SECONDS", "28800"))),
     )

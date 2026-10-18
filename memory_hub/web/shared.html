@@ -209,6 +209,13 @@
   .board-post .body pre { background: #f1f3f9; border-radius: 6px; padding: 8px; overflow-x: auto; font-size: 12px; }
   .board-post .body code { background: #f1f3f9; border-radius: 4px; padding: 1px 4px; font-family: var(--mono); font-size: 12px; }
   .board-empty { color: var(--muted); text-align: center; padding: 26px 0; font-size: 13px; }
+  .status-channel-area {
+    margin-top: 16px; border-top: 1px dashed var(--line); padding-top: 12px;
+  }
+  .status-channel-area > summary {
+    cursor: pointer; font-size: 12px; color: var(--muted); padding: 4px 0;
+  }
+  .status-channel-area .board-post { border: 1px solid var(--line); border-radius: 10px; margin-top: 8px; }
   .status .pill { background: var(--card-raised); color: var(--muted); }
   .status .pill.ok { background: #143d2d; color: var(--ok); }
   .status .pill.err { background: #422228; color: var(--err); }
@@ -316,6 +323,10 @@
       </div>
     </div>
     <div id="boardArea"><div class="board-empty">连接后自动加载最近留言。</div></div>
+    <details id="statusArea" class="status-channel-area" hidden>
+      <summary>设备状态快照（机器心跳，不属于留言）</summary>
+      <div id="statusBody"></div>
+    </details>
   </section>
   </div>
 
@@ -683,10 +694,27 @@
     }
     return true;
   }
+  function renderStatusChannels(posts) {
+    // 机器心跳单独成区：不参与留言筛选、排序和计数。
+    var area = document.getElementById("statusArea");
+    if (!area) return;
+    var rows = (posts || []).filter(function (p) { return boardStatusPayload(p) !== null; });
+    if (!rows.length) {
+      document.getElementById("statusBody").innerHTML = "";
+      area.hidden = true;
+      return;
+    }
+    rows.sort(function (a, b) { return (a.created_at < b.created_at ? 1 : -1); });
+    document.getElementById("statusBody").innerHTML = rows.map(function (p) {
+      return renderBoardPost(p, true);
+    }).join("");
+    area.hidden = false;
+  }
   function renderBoard(data) {
     window.__boardCache = data;
     var area = document.getElementById("boardArea");
     var items = (data && data.items) || [];
+    renderStatusChannels(data && data.status_channels);
     var statusFilter = document.getElementById("boardFilter").value;
     var query = document.getElementById("boardSearch").value.trim();
     var filtered = items.filter(function (it) { return boardMatches(it, statusFilter, query); });
@@ -716,7 +744,7 @@
       });
       var root = posts[0];
       html += '<div class="board-thread">';
-      html += '<div class="thread-head">' + (boardStatusPayload(root) ? '设备状态' : '线程 ' + esc(tid)) + " · " + posts.length + " 条</div>";
+      html += '<div class="thread-head">' + '线程 ' + esc(tid) + " · " + posts.length + " 条</div>";
       posts.forEach(function (p, idx) { html += renderBoardPost(p, idx === 0); });
       html += "</div>";
     });

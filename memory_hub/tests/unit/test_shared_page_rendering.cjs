@@ -111,18 +111,42 @@ test('truncated automatic health messages never expose raw JSON', () => {
   assert.ok(!html.includes('signature'));
 });
 
-test('status threads hide UUID headings and support Chinese summary search', () => {
-  const elements = { boardArea: {}, boardFilter: { value: 'all' }, boardSearch: { value: '空闲' },
-    boardTotal: {}, boardOpen: {}, boardResolved: {} };
+test('status channels stay separate from message filters, headings, and counts', () => {
+  const elements = { boardArea: {}, boardFilter: { value: 'resolved' }, boardSearch: { value: '不匹配' },
+    boardTotal: {}, boardOpen: {}, boardResolved: {}, statusArea: { hidden: true }, statusBody: {} };
   context.window = {};
   context.document = { getElementById: id => elements[id] };
   vm.runInContext(section('  function boardMatches(', '  var TASK_COLORS'), context);
   const item = { post_id: 'hidden-post', thread_id: 'hidden-thread', status: 'open',
     content: JSON.stringify(health({ codex_execution: { instances: [instance('idle')] } })) };
-  context.renderBoard({ items: [item] });
-  assert.match(elements.boardArea.innerHTML, /设备状态/);
-  assert.match(elements.boardArea.innerHTML, /海克斯检查 · 空闲/);
-  assert.ok(!elements.boardArea.innerHTML.includes('hidden-thread'));
+  const message = { post_id: 'message-post', thread_id: 'message-thread', status: 'open', content: '普通留言' };
+  context.renderBoard({ items: [message], status_channels: [item] });
+  assert.equal(elements.statusArea.hidden, false);
+  assert.match(elements.statusBody.innerHTML, /海克斯检查 · 空闲/);
+  assert.ok(!elements.statusBody.innerHTML.includes('hidden-thread'));
+  assert.ok(!elements.statusBody.innerHTML.includes('protocol'));
+  assert.match(elements.boardArea.innerHTML, /没有符合当前筛选的留言/);
+  assert.equal(elements.boardTotal.textContent, 1);
+  assert.equal(elements.boardOpen.textContent, 1);
+  assert.equal(elements.boardResolved.textContent, 0);
+
+  elements.boardFilter.value = 'all';
+  elements.boardSearch.value = '';
+  context.renderBoard({ items: [message], status_channels: [item] });
+  assert.match(elements.boardArea.innerHTML, /普通留言/);
+  assert.ok(!elements.boardArea.innerHTML.includes('海克斯检查'));
+
+  // 只有状态时，留言区仍为空；响应省略状态时必须清理上一次的快照。
+  context.renderBoard({ items: [], status_channels: [item] });
+  assert.match(elements.boardArea.innerHTML, /留言板为空/);
+  assert.equal(elements.boardTotal.textContent, 0);
+  assert.equal(elements.statusArea.hidden, false);
+  context.renderBoard({ items: [message] });
+  assert.equal(elements.statusArea.hidden, true);
+  assert.equal(elements.statusBody.innerHTML, '');
+  context.renderBoard({ items: [], status_channels: [message] });
+  assert.equal(elements.statusArea.hidden, true);
+  assert.equal(elements.statusBody.innerHTML, '');
 });
 
 

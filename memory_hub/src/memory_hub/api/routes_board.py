@@ -10,10 +10,15 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from memory_hub.api.dependencies import effective_user_id, require_principal
 from memory_hub.auth.permissions import Principal
 from memory_hub.db.models import BoardPost
-from memory_hub.db.repositories import board_post_by_id, list_board_posts
+from memory_hub.db.repositories import board_post_by_id, encode_board_cursor, list_board_posts
 from memory_hub.domain.board import BoardPostRequest, BoardQueryRequest, BoardReplyRequest, BoardResolveRequest
 
 router = APIRouter()
+
+# 机器状态通道：由 Hub 心跳与执行观察写入 note，不属于人类留言。
+# 共享看板把两者分开取数，避免心跳占满留言配额或污染留言计数。
+STATUS_CHANNEL_AGENTS = ("hub-health", "codex-execution")
+STATUS_CHANNEL_MAX_ITEMS = 20
 
 _SECRET = re.compile(
     r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
@@ -84,24 +89,34 @@ def board_query(project_id: str, payload: BoardQueryRequest, request: Request, p
     _enforce_rate_limit(request, principal, "board_read", 120)
     factory = request.app.state.session_factory
     with factory() as session:
-        items = list_board_posts(
-            session,
-            project_id=project_id,
-            user_id=payload.user_id,
-            agent_instance_id=payload.agent_instance_id,
-            task_id=payload.task_id,
-            status=payload.status,
-            post_type=payload.post_type,
-            thread_id=payload.thread_id,
-            unresolved_only=(payload.filter == "unresolved"),
-            max_items=payload.max_items,
-        )
+        try:
+            # 多取 1 条仅用于判断是否还有下一页，不会返回给调用方。
+            fetched = list_board_posts(
+                session,
+                project_id=project_id,
+                user_id=payload.user_id,
+                agent_instance_id=payload.agent_instance_id,
+                task_id=payload.task_id,
+                status=payload.status,
+                post_type=payload.post_type,
+                thread_id=payload.thread_id,
+                unresolved_only=(payload.filter == "unresolved"),
+                max_items=payload.max_items + 1,
+                cursor=payload.cursor,
+                include_expired=False,
+            )
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        has_more = len(fetched) > payload.max_items
+        items = fetched[: payload.max_items]
         return {
             "ok": True,
             "operation": "board",
             "action": "query",
             "filter": payload.filter,
             "total": len(items),
+            "has_more": has_more,
+            "next_cursor": encode_board_cursor(items[-1]) if has_more and items else None,
             "items": [_item(item, include_content=payload.include_content, include_references=payload.include_references) for item in items],
         }
 
@@ -227,17 +242,36 @@ def shared_board(payload: BoardQueryRequest, request: Request, principal: Princi
     """Read-only bounded board feed for the dashboard.
 
     The project is taken from the token's principal, never from the request
-    body. Returns the newest bounded set of open and resolved posts; full
-    content and references require explicit request flags.
+    body. ``items`` holds human posts only; machine status heartbeats are
+    returned separately in ``status_channels`` with their own quota, so they
+    never consume the message window or inflate the message counts.
+    Full content and references require explicit request flags.
     """
     _enforce_rate_limit(request, principal, "board_read", 120)
     project_id = principal.project_id
     factory = request.app.state.session_factory
     with factory() as session:
-        posts = list_board_posts(session, project_id=project_id, max_items=payload.max_items)
+        posts = list_board_posts(
+            session,
+            project_id=project_id,
+            max_items=payload.max_items,
+            exclude_author_agents=list(STATUS_CHANNEL_AGENTS),
+        )
+        status_posts = list_board_posts(
+            session,
+            project_id=project_id,
+            max_items=STATUS_CHANNEL_MAX_ITEMS,
+            author_agents=list(STATUS_CHANNEL_AGENTS),
+            # 只取仍在有效期内的状态快照，过期心跳不代表当前状态。
+            include_expired=False,
+        )
         return {
             "project_id": project_id,
             "generated_at": datetime.now(UTC).isoformat(),
             "total": len(posts),
             "items": [_item(post, include_content=payload.include_content, include_references=payload.include_references) for post in posts],
+            "status_channels": [
+                _item(post, include_content=payload.include_content, include_references=payload.include_references)
+                for post in status_posts
+            ],
         }
