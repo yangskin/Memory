@@ -198,14 +198,16 @@ def test_worker_releases_database_transaction_before_generation() -> None:
 def test_worker_bounds_large_briefs_to_the_latest_window_events() -> None:
     factory = create_session_factory(load_settings().database_url or "")
     project_id = f"worker-batch-{uuid4().hex}"
+    event_ids = [uuid4() for _ in range(501)]
     with factory() as session:
-        for index in range(501):
-            session.add(MemoryEvent(event_id=uuid4(), project_id=project_id, user_id="batch-user", agent_id="pytest", agent_instance_id="pytest", operation="record", scope="personal", content_markdown=f"event-{index}", metadata_json={}, occurred_at=datetime.now(UTC), content_hash="sha256:" + f"{index:064x}"))
+        for index, event_id in enumerate(event_ids):
+            session.add(MemoryEvent(event_id=event_id, project_id=project_id, user_id="batch-user", agent_id="pytest", agent_instance_id="pytest", operation="record", scope="personal", content_markdown=f"event-{index}", metadata_json={}, occurred_at=datetime.now(UTC), content_hash="sha256:" + f"{index:064x}"))
         session.flush()
         last_seq = session.query(MemoryEvent.server_seq).filter_by(project_id=project_id).order_by(MemoryEvent.server_seq.desc()).first()[0]
         session.add(BriefJob(job_key=f"user_recent:{project_id}:batch-user", project_id=project_id, brief_type="user_recent", subject_user_id="batch-user", requested_through_seq=last_seq, not_before=datetime.now(UTC) - timedelta(seconds=1), status="pending"))
         session.commit()
-        run_once(session, worker_id="batch-worker")
+        # 单独验证数据库的 500 条窗口，避免默认 Token 预算先裁减输入。
+        run_once(session, worker_id="batch-worker", prompt_token_budget=100_000)
         job = session.get(BriefJob, f"user_recent:{project_id}:batch-user")
         assert job is not None
         assert job.status == "completed"
@@ -214,7 +216,7 @@ def test_worker_bounds_large_briefs_to_the_latest_window_events() -> None:
         assert head is not None
         snapshot = session.get(BriefSnapshot, head.current_brief_id)
         assert snapshot is not None
-        assert len(snapshot.source_event_ids) == 500
+        assert snapshot.source_event_ids == [str(event_id) for event_id in event_ids[-500:]]
 
 
 def test_worker_rebuilds_brief_from_full_recent_window_after_incremental_write() -> None:

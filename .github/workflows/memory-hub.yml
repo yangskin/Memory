@@ -35,10 +35,13 @@ jobs:
           python-version: "3.11"
       - name: Install Hub dependencies
         working-directory: memory_hub
-        run: uv sync --all-extras --dev
+        run: uv sync --frozen --all-extras --dev
+      - name: Verify Hub dependencies
+        working-directory: memory_hub
+        run: uv run --frozen python -c "import alembic, fastapi, memory_hub, psycopg, sqlalchemy"
       - name: Upgrade empty database
         working-directory: memory_hub
-        run: uv run alembic upgrade head
+        run: uv run --frozen alembic upgrade head
       - name: Run Hub tests
         working-directory: memory_hub
-        run: uv run pytest
+        run: uv run --frozen python -m pytest tests

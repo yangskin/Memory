@@ -198,6 +198,8 @@ $env:PYTHONPATH = '<MemoryRoot>'
 <MemoryRoot>/.venv/Scripts/python.exe -m servers.memory_server.cli --root <RepoRoot> health --pretty
 ```
 
+CI 的客户端与服务端测试使用独立依赖环境：`ci.yml` 在源码根运行 `python -m pytest tests`，只安装本地 MCP 的 requirements；`memory-hub.yml` 在 `memory_hub/` 内通过 `uv sync --frozen --all-extras --dev` 安装锁定的服务端依赖，检查导入、升级临时 PostgreSQL 数据库，再运行 `uv run --frozen python -m pytest tests`。不要在客户端环境从仓库根无范围运行 pytest，也不要为了收集服务端测试给本地 MCP 添加 FastAPI、SQLAlchemy 或 PostgreSQL 依赖。
+
 ### 2.3.1 可选连接 Memory Hub
 
 本地 MCP 默认完全离线运行，不配置 Hub 时不会发起任何网络请求，原有

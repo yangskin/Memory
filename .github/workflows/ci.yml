@@ -20,5 +20,6 @@ jobs:
         run: python scripts/check_public_tree.py
       - name: Install dependencies
         run: python -m pip install -r requirements.txt -r requirements-dev.txt
-      - name: Run tests
-        run: python -m pytest
+      # 客户端只收集本地 MCP 测试；服务端由 memory-hub 工作流安装依赖后验证。
+      - name: Run client tests
+        run: python -m pytest tests
