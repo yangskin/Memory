@@ -107,9 +107,7 @@ class TLSServer(ThreadingHTTPServer):
 
 @pytest.fixture
 def tls(tmp_path, monkeypatch):
-    # Scale down only the policy floor in timing fixtures. Dedicated tests below
-    # exercise the production five-second floor and keep custom larger budgets.
-    monkeypatch.setattr(client_module, "READ_RESPONSE_TIMEOUT_SECONDS", 0)
+    # 正常读取保留生产响应预算；只有验证超时边界的测试显式缩短预算。
     for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("no_proxy", "*")
@@ -156,14 +154,17 @@ def client(tls):
         token_env="MEMORY_TEST_TLS_TOKEN", local_token=TOKEN))
 
 
-def test_read_accepts_handshake_slower_than_response_budget(tls):
-    tls.handshake_delay = 0.2
-    assert client(tls).context({"include": ["project_brief"]}, 0.05)[0] == 200
+def test_read_accepts_handshake_slower_than_response_budget(tls, monkeypatch):
+    monkeypatch.setattr(client_module, "READ_RESPONSE_TIMEOUT_SECONDS", 0)
+    # 给 CI 线程调度留出裕量，同时保持握手时长大于响应预算。
+    tls.handshake_delay = 1.0
+    assert client(tls).context({"include": ["project_brief"]}, 0.5)[0] == 200
     assert tls.connections == 1
     assert tls.requests[0][3] == "Bearer " + TOKEN
 
 
 def test_read_retry_budget_is_bounded(tls, monkeypatch):
+    monkeypatch.setattr(client_module, "READ_RESPONSE_TIMEOUT_SECONDS", 0)
     monkeypatch.setattr(client_module, "READ_RETRY_TIMEOUT_SECONDS", 0.05)
     tls.response_delay = 0.2
     started = time.monotonic()
@@ -173,6 +174,7 @@ def test_read_retry_budget_is_bounded(tls, monkeypatch):
 
 
 def test_connect_attempts_are_bounded(tls, monkeypatch):
+    monkeypatch.setattr(client_module, "READ_RESPONSE_TIMEOUT_SECONDS", 0)
     tls.handshake_delay = 0.2
     monkeypatch.setattr(transport, "CONNECT_TIMEOUT_SECONDS", 0.08)
     monkeypatch.setattr(client_module, "READ_RETRY_TIMEOUT_SECONDS", 0.04)
@@ -182,13 +184,15 @@ def test_connect_attempts_are_bounded(tls, monkeypatch):
     assert tls.requests == []
 
 
-def test_slow_read_recovers_with_the_separate_retry_budget(tls):
+def test_slow_read_recovers_with_the_separate_retry_budget(tls, monkeypatch):
+    monkeypatch.setattr(client_module, "READ_RESPONSE_TIMEOUT_SECONDS", 0)
     tls.response_delay = 0.2
     assert client(tls).context({}, 0.05)[0] == 200
     assert len(tls.requests) == 2 and tls.requests[0] == tls.requests[1]
 
 
-def test_slow_body_recovers_with_identical_query(tls):
+def test_slow_body_recovers_with_identical_query(tls, monkeypatch):
+    monkeypatch.setattr(client_module, "READ_RESPONSE_TIMEOUT_SECONDS", 0)
     tls.body_delay = 0.2
     assert client(tls).context({"include": ["project_brief"]}, 0.05)[0] == 200
     assert len(tls.requests) == 2 and tls.requests[0] == tls.requests[1]
