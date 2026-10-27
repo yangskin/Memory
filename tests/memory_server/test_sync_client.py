@@ -153,13 +153,13 @@ def test_get_encodes_query_uses_auth_and_has_no_body(monkeypatch) -> None:
                         auth=request.get_header("Authorization"), timeout=timeout)
         return Response()
 
-    monkeypatch.setattr("servers.memory_server.memory_sync_client.urlopen", fake_urlopen)
+    monkeypatch.setattr("servers.memory_server.memory_sync_client.read_urlopen", fake_urlopen)
     client = MemoryHubClient(SharedMemoryConfig(enabled=True, server_url="https://hub.example",
                             project_id="p", local_token="test-token"))
     status, result = client.get("/v1/projects/p/task-events", {"task_id": "task &other", "cursor": 3}, 1.2)
     assert status == 200 and result["events"] == []
     assert captured == {"url": "https://hub.example/v1/projects/p/task-events?task_id=task+%26other&cursor=3",
-                        "method": "GET", "body": None, "auth": "Bearer test-token", "timeout": 1.2}
+                        "method": "GET", "body": None, "auth": "Bearer test-token", "timeout": 5.0}
 
 
 def test_get_rejects_nonobject_json(monkeypatch) -> None:
@@ -171,7 +171,7 @@ def test_get_rejects_nonobject_json(monkeypatch) -> None:
             return self
         def __exit__(self, *_args):
             return None
-    monkeypatch.setattr("servers.memory_server.memory_sync_client.urlopen", lambda *_args, **_kwargs: Response())
+    monkeypatch.setattr("servers.memory_server.memory_sync_client.read_urlopen", lambda *_args, **_kwargs: Response())
     client = MemoryHubClient(SharedMemoryConfig(enabled=True, server_url="https://hub.example",
                             project_id="p", local_token="test-token"))
     assert client.get("/task-events", {}, 1) == (0, {"error": "invalid_json_object"})

@@ -237,6 +237,28 @@ Hub 管理员的服务器部署、运维、备份和 Token 签发方式见
 [`memory_hub/README.md`](memory_hub/README.md)；中文的架构、部署与当前进展说明见
 [`memory_hub/DESIGN.md`](memory_hub/DESIGN.md)。
 
+#### Hub 只读连接与超时
+
+留言板查询、共享上下文查询和 GET 读取保留 urllib 的已有代理路由与证书/主机名验证，
+每个线程最多复用一条空闲 HTTPS 连接。连接仅在响应正文完整读取后归还，空闲超过30秒即
+重新建连；目标、代理、认证身份或 TLS context 变化时不复用。正文读取异常或未读完即关闭的
+连接会被丢弃，线程之间不共用连接。原地址、项目、Token、代理及配置文件不会因此改写。
+
+只读请求的建连与首轮响应 socket 超时至少为5秒，较大的调用方预算保留。短于该值的旧查询
+配置仍原样保存，但不再让短暂的响应延迟破坏可复用连接。暂态超时、断链、不完整响应或
+TLS 提前断开（SSLEOFError）最多重读一次，恢复读取 socket 超时至少10秒。这些是各网络
+阶段的超时，不是整个 MCP 调用的总时限；DNS、多地址连接与重试可能使总耗时更长。
+
+只读 POST 限于当前项目的 `/context` 与 `/board/query`；普通 POST、事件上传和
+Board/Task 写入不新增传输重试或超时下限，既有 Task Graph 权威命令重试规则不变。只读请求
+拒绝跳转；证书/主机名校验失败、其它 TLS 校验错误、HTTP 错误与无效 JSON 不重试。
+HTTP 429 仍作为限流返回，不能用即时重试绕过；验收应留出请求间隔。
+
+代码更新后，已运行的 MCP 进程须重新连接以加载新 Python 实现；配置重载不等于代码重载。
+本地写入和被动上下文注入仍不等待网络。验收远端读取时，留言板必须确认
+`board_sync.remote=true/fallback=false/http_status=200`，共享上下文用 `force_refresh=true`
+并确认 `status=fresh/source=remote`；外层 `ok=true` 或缓存命中不能代替远端成功。
+
 #### 2.3.2 Task Graph 协作与查询
 
 启用 Hub 后，跨 Agent 协作只通过专用 `memory_task_sync` 读取和推进 Task Graph：
