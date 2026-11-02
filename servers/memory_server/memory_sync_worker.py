@@ -18,6 +18,24 @@ logger = logging.getLogger(__name__)
 _WORKERS: dict[Path, "MemorySyncWorker"] = {}
 
 
+def _connection_fingerprint(config: SharedMemoryConfig) -> str:
+    # Kept in memory only. Never include a credential in a diagnostic response.
+    values = (config.enabled, config.server_url, config.project_id, config.token,
+              config.user_id, config.read_enabled, config.upload_enabled)
+    return hashlib.sha256(repr(values).encode("utf-8")).hexdigest()
+
+
+def hub_connection_status(repo_root: Path) -> dict[str, object]:
+    worker = _WORKERS.get(repo_root.resolve())
+    if worker is None:
+        return {"status": "not_started"}
+    # Requests can reload configuration before the next background tick.
+    current = worker._provider().shared_memory
+    if worker._connection_key is not None and worker._connection_key != _connection_fingerprint(current):
+        return {"status": "configured" if current.active else "pending" if current.enabled else "disabled"}
+    return dict(worker.connection_status)
+
+
 def wake_sync_worker(repo_root: Path) -> None:
     worker = _WORKERS.get(repo_root.resolve())
     if worker is not None:
@@ -29,6 +47,9 @@ class MemorySyncWorker:
         self._provider, self._stop, self._wake = config_provider, threading.Event(), threading.Event()
         self._thread: threading.Thread | None = None
         self._next_refresh = 0.0
+        self.connection_status: dict[str, object] = {"status": "pending"}
+        self._next_enrollment = 0.0
+        self._connection_key: str | None = None
 
     def start(self) -> None:
         if self._thread is None:
@@ -52,15 +73,47 @@ class MemorySyncWorker:
 
     def run_once(self) -> None:
         runtime = self._provider(); config: SharedMemoryConfig = runtime.shared_memory
+        connection_key = _connection_fingerprint(config)
+        if self._connection_key != connection_key:
+            self._connection_key = connection_key
+            self.connection_status = {"status": "pending"}
+            self._next_enrollment = 0.0
         if not config.active:
-            return
+            if time.monotonic() < self._next_enrollment:
+                return
+            self._next_enrollment = time.monotonic() + max(30, config.upload_interval_seconds)
+            from .memory_hub_enrollment import EnrollmentError, ensure_hub_connection
+            from .memory_locks import LockTimeoutError
+            try:
+                self.connection_status = ensure_hub_connection(runtime)
+            except LockTimeoutError:
+                self.connection_status = {"status": "enrollment_in_progress"}
+            except EnrollmentError as exc:
+                self.connection_status = {"status": "enrollment_failed", "reason": str(exc)}
+            except Exception:
+                # Never surface raw exceptions containing credentials, headers or local state.
+                self.connection_status = {"status": "enrollment_failed", "reason": "local_enrollment_error"}
+            runtime = self._provider(); config = runtime.shared_memory
+            self._connection_key = _connection_fingerprint(config)
+            if not config.active:
+                return
         store = SyncStore(runtime.repo_root / ".ai-memory" / "shared-sync.db")
         token_hash = hashlib.sha256(str(config.token).encode("utf-8")).hexdigest()
         disabled = store.get_state("remote_auth_disabled")
         if disabled and disabled.get("token_hash") == token_hash:
+            self.connection_status = {"status": "credential_rejected", "http_status": disabled.get("status")}
             return
         if disabled:
             store.delete_state("remote_auth_disabled")
+        if self.connection_status.get("status") != "ready" and time.monotonic() >= self._next_enrollment:
+            self._next_enrollment = time.monotonic() + max(30, config.upload_interval_seconds)
+            from .memory_hub_enrollment import EnrollmentError, ensure_hub_connection
+            try:
+                self.connection_status = ensure_hub_connection(runtime)
+            except EnrollmentError as exc:
+                self.connection_status = {"status": "connection_failed", "reason": str(exc)}
+            except Exception:
+                self.connection_status = {"status": "connection_failed", "reason": "local_connection_error"}
         rows = store.claim_due_events(config.upload_batch_size) if config.upload_enabled else []
         if rows:
             import json

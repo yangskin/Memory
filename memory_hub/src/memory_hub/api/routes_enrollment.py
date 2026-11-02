@@ -60,6 +60,55 @@ def _project(principal, project_id):
         raise HTTPException(403, "project access denied")
 
 
+@router.post("/v1/projects/{project_id}/device-enrollments/auto")
+def auto_enroll(project_id: str, payload: EnrollmentRequest, request: Request,
+                principal: Principal = Depends(require_principal("devices:enroll"))):
+    """A project invitation grants a separate device token, never admin scopes."""
+    _project(principal, project_id)
+    _limit(request, "auto_enroll", 10, principal.token_id)
+    with request.app.state.session_factory() as session:
+        if session.bind.dialect.name == "postgresql":
+            session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+                            {"key": "device-enrollment:" + project_id})
+        old = session.get(DeviceEnrollment, payload.enrollment_id)
+        if old:
+            if (old.project_id != project_id or old.approved_by != principal.token_id
+                    or any(getattr(old, key) != value for key, value in payload.model_dump().items())):
+                raise HTTPException(409, "enrollment conflict")
+            if old.status != "approved" or not active_token(session, old.token_id):
+                raise HTTPException(409, "enrollment inactive")
+            return _view(old)
+        count = session.scalar(select(func.count()).select_from(DeviceEnrollment).where(
+            DeviceEnrollment.project_id == project_id,
+            DeviceEnrollment.created_at > _now() - timedelta(hours=1)))
+        if count >= 50:
+            raise HTTPException(429, "project enrollment quota exceeded")
+        if session.get(AccessToken, payload.token_id):
+            raise HTTPException(409, "enrollment conflict")
+        item = DeviceEnrollment(**payload.model_dump(), project_id=project_id, status="approved",
+                                approved_by=principal.token_id, created_at=_now(),
+                                expires_at=_now() + timedelta(minutes=30))
+        session.add(item)
+        session.add(AccessToken(token_id=payload.token_id, token_secret_hash=payload.token_secret_hash,
+                               token_prefix="mem_v1." + payload.token_id[:13],
+                               user_id=principal.user_id, project_id=project_id, scopes=list(DEVICE_SCOPES)))
+        try:
+            session.commit()
+        except IntegrityError:
+            raise HTTPException(409, "enrollment conflict") from None
+        return _view(item)
+
+
+@router.get("/v1/projects/{project_id}/connection")
+def connection(project_id: str, principal: Principal = Depends(require_principal("context:read"))):
+    """Read-only capability check; identity is always derived from the token."""
+    _project(principal, project_id)
+    return {"ok": True, "project_id": principal.project_id, "user_id": principal.user_id,
+            "capabilities": {"board_read": True, "tasks_read": True, "project_brief": True,
+                             "board_write": "events:write" in principal.scopes,
+                             "tasks_write": "events:write" in principal.scopes}}
+
+
 @router.post("/v1/projects/{project_id}/device-enrollments")
 def enroll(project_id: str, payload: EnrollmentRequest, request: Request):
     # 不信任代理传入的 X-Forwarded-For；全局限流与数据库项目限额共同约束匿名申请。

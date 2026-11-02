@@ -159,6 +159,7 @@ class BoardPost(Base):
     post_id: Mapped[UUID] = mapped_column(primary_key=True)
     project_id: Mapped[str] = mapped_column(String(256), nullable=False)
     author_user_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    author_auth_id: Mapped[str | None] = mapped_column(String(64))
     author_agent_id: Mapped[str | None] = mapped_column(String(256))
     author_agent_instance_id: Mapped[str | None] = mapped_column(String(256))
     runtime_node_id: Mapped[str | None] = mapped_column(String(256))

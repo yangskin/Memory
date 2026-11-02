@@ -15,6 +15,7 @@ _PRIORITY_KEYS = (
     "message",
     "operation",
     "status",
+    "hub_connection",
     "context_token",
     "task_id",
     "task_brief",

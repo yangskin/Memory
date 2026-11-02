@@ -25,6 +25,8 @@ class SharedMemoryConfig:
     user_id: str = ""
     token_env: str = "MEMORY_HUB_TOKEN"
     local_token: str = ""
+    auto_enroll: bool = True
+    enrollment_token_env: str = "MEMORY_HUB_ENROLLMENT_TOKEN"
     legacy_token_allow_sha256: str = ""
     upload_enabled: bool = True
     upload_interval_seconds: int = 30
@@ -84,6 +86,8 @@ def parse_shared_memory_config(raw: Any) -> SharedMemoryConfig:
         user_id=str(raw.get("user_id") or "").strip(),
         token_env=str(raw.get("token_env") or "MEMORY_HUB_TOKEN"),
         local_token=str(raw.get("token") or ""),
+        auto_enroll=bool(raw.get("auto_enroll", True)),
+        enrollment_token_env=str(raw.get("enrollment_token_env") or "MEMORY_HUB_ENROLLMENT_TOKEN"),
         legacy_token_allow_sha256=str(raw.get("legacy_token_allow_sha256") or ""),
         upload_enabled=bool(raw.get("upload_enabled", True)),
         upload_interval_seconds=integer("upload_interval_seconds", 30),

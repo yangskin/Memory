@@ -360,6 +360,9 @@ def test_shared_board_keeps_machine_status_channels_out_of_messages(service):
                     expires=datetime.now(UTC) + timedelta(minutes=5))
     expired = add(factory, minutes=81, post_type="note", author_agent="hub-health",
                   expires=datetime.now(UTC) - timedelta(seconds=1))
+    # 原窗口续办状态同样是机器通道，且不会自动 resolve，必须一并排除。
+    wake_status = add(factory, minutes=82, post_type="note", author_agent="codex-original-wake")
+    wake_notice = add(factory, minutes=83, post_type="note", author_agent="codex-original-wake-status")
 
     response = client.post("/v1/shared-board", headers=headers, json={"max_items": 50})
     assert response.status_code == 200, response.text
@@ -375,6 +378,8 @@ def test_shared_board_keeps_machine_status_channels_out_of_messages(service):
     assert str(execution) in channels
     assert str(expired) not in channels
     assert str(question) not in channels
+    # 原窗口状态只排除、不渲染，避免把续办收据当成设备摘要。
+    assert str(wake_status) not in channels and str(wake_notice) not in channels
 
 
 def test_excluding_agents_keeps_posts_without_a_publisher_channel(service):

@@ -197,8 +197,14 @@ def test_local_onnx_provider_loads_real_model(tmp_path: Path) -> None:
 
 
 @pytest.fixture
-def http_serving(tmp_path: Path):
+def http_serving(tmp_path: Path, monkeypatch):
     """Spin up a local HTTP server that serves files from ``tmp_path``."""
+
+    # 发布器可能为外网设置代理；本机测试服务器始终直连，保留已有的绕过列表。
+    existing = os.environ.get("no_proxy") or os.environ.get("NO_PROXY", "")
+    bypass = ",".join(filter(None, (existing, "127.0.0.1")))
+    monkeypatch.setenv("NO_PROXY", bypass)
+    monkeypatch.setenv("no_proxy", bypass)
 
     handler_factory = lambda *a, **kw: http.server.SimpleHTTPRequestHandler(
         *a, directory=str(tmp_path), **kw

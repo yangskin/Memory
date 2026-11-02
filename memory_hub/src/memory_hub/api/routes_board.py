@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import hashlib
 import math
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -9,15 +10,18 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from memory_hub.api.dependencies import effective_user_id, require_principal
 from memory_hub.auth.permissions import Principal
-from memory_hub.db.models import BoardPost
+from sqlalchemy import select
+from memory_hub.db.models import BoardPost, DeviceEnrollment, AccessToken
 from memory_hub.db.repositories import board_post_by_id, encode_board_cursor, list_board_posts
 from memory_hub.domain.board import BoardPostRequest, BoardQueryRequest, BoardReplyRequest, BoardResolveRequest
 
 router = APIRouter()
 
-# 机器状态通道：由 Hub 心跳与执行观察写入 note，不属于人类留言。
-# 共享看板把两者分开取数，避免心跳占满留言配额或污染留言计数。
-STATUS_CHANNEL_AGENTS = ("hub-health", "codex-execution")
+# 机器状态通道：由 Hub 心跳、执行观察与原窗口续办收据写入 note，不属于人类留言。
+# 全部通道都从留言区排除，避免状态快照占满配额或污染留言计数。
+STATUS_CHANNEL_AGENTS = ("hub-health", "codex-execution", "codex-original-wake", "codex-original-wake-status")
+# 只有这两类带人类可读的状态摘要，其余通道仅排除、不在看板状态区渲染。
+DISPLAY_STATUS_AGENTS = ("hub-health", "codex-execution")
 STATUS_CHANNEL_MAX_ITEMS = 20
 
 _SECRET = re.compile(
@@ -60,6 +64,7 @@ def _item(post: BoardPost, *, include_content: bool = False, include_references:
         "post_id": str(post.post_id),
         "project_id": post.project_id,
         "author_user_id": post.author_user_id,
+        "author_auth_id": post.author_auth_id,
         "author_agent_id": post.author_agent_id,
         "author_agent_instance_id": post.author_agent_instance_id,
         "runtime_node_id": post.runtime_node_id,
@@ -81,6 +86,30 @@ def _item(post: BoardPost, *, include_content: bool = False, include_references:
     if include_references:
         result["references_json"] = list(post.references_json or [])
     return result
+
+
+def auth_id(project_id: str, token_id: str) -> str:
+    # 公开不可逆标识，不返回令牌ID、凭据或其秘密部分。
+    return hashlib.sha256(("memory.board-author/1:" + project_id + ":" + token_id).encode()).hexdigest()
+
+
+@router.get("/v1/projects/{project_id}/device-identities")
+def device_identities(project_id: str, request: Request, device_name: str | None = None,
+                      principal: Principal = Depends(require_principal("context:read"))):
+    _assert_project(principal, project_id)
+    _enforce_rate_limit(request, principal, "board_read", 120)
+    if device_name is not None and not re.fullmatch(r"[^\W_][\w.:-]{0,95}", device_name):
+        raise HTTPException(422, "invalid device name")
+    now = datetime.now(UTC)
+    with request.app.state.session_factory() as session:
+        query = select(DeviceEnrollment, AccessToken).join(AccessToken, DeviceEnrollment.token_id == AccessToken.token_id).where(
+            DeviceEnrollment.project_id == project_id, DeviceEnrollment.status == "approved",
+            AccessToken.project_id == project_id, AccessToken.revoked_at.is_(None),
+            AccessToken.expires_at.is_(None) | (AccessToken.expires_at > now))
+        query = query.where(DeviceEnrollment.device_name == device_name) if device_name is not None else query.where(AccessToken.token_id == principal.token_id)
+        rows = session.execute(query.limit(2)).all()
+        return {"ok": True, "identities": [{"device_name": enrollment.device_name,
+            "author_user_id": token.user_id, "author_auth_id": auth_id(project_id, token.token_id)} for enrollment, token in rows]}
 
 
 @router.post("/v1/projects/{project_id}/board/query")
@@ -140,6 +169,7 @@ def board_post(project_id: str, payload: BoardPostRequest, request: Request, pri
             post_id=post_id,
             project_id=project_id,
             author_user_id=effective_user_id(request, principal),
+            author_auth_id=auth_id(principal.project_id, principal.token_id),
             author_agent_id=payload.author_agent_id,
             author_agent_instance_id=payload.author_agent_instance_id,
             runtime_node_id=payload.runtime_node_id,
@@ -195,6 +225,7 @@ def board_reply(project_id: str, payload: BoardReplyRequest, request: Request, p
             post_id=payload.post_id or uuid4(),
             project_id=project_id,
             author_user_id=effective_user_id(request, principal),
+            author_auth_id=auth_id(principal.project_id, principal.token_id),
             author_agent_id=payload.author_agent_id,
             author_agent_instance_id=payload.author_agent_instance_id,
             runtime_node_id=payload.runtime_node_id,
@@ -261,7 +292,7 @@ def shared_board(payload: BoardQueryRequest, request: Request, principal: Princi
             session,
             project_id=project_id,
             max_items=STATUS_CHANNEL_MAX_ITEMS,
-            author_agents=list(STATUS_CHANNEL_AGENTS),
+            author_agents=list(DISPLAY_STATUS_AGENTS),
             # 只取仍在有效期内的状态快照，过期心跳不代表当前状态。
             include_expired=False,
         )

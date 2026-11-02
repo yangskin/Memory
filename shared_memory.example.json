@@ -1,8 +1,10 @@
 {
-  "_comment": "Copy this file to shared_memory.local.json. It is gitignored and is the single local configuration file for the remote Memory Hub connection. Leave enabled=false to keep the local MCP fully offline. The Hub user_id is NOT configured here: it is always reused from the local identity in user_config.local.json (user_name).",
+  "_comment": "Copy to shared_memory.local.json and enable when ready. For automatic enrollment provide MEMORY_HUB_ENROLLMENT_TOKEN in the MCP process environment; business credentials are saved to local/shared_memory.json. Leave enabled=false for offline use. Hub identity is bound by the enrollment credential, not by a client-supplied user name. See docs/hub-auto-enrollment.md.",
   "enabled": false,
   "server_url": "https://memory.example.com",
   "project_id": "your-project-id",
   "task_command_timeout_seconds": 2,
-  "token": "mem_v1.<token-id>.<secret>"
+  "auto_enroll": true,
+  "enrollment_token_env": "MEMORY_HUB_ENROLLMENT_TOKEN",
+  "token": ""
 }

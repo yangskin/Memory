@@ -2236,6 +2236,9 @@ def _migration_hint_for(name: str) -> str:
 def _dispatch_memory_task_sync(config: MemoryConfig, args: dict[str, Any]) -> dict[str, Any]:
     """Bind an optional task context to a local Task Graph command."""
 
+    if config.shared_memory.enabled and not config.shared_memory.active:
+        return error_result("hub_not_ready", "Hub enrollment or connection configuration is incomplete; retry after hub_connection is ready.")
+
     task_args = dict(args)
     context_token = _none_if_blank(task_args.get("context_token"))
     if context_token:

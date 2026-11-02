@@ -221,6 +221,8 @@ python scripts/check_public_tree.py
 ```
 ## 新设备申请与管理员批准
 
+另支持可信自动接入：`POST /v1/projects/{project_id}/device-enrollments/auto` 要求同项目 `devices:enroll` 凭据。复用申请数据格式，在事务内直接签发绑定该凭据用户的独立设备 Token；仅授予 `events:write`、`context:read`，不继承注册、审批或身份委托权限。重复请求幂等，撤销后的设备不能用同一申请重新激活。`GET /v1/projects/{project_id}/connection` 使用业务 Token 返回身份及业务能力，不返回 Token。管理员可用现有 `token create --scope devices:enroll` 签发接入凭据，秘密须通过受保护的本地文件或环境传递。原人工批准路径保持兼容。
+
 `device-enrollments` 提供无 Token 的待审批申请与持查询秘密的状态查询。初次申请不授予项目权限。管理员接口需同项目 `devices:approve`，核对配对码后创建只有 `events:write` / `context:read` 的独立凭据，身份绑定批准者。服务端只收到并保存秘密哈希，Token 明文由申请设备保存。
 
 在**现有**部署目录同步本次源码后执行：

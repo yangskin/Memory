@@ -80,6 +80,11 @@ def create_server(config: MemoryConfig | ReloadableMemoryConfig) -> Server:
     async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         current = provider.get()
         result = _dispatch_tool(current, name, arguments or {})
+        if isinstance(result, dict) and (name in {"memory_board_read", "memory_board_write", "memory_task_sync"}
+                or (arguments or {}).get("operation") in {"task_context", "shared_context"}
+                or (arguments or {}).get("include_diagnostics")):
+            from .memory_sync_worker import hub_connection_status
+            result.setdefault("hub_connection", hub_connection_status(current.repo_root))
         if isinstance(result, dict) and (arguments or {}).get("include_diagnostics"):
             result.setdefault("runtime_config", provider.diagnostics())
         result = finalize_mcp_response(result)
