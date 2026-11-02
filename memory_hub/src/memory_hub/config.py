@@ -30,6 +30,7 @@ class Settings:
     # 已处理且已过期的 note（心跳类重复帖）的保留小时数；0 表示关闭逐帖清理。
     board_note_retention_hours: int
     board_purge_interval_seconds: int
+    open_enrollment_projects: tuple[str, ...] = ()
 
 
 def load_settings() -> Settings:
@@ -54,4 +55,5 @@ def load_settings() -> Settings:
         board_retention_days=max(0, int(os.getenv("BOARD_RETENTION_DAYS", "30"))),
         board_note_retention_hours=max(0, int(os.getenv("BOARD_NOTE_RETENTION_HOURS", "8"))),
         board_purge_interval_seconds=max(60, int(os.getenv("BOARD_PURGE_INTERVAL_SECONDS", "28800"))),
+        open_enrollment_projects=tuple(p.strip() for p in os.getenv("MEMORY_HUB_OPEN_ENROLLMENT_PROJECTS", "").split(",") if p.strip()),
     )

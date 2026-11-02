@@ -8,10 +8,13 @@ the check if Git tracks them.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
+import io
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -124,7 +127,7 @@ def _is_local_or_runtime(root: Path, path: Path) -> bool:
     if path.name in LOCAL_ONLY_NAMES:
         return True
     relative = path.relative_to(root)
-    return any(part in IGNORED_DIRS or part == ".ai-memory" for part in relative.parts)
+    return relative.parts[0] == "local" or any(part in IGNORED_DIRS or part == ".ai-memory" for part in relative.parts)
 
 
 def _source_files(root: Path, tracked: set[Path]) -> set[Path]:
@@ -176,9 +179,9 @@ def _audit_vendor(root: Path) -> list[str]:
     return failures
 
 
-def audit(root: Path | None = None) -> list[str]:
+def audit(root: Path | None = None, *, tracked_files: set[Path] | None = None) -> list[str]:
     root = ROOT if root is None else root.resolve()
-    tracked, tracked_error = _tracked_files(root)
+    tracked, tracked_error = _tracked_files(root) if tracked_files is None else (tracked_files, None)
     failures: list[str] = []
 
     if tracked_error is not None:
@@ -187,7 +190,7 @@ def audit(root: Path | None = None) -> list[str]:
     for path in sorted(tracked):
         relative = path.relative_to(root)
         is_local_config = path.name in LOCAL_ONLY_NAMES
-        in_runtime_dir = any(part in FORBIDDEN_TRACKED_PARTS for part in relative.parts)
+        in_runtime_dir = relative.parts[0] == "local" or any(part in FORBIDDEN_TRACKED_PARTS for part in relative.parts)
         if is_local_config or in_runtime_dir:
             failures.append(f"tracked local/runtime path: {relative.as_posix()}")
 
@@ -204,16 +207,69 @@ def audit(root: Path | None = None) -> list[str]:
     return sorted(set(failures))
 
 
-def main() -> int:
-    failures = audit()
+def audit_staged() -> list[str]:
+    """只审计 Git 暂存区中的模块快照，不受未暂存修改或本机凭据影响。"""
+    root = ROOT.resolve()
+    try:
+        def git(*args: str, input_data: bytes | None = None) -> bytes:
+            return subprocess.check_output(
+                ["git", "-C", str(root), *args], input=input_data, stderr=subprocess.DEVNULL,
+            )
+
+        top = Path(git("rev-parse", "--show-toplevel").decode("utf-8").strip()).resolve()
+        prefix = root.relative_to(top).as_posix()
+        index_tree = git("write-tree").decode("ascii").strip()
+        tree = index_tree if prefix == "." else git("rev-parse", f"{index_tree}:{prefix}").decode("ascii").strip()
+        entries = []
+        for entry in git("ls-tree", "-rz", "--full-tree", tree).split(b"\0"):
+            if not entry:
+                continue
+            metadata, name = entry.split(b"\t", 1)
+            mode, kind, oid = metadata.split()
+            if mode not in (b"100644", b"100755") or kind != b"blob":
+                return ["staged tree contains an unsafe path or link"]
+            entries.append((oid, name.decode("utf-8")))
+        # 直接读取索引 blob；git archive 会受 export-ignore/export-subst 影响，不能作提交审计。
+        payload = git("cat-file", "--batch", input_data=b"".join(oid + b"\n" for oid, _ in entries))
+        blobs = io.BytesIO(payload)
+        with tempfile.TemporaryDirectory(prefix="memory-staged-audit-") as temporary:
+            snapshot = Path(temporary).resolve()
+            tracked: set[Path] = set()
+            for oid, name in entries:
+                target = (snapshot / name).resolve()
+                if not target.is_relative_to(snapshot):
+                    return ["staged tree contains an unsafe path or link"]
+                actual_oid, kind, length = blobs.readline().split()
+                size = int(length)
+                if actual_oid != oid or kind != b"blob" or size < 0:
+                    return ["cannot read a staged file"]
+                data = blobs.read(size)
+                if len(data) != size or blobs.read(1) != b"\n":
+                    return ["cannot read a staged file"]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+                tracked.add(target)
+            if blobs.read():
+                return ["unexpected staged blob data"]
+            return audit(snapshot, tracked_files=tracked)
+    except (OSError, ValueError, UnicodeError, subprocess.CalledProcessError):
+        return ["cannot read the staged Memory tree; resolve Git conflicts and retry"]
+
+
+def main(*, staged: bool = False) -> int:
+    failures = audit_staged() if staged else audit()
     if failures:
         print("Public-tree audit failed:")
         for failure in failures:
             print(f"- {failure}")
+        if staged:
+            print("Fix the source or documentation, stage it again, then commit. The publish script does not run this check.")
         return 1
     print("Public-tree audit passed.")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--staged", action="store_true", help="Audit the Git index instead of working files")
+    sys.exit(main(staged=parser.parse_args().staged))

@@ -175,11 +175,17 @@ class TestTrackedLocalAndRuntimePaths:
         _write(tree / name, '{"user_name": "someone"}\n')
         assert audit_script.audit(tree) == []
 
-    @pytest.mark.parametrize("part", [".ai-memory", ".ai-context", ".venv", "__pycache__"])
+    @pytest.mark.parametrize("part", [".ai-memory", ".ai-context", ".venv", "__pycache__", "local"])
     def test_tracking_runtime_directories_fails(self, tree: Path, part: str) -> None:
         _write(tree / part / "state.json", "{}\n")
         _git(tree, "add", "-Af")
         assert audit_script.audit(tree) == [f"tracked local/runtime path: {part}/state.json"]
+
+    def test_untracked_enrollment_state_is_local_but_tracking_it_is_rejected(self, tree):
+        _write(tree / "local" / "hub-enrollment.json", "mem_v1.tok_" + "b" * 40)
+        assert audit_script.audit(tree) == []
+        _git(tree, "add", "-A")
+        assert audit_script.audit(tree) == ["tracked local/runtime path: local/hub-enrollment.json"]
 
     def test_a_tracked_local_file_reports_only_the_tracked_failure(self, tree: Path) -> None:
         """本地凭据文件跳过内容检查，只报被跟踪。
@@ -387,6 +393,54 @@ class TestScriptContract:
             if not failure.startswith("tracked local/runtime path:")
         ]
         assert failures == []
+
+
+class TestStagedDevelopmentCheck:
+    def test_staged_violation_cannot_be_hidden_by_unstaged_fix(self, tree, monkeypatch):
+        monkeypatch.setattr(audit_script, "ROOT", tree)
+        _write(tree / "README.md", PROJECT_ID)
+        _git(tree, "add", "README.md")
+        _write(tree / "README.md", "clean working copy")
+        assert audit_script.audit_staged() == ["private project id: README.md"]
+
+    def test_unstaged_and_untracked_content_does_not_change_the_index_result(self, tree, monkeypatch):
+        monkeypatch.setattr(audit_script, "ROOT", tree)
+        _write(tree / "README.md", PROJECT_ID)
+        _write(tree / "notes.md", IDENTITY)
+        assert audit_script.audit_staged() == []
+
+    def test_staged_local_credentials_are_rejected_without_printing_the_value(self, tree, monkeypatch):
+        monkeypatch.setattr(audit_script, "ROOT", tree)
+        _write(tree / "shared_memory.local.json", '{"token": "private-value"}')
+        _git(tree, "add", "-A")
+        assert audit_script.audit_staged() == ["tracked local/runtime path: shared_memory.local.json"]
+
+    def test_nested_module_excludes_host_files(self, tmp_path, monkeypatch):
+        host = tmp_path / "host"
+        root = host / "MCP" / "Memory"
+        root.mkdir(parents=True)
+        _write_valid_vendor(root)
+        _write(root / "README.md", "public")
+        _write(host / "private.md", PROJECT_ID)
+        _git(host, "init")
+        _git(host, "add", "-A")
+        monkeypatch.setattr(audit_script, "ROOT", root)
+        assert audit_script.audit_staged() == []
+
+    def test_export_ignore_cannot_hide_a_staged_violation(self, tree, monkeypatch):
+        monkeypatch.setattr(audit_script, "ROOT", tree)
+        _write(tree / ".gitattributes", "private.md export-ignore\n")
+        _write(tree / "private.md", PROJECT_ID)
+        _git(tree, "add", "-A")
+        assert audit_script.audit_staged() == ["private project id: private.md"]
+
+    def test_staged_symlink_is_not_followed(self, tree, monkeypatch):
+        monkeypatch.setattr(audit_script, "ROOT", tree)
+        blob = subprocess.check_output(
+            ["git", "-C", str(tree), "hash-object", "-w", "--stdin"], input=b"../../outside",
+        ).decode("ascii").strip()
+        _git(tree, "update-index", "--add", "--cacheinfo", "120000", blob, "outside-link")
+        assert audit_script.audit_staged() == ["staged tree contains an unsafe path or link"]
 
 
 if __name__ == "__main__":

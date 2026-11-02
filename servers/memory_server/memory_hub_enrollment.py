@@ -38,9 +38,12 @@ def _request(config, method, path, payload=None):
             or url.query or url.fragment or url.path not in ("", "/")
             or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,96}", config.project_id)):
         raise EnrollmentError("invalid_hub_address")
+    headers = {"Content-Type": "application/json"}
+    if config.token:
+        headers["Authorization"] = "Bearer " + config.token
     req = Request(config.server_url.rstrip("/") + "/v1/projects/" + config.project_id + path,
                   data=json.dumps(payload).encode() if payload is not None else None,
-                  headers={"Authorization": "Bearer " + config.token, "Content-Type": "application/json"},
+                  headers=headers,
                   method=method)
     try:
         with build_opener(_NoRedirect(), HTTPSHandler(context=_SSL_CONTEXT)).open(req, timeout=5) as response:
@@ -124,9 +127,7 @@ def ensure_hub_connection(runtime, *, send=_request):
     if not config.auto_enroll:
         return {"status": "enrollment_disabled"}
     invitation = os.getenv(config.enrollment_token_env, "").strip()
-    if not invitation:
-        return {"status": "enrollment_credential_required", "environment_variable": config.enrollment_token_env}
-    if not re.fullmatch(r"mem_v1\.tok_[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]+", invitation):
+    if invitation and not re.fullmatch(r"mem_v1\.tok_[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]+", invitation):
         return {"status": "invalid_enrollment_credential"}
     credentials = local_hub_credentials_path(runtime.repo_root)
     state_path = credentials.parent / "hub-enrollment.json"
@@ -163,7 +164,8 @@ def ensure_hub_connection(runtime, *, send=_request):
                    "token_secret_hash": hashlib.sha256(token.split(".")[2].encode()).hexdigest(),
                    "poll_secret_hash": hashlib.sha256(state["poll_secret"].encode()).hexdigest()}
         invitation_config = replace(config, local_token=invitation, token_env="", legacy_token_allow_sha256="")
-        result = send(invitation_config, "POST", "/device-enrollments/auto", payload)
+        endpoint = "/device-enrollments/auto" if invitation else "/device-enrollments/open"
+        result = send(invitation_config, "POST", endpoint, payload)
         if (result.get("status") != "approved" or result.get("enrollment_id") != state["enrollment_id"]
                 or result.get("device_name") != state["device_name"]
                 or result.get("pairing_code") != payload["poll_secret_hash"][:12].upper()):

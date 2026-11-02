@@ -24,7 +24,7 @@ def runtime(repo, monkeypatch):
 def transport(calls):
     def send(config, method, path, payload=None):
         calls.append((config, method, path, payload))
-        if path == "/device-enrollments/auto":
+        if path in {"/device-enrollments/auto", "/device-enrollments/open"}:
             return {"status": "approved", "enrollment_id": payload["enrollment_id"],
                     "device_name": payload["device_name"], "pairing_code": payload["poll_secret_hash"][:12].upper()}
         if path == "/connection":
@@ -70,10 +70,12 @@ def test_retry_preserves_request_and_does_not_publish_untested_token(runtime, fa
     assert not (credential.parent / "hub-enrollment.json").exists()
 
 
-def test_no_invitation_or_disabled_configuration_never_contacts_network(runtime, monkeypatch):
+def test_no_invitation_uses_open_registration_but_disabled_never_contacts_network(runtime, monkeypatch):
     monkeypatch.delenv("MEMORY_HUB_ENROLLMENT_TOKEN")
     calls = []
-    assert enrollment.ensure_hub_connection(runtime, send=transport(calls))["status"] == "enrollment_credential_required"
+    assert enrollment.ensure_hub_connection(runtime, send=transport(calls))["status"] == "ready"
+    assert calls[0][2] == "/device-enrollments/open"
+    calls.clear()
     disabled = replace(runtime, shared_memory=replace(runtime.shared_memory, enabled=False))
     assert enrollment.ensure_hub_connection(disabled, send=transport(calls))["status"] == "disabled"
     assert calls == []

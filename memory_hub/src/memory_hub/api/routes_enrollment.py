@@ -2,6 +2,7 @@
 from datetime import UTC, datetime, timedelta
 import hashlib
 import hmac
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -107,6 +108,53 @@ def connection(project_id: str, principal: Principal = Depends(require_principal
             "capabilities": {"board_read": True, "tasks_read": True, "project_brief": True,
                              "board_write": "events:write" in principal.scopes,
                              "tasks_write": "events:write" in principal.scopes}}
+
+
+@router.post("/v1/projects/{project_id}/device-enrollments/open")
+def open_enroll(project_id: str, payload: EnrollmentRequest, request: Request):
+    """Public enrollment is enabled only for explicitly configured projects."""
+    if project_id not in request.app.state.settings.open_enrollment_projects:
+        raise HTTPException(404, "enrollment unavailable")
+    _limit(request, "open_enroll_global", 60)
+    client = request.client.host if request.client else "unknown"
+    _limit(request, "open_enroll_source", 10, hashlib.sha256(client.encode()).hexdigest())
+    with request.app.state.session_factory() as session:
+        if session.bind.dialect.name == "postgresql":
+            session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+                            {"key": "device-enrollment:" + project_id})
+        old = session.get(DeviceEnrollment, payload.enrollment_id)
+        if old:
+            if (old.project_id != project_id or old.approved_by != "open-registration"
+                    or any(getattr(old, key) != value for key, value in payload.model_dump().items())):
+                raise HTTPException(409, "enrollment conflict")
+            if old.status != "approved" or not active_token(session, old.token_id):
+                raise HTTPException(409, "enrollment inactive")
+            return _view(old)
+        known = session.scalar(select(AccessToken.token_id).where(
+            AccessToken.project_id == project_id, AccessToken.revoked_at.is_(None),
+            AccessToken.expires_at.is_(None) | (AccessToken.expires_at > _now())).limit(1))
+        if not known:
+            raise HTTPException(404, "enrollment unavailable")
+        count = session.scalar(select(func.count()).select_from(DeviceEnrollment).where(
+            DeviceEnrollment.project_id == project_id,
+            DeviceEnrollment.created_at > _now() - timedelta(hours=1)))
+        if count >= 50:
+            raise HTTPException(429, "project enrollment quota exceeded")
+        if session.get(AccessToken, payload.token_id):
+            raise HTTPException(409, "enrollment conflict")
+        item = DeviceEnrollment(**payload.model_dump(), project_id=project_id, status="approved",
+                                approved_by="open-registration", created_at=_now(),
+                                expires_at=_now() + timedelta(minutes=30))
+        session.add(item)
+        session.add(AccessToken(token_id=payload.token_id, token_secret_hash=payload.token_secret_hash,
+                               token_prefix="mem_v1." + payload.token_id[:13],
+                               user_id="open-device:" + uuid4().hex,
+                               project_id=project_id, scopes=list(DEVICE_SCOPES)))
+        try:
+            session.commit()
+        except IntegrityError:
+            raise HTTPException(409, "enrollment conflict") from None
+        return _view(item)
 
 
 @router.post("/v1/projects/{project_id}/device-enrollments")

@@ -833,7 +833,7 @@ python -m pytest -q tests/memory_server/test_startup_performance.py tests/memory
 
 公开 Hub 的路由、认证与事务测试保持自包含；消费项目客户端的端到端集成测试应放在消费项目仓库，不能依赖公开源码树以外的工具目录。
 
-验证入口：`python scripts/check_public_tree.py`、`python -m pytest tests`；Hub 在独立开发环境运行 `python -m pytest memory_hub/tests/unit`。发布器对精确提交树执行门禁及本地 MCP 全量测试，再以快进提交推送，不发布消费项目历史、凭据或运行记忆。修复验证与发布结果在任务交付记录中确认。
+验证入口：`python scripts/check_public_tree.py`、`python -m pytest tests`；Hub 在独立开发环境运行 `python -m pytest memory_hub/tests/unit`。这些检查属于开发、提交和 CI 阶段；Git 发布器只同步已提交的模块目录树，不运行审计或测试，不包含消费项目的父仓库历史。验证与发布结果分别记录。
 
 剩余风险：更新已部署服务需要单独执行既有部署流程；仅同步源码不会自动更新线上服务。
 
@@ -842,7 +842,7 @@ python -m pytest -q tests/memory_server/test_startup_performance.py tests/memory
 
 目标：避免新状态摘要功能绑定消费项目名称，同时保留已有设备状态与执行消息的中文摘要。公开网页按 `<namespace>.hub-health/1` 或 `<namespace>.codex-execution/1` 的完整协议格式识别；命名空间由生产方提供，不写入项目专用常量。未知类型、版本或非法命名空间仍作为普通留言安全转义，不猜测消息结构。
 
-实现与验证任务：网页与前端回归样本通用化；发布器在精确候选提交上先跑隐私/vendor 审计、再跑 `node --test memory_hub/tests/unit/test_shared_page_rendering.cjs` 和四组 MCP Python 全量测试，全部通过后才快进推送。新增 Node.js 前置检查，缺失时明确失败，不静默跳过。源码审计同时覆盖未跟踪的 HTML/JS/CJS/MJS，防止新网页文件在提交前漏检。发布成功后再次完整执行发布器，确认相同目录树只报告无需推送。
+历史验证任务：网页与前端回归样本通用化；隐私/vendor 审计、`node --test memory_hub/tests/unit/test_shared_page_rendering.cjs` 和本地 MCP 全量测试持续用于开发及 CI。2026-11-02 起不再由发布器执行这些检查，发布也不再依赖 Node.js/Python。源码审计仍覆盖未跟踪的 HTML/JS/CJS/MJS；发布器重复运行时相同目录树只报告无需推送。
 
 本轮验证结果见任务交付日志；更新源码不等于部署线上服务。现有设备消息命名空间不需要迁移，后续公开网页与测试禁止新增消费项目专用名称。
 
@@ -854,3 +854,12 @@ python -m pytest -q tests/memory_server/test_startup_performance.py tests/memory
 `author_auth_id` 的公开协议前缀固定为 `memory.board-author/1:`。消费方必须从 `/device-identities` 获取服务端返回值，不自行推算。此前私有版本使用不同前缀，其身份值与公开协议不兼容；升级部署前须结束在途设备身份确认流程，升级后重新查询身份并发起新请求。历史帖子的已存身份值保留，不改写、不推断兼容身份。仅提交或推送源码不会部署服务。
 
 验证任务：公开树隐私/vendor 审计、固定身份协议向量及跨项目/跨凭据隔离测试、Hub 单元回归、发布脚本的前端与本地 MCP 全量分片测试。下载 CLI 的本地 HTTP 测试服务器显式绕过环境代理，保留原有绕过列表；仅影响测试 fixture，真实下载仍遵循调用方代理配置。最终执行结果见消费仓库交付记忆及发布日志。
+
+
+### 当前发布与开发检查边界（2026-11-02）
+
+发布只负责 Git：同步已提交目录树，保留远端历史，遇未提交的模块变更、未完成的 Git 操作、无法确认的上游基准、网络/权限错误或远端拒绝时停止。发布器不检查内容是否合理、不自动改写内容、不运行测试；Git 推送成功和 CI 通过是两个独立结果。后续源码有问题，应在开发、提交或 CI 中修复。
+
+开发者运行 `python scripts/check_public_tree.py` 检查工作树，或运行 `python scripts/check_public_tree.py --staged` 检查将要提交的模块快照。`--staged` 直接读取 Git index blob，不受未暂存修改、未跟踪文件或 `.gitattributes` 的导出过滤影响；不能用工作树中的临时修复掩盖已暂存的问题。独立源码仓库和嵌入宿主仓库都适用。该命令只依赖 Python 标准库与 Git，不安装服务端依赖。
+
+私有项目实例的配置说明应留在宿主文档；这里使用通用项目名与测试数据。提交检查和 CI 保留隐私/vendor 检查及既有回归，不用放松规则来换取发布成功。

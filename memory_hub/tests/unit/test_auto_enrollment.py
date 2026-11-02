@@ -57,6 +57,13 @@ def request_data(device="TEST-PC"):
             "token_secret_hash": hashed, "poll_secret_hash": hashlib.sha256(secrets.token_bytes(32)).hexdigest()}, raw
 
 
+def test_open_enrollment_projects_are_explicitly_configured(monkeypatch):
+    monkeypatch.delenv("MEMORY_HUB_OPEN_ENROLLMENT_PROJECTS", raising=False)
+    assert load_settings().open_enrollment_projects == ()
+    monkeypatch.setenv("MEMORY_HUB_OPEN_ENROLLMENT_PROJECTS", "example-project, other ")
+    assert load_settings().open_enrollment_projects == ("example-project", "other")
+
+
 def test_invitation_scope_project_and_idempotency(service):
     client, app, seed = service
     invite = seed()
@@ -79,6 +86,44 @@ def test_invitation_scope_project_and_idempotency(service):
         session.commit()
     assert client.post(url, json=payload, headers=invite).status_code == 409
     assert client.get("/v1/projects/project/connection", headers={"Authorization": "Bearer " + token}).status_code == 401
+
+
+def test_open_enrollment_is_project_scoped_and_issues_independent_tokens(service):
+    from dataclasses import replace
+    client, app, seed = service
+    seed()
+    payload, token = request_data()
+    url = "/v1/projects/project/device-enrollments/open"
+    assert client.post(url, json=payload).status_code == 404
+    app.state.settings = replace(app.state.settings, open_enrollment_projects=("project",))
+    response = client.post(url, json=payload)
+    assert response.status_code == 200 and response.json()["status"] == "approved"
+    assert client.post(url, json=payload).json() == response.json()
+    assert client.post(url, json={**payload, "device_name": "OTHER"}).status_code == 409
+    assert client.post("/v1/projects/other/device-enrollments/open", json=request_data()[0]).status_code == 404
+    headers = {"Authorization": "Bearer " + token}
+    info = client.get("/v1/projects/project/connection", headers=headers).json()
+    assert info["user_id"].startswith("open-device:") and all(info["capabilities"].values())
+    assert client.post("/v1/projects/project/board/post", headers=headers,
+                       json={"post_type": "note", "content": "open test"}).status_code == 200
+    assert client.get("/v1/projects/project/tasks", headers=headers).status_code == 200
+    assert client.get("/v1/projects/project/device-enrollments", headers=headers).status_code == 403
+    second, second_token = request_data("SECOND-PC")
+    assert client.post(url, json=second).status_code == 200
+    second_info = client.get("/v1/projects/project/connection", headers={"Authorization": "Bearer " + second_token}).json()
+    assert second_info["user_id"] != info["user_id"]
+    with app.state.session_factory() as session:
+        device = session.get(AccessToken, payload["token_id"])
+        device.revoked_at = datetime.now(UTC)
+        session.commit()
+    assert client.post(url, json=payload).status_code == 409
+
+
+def test_open_enrollment_requires_existing_project(service):
+    from dataclasses import replace
+    client, app, _ = service
+    app.state.settings = replace(app.state.settings, open_enrollment_projects=("project",))
+    assert client.post("/v1/projects/project/device-enrollments/open", json=request_data()[0]).status_code == 404
 
 
 def test_new_device_board_task_lifecycle_and_project_brief(service):
@@ -169,7 +214,8 @@ def test_client_background_enrollment_uses_real_http_routes(service, tmp_path, m
         assert posted.status_code == 200
 
 
-def test_background_registration_then_actual_mcp_tools(service, tmp_path, monkeypatch):
+@pytest.mark.parametrize("open_access", [False, True])
+def test_background_registration_then_actual_mcp_tools(service, tmp_path, monkeypatch, open_access):
     import asyncio
     import json
     pytest.importorskip("servers.memory_server.memory_hub_enrollment", reason="requires local MCP source")
@@ -182,7 +228,13 @@ def test_background_registration_then_actual_mcp_tools(service, tmp_path, monkey
 
     client, app, seed = service
     monkeypatch.delenv("MEMORY_HUB_TOKEN", raising=False)
-    monkeypatch.setenv("MEMORY_HUB_ENROLLMENT_TOKEN", seed()["Authorization"].removeprefix("Bearer "))
+    invitation = seed()["Authorization"].removeprefix("Bearer ")
+    if open_access:
+        from dataclasses import replace
+        app.state.settings = replace(app.state.settings, open_enrollment_projects=("project",))
+        monkeypatch.delenv("MEMORY_HUB_ENROLLMENT_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("MEMORY_HUB_ENROLLMENT_TOKEN", invitation)
     monkeypatch.setenv("MEMORY_MCP_USER", "owner")
     config = load_config(tmp_path)
     config.config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -194,8 +246,8 @@ def test_background_registration_then_actual_mcp_tools(service, tmp_path, monkey
     server = create_server(provider)
 
     def transport(shared, method, path, payload=None):
-        return client.request(method, path, json=payload,
-                              headers={"Authorization": "Bearer " + shared.token})
+        headers = {"Authorization": "Bearer " + shared.token} if shared.token else {}
+        return client.request(method, path, json=payload, headers=headers)
     def send(shared, method, path, payload=None):
         response = transport(shared, method, "/v1/projects/" + shared.project_id + path, payload)
         assert response.status_code == 200, response.text

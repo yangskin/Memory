@@ -23,6 +23,7 @@ services:
       MEMORY_HUB_PUBLIC_BASE_URL: https://${MEMORY_HUB_PUBLIC_HOST:?set MEMORY_HUB_PUBLIC_HOST}
       MEMORY_HUB_WEB_DIR: /app
       MEMORY_HUB_ENV: production
+      MEMORY_HUB_OPEN_ENROLLMENT_PROJECTS: ${MEMORY_HUB_OPEN_ENROLLMENT_PROJECTS:-}
     command: sh -c "alembic upgrade head && memory-hub-api"
     depends_on:
       postgres:
