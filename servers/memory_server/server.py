@@ -104,6 +104,13 @@ async def _run(config: MemoryConfig | ReloadableMemoryConfig) -> None:
     worker = MemoryBackgroundWorker(provider.get)
     from .memory_sync_worker import MemorySyncWorker
     sync_worker = MemorySyncWorker(provider.get)
+    from .memory_app_context import refresh_app_context
+    async def refresh_app_context_safely():
+        try:
+            await refresh_app_context(provider.get().repo_root)
+        except Exception as exc:
+            logger.warning('Local App connection startup refresh failed: %s', type(exc).__name__)
+    app_context_task = asyncio.create_task(refresh_app_context_safely())
     worker.start()
     sync_worker.start()
     try:
@@ -114,6 +121,8 @@ async def _run(config: MemoryConfig | ReloadableMemoryConfig) -> None:
                 server.create_initialization_options(),
             )
     finally:
+        app_context_task.cancel()
+        await asyncio.gather(app_context_task, return_exceptions=True)
         worker.stop(timeout=1.0)
         sync_worker.stop(timeout=1.0)
 

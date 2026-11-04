@@ -211,9 +211,13 @@ def audit_staged() -> list[str]:
     """只审计 Git 暂存区中的模块快照，不受未暂存修改或本机凭据影响。"""
     root = ROOT.resolve()
     try:
+        # Hooks may export GIT_WORK_TREE="." (and a relative index). Keep Git's
+        # cwd at the checkout root so these paths retain their original meaning.
+        # A worktree's .git file counts just like a standalone .git directory.
+        repository = next((p for p in (root, *root.parents) if (p / ".git").exists()), root)
         def git(*args: str, input_data: bytes | None = None) -> bytes:
             return subprocess.check_output(
-                ["git", "-C", str(root), *args], input=input_data, stderr=subprocess.DEVNULL,
+                ["git", "-C", str(repository), *args], input=input_data, stderr=subprocess.DEVNULL,
             )
 
         top = Path(git("rev-parse", "--show-toplevel").decode("utf-8").strip()).resolve()

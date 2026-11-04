@@ -427,6 +427,24 @@ class TestStagedDevelopmentCheck:
         monkeypatch.setattr(audit_script, "ROOT", root)
         assert audit_script.audit_staged() == []
 
+    def test_relative_hook_worktree_preserves_module_scope(self, tmp_path, monkeypatch):
+        host = tmp_path / "hook-host"
+        root = host / "MCP" / "Memory"
+        root.mkdir(parents=True)
+        _write_valid_vendor(root)
+        _write(root / "README.md", "public")
+        _write(host / "private.md", PROJECT_ID)
+        _git(host, "init")
+        _git(host, "add", "-A")
+        monkeypatch.setattr(audit_script, "ROOT", root)
+        monkeypatch.chdir(host)
+        # Git hooks export a worktree relative to the hook's original cwd.
+        monkeypatch.setenv("GIT_WORK_TREE", ".")
+        assert audit_script.audit_staged() == []
+        _write(root / "README.md", PROJECT_ID)
+        _git(host, "add", "-A")
+        assert audit_script.audit_staged() == ["private project id: README.md"]
+
     def test_export_ignore_cannot_hide_a_staged_violation(self, tree, monkeypatch):
         monkeypatch.setattr(audit_script, "ROOT", tree)
         _write(tree / ".gitattributes", "private.md export-ignore\n")
