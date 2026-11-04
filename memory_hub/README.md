@@ -51,6 +51,7 @@ API 内置一个只读面板，实时展示 **LLM 整理的共同记忆**（项�
 用户的个人 scope 内容**：
 
 - 页面：`https://<host>/shared`（纯静态单文件，无外部 CDN 依赖）
+- 域名首页 `/` 自动跳转至 `/shared`，保留共享链接的 Token fragment。
 - 数据端点：`POST /v1/shared-feed`（需要 `context:read` scope）
 - 项目范围来自 Token，请求体不参与身份判定；请求体含多余字段会被拒绝（422）
 
@@ -65,6 +66,9 @@ fragment 不会发送到服务器或写入访问日志。页面读取后会立�
 仅在当前页面内存中使用，并通过 `Authorization: Bearer …` 自动连接。页面不提供
 手动 Token 输入或链接生成控件；链接缺少 Token、Token 无效或权限不足时会直接提示。
 页面每 30 秒自动轮询。
+首次数据请求失败后仍会继续自动重试。任务图形组件延后加载，不阻塞链接验证、
+留言板或任务详情；组件下载失败时仅在任务轨迹区提示。Caddy 为页面、脚本与
+JSON 响应启用 Zstandard / gzip 压缩，降低慢速网络的传输开销。
 
 如果当前 Token 不包含 `context:read`，也可以另行创建一个只读 Token（可选）：
 

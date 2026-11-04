@@ -32,6 +32,14 @@ def test_shared_page_is_served_without_database() -> None:
     assert "events_from_history" in body
 
 
+def test_root_redirects_to_dashboard_without_replacing_url_fragment() -> None:
+    client = TestClient(create_app())
+    response = client.get("/", follow_redirects=False)
+    assert response.status_code == 307
+    assert response.headers["location"] == "/shared"
+    assert client.get("/").status_code == 200
+
+
 def test_shared_page_only_accepts_token_from_url_and_reports_auth_errors() -> None:
     client = TestClient(create_app())
 
@@ -59,7 +67,7 @@ def test_shared_page_serves_dark_paginated_task_queue_and_selected_lineage_witho
     page_response = client.get("/shared")
     script_response = client.get("/assets/cytoscape.min.js")
 
-    assert '<script src="/assets/cytoscape.min.js"></script>' in page_response.text
+    assert '<script id="taskRenderer" defer src="/assets/cytoscape.min.js"></script>' in page_response.text
     assert script_response.status_code == 200
     assert "cytoscape" in script_response.text[:500].lower()
     assert 'layout: { name: "breadthfirst"' in page_response.text

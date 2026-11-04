@@ -1,6 +1,7 @@
 https://{$MEMORY_HUB_PUBLIC_HOST} {
 	# Certificate and private key are mounted read-only from ./certs.
 	tls /etc/caddy/certs/fullchain.pem /etc/caddy/certs/privkey.pem
+	encode zstd gzip
 	request_body {
 		max_size 1MB
 	}

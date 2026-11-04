@@ -7,7 +7,7 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, status
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from sqlalchemy import text
 
 from memory_hub.config import load_settings
@@ -55,6 +55,10 @@ def create_app() -> FastAPI:
         app.include_router(board_router)
         app.include_router(tasks_router)
         app.include_router(enrollment_router)
+
+    @app.get("/", include_in_schema=False)
+    def dashboard_entry() -> RedirectResponse:
+        return RedirectResponse("/shared")
 
     @app.get("/shared", include_in_schema=False)
     def shared_page() -> FileResponse:

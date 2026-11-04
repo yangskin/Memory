@@ -174,3 +174,118 @@ test('unknown versions, types, and malformed namespaces remain ordinary escaped 
     assert.ok(!html.includes('通讯：'));
   }
 });
+
+function bootDashboard({ token = 'test-token', failFirstFeed = false } = {}) {
+  const elements = {};
+  for (const match of page.matchAll(/id="([^"]+)"/g)) {
+    elements[match[1]] = {
+      textContent: '', innerHTML: '', value: '', style: {}, listeners: {},
+      classList: { add() {}, remove() {} },
+      addEventListener(name, callback) { this.listeners[name] = callback; },
+      querySelectorAll() { return []; },
+      querySelector() { return null; },
+      insertAdjacentHTML(position, html) { this.innerHTML = html + this.innerHTML; }
+    };
+  }
+  elements.boardFilter.value = 'all';
+  elements.taskStateFilter.value = 'working';
+  const requests = [], intervals = [], graphs = [];
+  let feedCalls = 0;
+  const sandbox = vm.createContext({
+    window: { location: { hash: token ? '#token=' + token : '', pathname: '/shared', search: '' } },
+    document: { getElementById: id => elements[id] || null, querySelectorAll: () => [], documentElement: {} },
+    history: { replaceState() { sandbox.window.location.hash = ''; } },
+    URLSearchParams,
+    setInterval(callback, delay) { intervals.push({ callback, delay }); return intervals.length; },
+    clearInterval() {},
+    getComputedStyle: () => ({ getPropertyValue: () => '#111' }),
+    fetch(url, options) {
+      requests.push({ url, options });
+      let payload;
+      if (url === '/v1/shared-feed') {
+        if (failFirstFeed && feedCalls++ === 0) return Promise.reject(new Error('network unavailable'));
+        payload = { project_id: 'test-project', events: [], brief: null };
+      } else if (url === '/v1/shared-board') {
+        payload = { items: [], status_channels: [] };
+      } else if (url.includes('/tasks?')) {
+        payload = { items: [{ task_id: 'task-1', title: 'Example task', state: 'active' }], total: 1 };
+      } else if (url.includes('/task-graph?')) {
+        payload = { nodes: [{ id: 'task:task-1', type: 'task', key: 'task-1' }], edges: [] };
+      } else if (url.includes('/task-events?')) {
+        payload = { events: [{ task_id: 'task-1', event_type: 'created', seq: 1 }] };
+      } else {
+        throw new Error('Unexpected request: ' + url);
+      }
+      return Promise.resolve({ status: 200, json: () => Promise.resolve(payload) });
+    }
+  });
+  vm.runInContext(page.match(/<script>([\s\S]*?)<\/script>/)[1], sandbox);
+  return {
+    sandbox, elements, requests, intervals, graphs,
+    loadRenderer() {
+      sandbox.cytoscape = options => {
+        graphs.push(options);
+        return { on() {}, destroy() {}, resize() {}, fit() {} };
+      };
+      elements.taskRenderer.listeners.load();
+    }
+  };
+}
+const settleDashboard = () => new Promise(resolve => setImmediate(resolve));
+
+test('dashboard authenticates and loads data before the deferred graph renderer is available', async () => {
+  const dashboard = bootDashboard();
+  await settleDashboard();
+  const { elements, requests, graphs } = dashboard;
+  assert.match(page, /<script[^>]*\bdefer\b[^>]*src="\/assets\/cytoscape\.min\.js"/);
+  assert.equal(elements.accessNotice.textContent, '共享链接验证通过');
+  assert.ok(requests.some(request => request.url === '/v1/shared-board'));
+  assert.match(elements.taskDetail.innerHTML, /Example task/);
+  assert.match(elements.taskEvents.innerHTML, /created/);
+  assert.match(elements.taskLineageArea.innerHTML, /正在加载任务图形组件/);
+  assert.equal(graphs.length, 0);
+  dashboard.loadRenderer();
+  assert.equal(graphs.length, 1);
+  assert.equal(graphs[0].elements[0].data.id, 'task:task-1');
+  assert.equal(elements.taskLineageArea.innerHTML, '');
+});
+
+test('failed graph download leaves board, task details and timeline usable', async () => {
+  for (const failBeforeData of [true, false]) {
+    const dashboard = bootDashboard();
+    if (!failBeforeData) await settleDashboard();
+    dashboard.elements.taskRenderer.listeners.error();
+    await settleDashboard();
+    assert.match(dashboard.elements.taskLineageArea.innerHTML, /任务图形组件加载失败/);
+    assert.match(dashboard.elements.taskDetail.innerHTML, /Example task/);
+    assert.match(dashboard.elements.taskEvents.innerHTML, /created/);
+    assert.equal(dashboard.elements.accessNotice.textContent, '共享链接验证通过');
+  }
+});
+
+test('renderer loaded before data still renders the selected task', async () => {
+  const dashboard = bootDashboard();
+  dashboard.loadRenderer();
+  await settleDashboard();
+  assert.equal(dashboard.graphs.length, 1);
+  assert.match(dashboard.elements.taskEvents.innerHTML, /created/);
+});
+
+test('first request failure does not disable automatic retry', async () => {
+  const dashboard = bootDashboard({ failFirstFeed: true });
+  await settleDashboard();
+  assert.match(dashboard.elements.accessNotice.textContent, /network unavailable/);
+  assert.equal(dashboard.intervals.length, 1);
+  assert.equal(dashboard.intervals[0].delay, 30000);
+  dashboard.intervals[0].callback();
+  await settleDashboard();
+  assert.equal(dashboard.elements.accessNotice.textContent, '共享链接验证通过');
+  assert.match(dashboard.elements.taskDetail.innerHTML, /Example task/);
+});
+
+test('missing token is reported without starting authenticated requests or polling', () => {
+  const dashboard = bootDashboard({ token: '' });
+  assert.match(dashboard.elements.accessNotice.textContent, /链接中没有 Token/);
+  assert.equal(dashboard.requests.length, 0);
+  assert.equal(dashboard.intervals.length, 0);
+});

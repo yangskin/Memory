@@ -391,7 +391,7 @@
   </div>
 </main>
 
-<script src="/assets/cytoscape.min.js"></script>
+<script id="taskRenderer" defer src="/assets/cytoscape.min.js"></script>
 <script>
 (function () {
   "use strict";
@@ -405,6 +405,7 @@
   var lastUpdated = document.getElementById("lastUpdated");
   var projectId = document.getElementById("projectId");
   var taskLineage = null;
+  var taskRendererFailed = false;
   var hasBriefContent = false;
   var hasFeedContent = false;
 
@@ -863,6 +864,12 @@
     if (!record) { area.innerHTML = '<div class="empty">选择任务后显示依赖与交付轨迹。</div>'; return; }
     var lineage = taskLineageData(bundle);
     if (!lineage.nodes.length) { area.innerHTML = '<div class="empty">该任务尚无可视关系。</div>'; return; }
+    if (typeof cytoscape !== "function") {
+      area.innerHTML = taskRendererFailed
+        ? '<div class="errorbox">任务图形组件加载失败，请刷新页面重试；任务详情和事件仍可查看。</div>'
+        : '<div class="empty">正在加载任务图形组件；任务详情和事件仍可查看。</div>';
+      return;
+    }
     area.innerHTML = "";
     var styles = getComputedStyle(document.documentElement);
     var elements = lineage.nodes.map(function (node) {
@@ -934,6 +941,8 @@
     var requestId = ++taskDetailRequestId;
     var base = "/v1/projects/" + encodeURIComponent(currentProject);
     destroyTaskLineage();
+    window.__taskGraphCache = null;
+    window.__taskHistoryCache = null;
     document.getElementById("taskLineageArea").innerHTML = '<div class="empty">正在加载任务轨迹。</div>';
     document.getElementById("taskEvents").innerHTML = '<div class="empty">正在加载任务事件。</div>';
     Promise.all([
@@ -1045,7 +1054,6 @@
       accessNotice.textContent = "共享链接验证通过";
       accessNotice.classList.remove("error");
       renderFeed(feed);
-      schedule();
     }).catch(function (err) {
       showAccessError(err && err.message ? err.message : String(err));
     });
@@ -1066,6 +1074,15 @@
     history.replaceState(null, "", window.location.pathname + window.location.search + (remainingFragment ? "#" + remainingFragment : ""));
     return token;
   }
+  function refreshTaskRenderer() {
+    var record = (window.__taskRecords || []).filter(function (item) { return item.task_id === selectedTaskId; })[0];
+    if (window.__taskGraphCache && record) renderTaskLineage(window.__taskGraphCache, record);
+  }
+  document.getElementById("taskRenderer").addEventListener("load", refreshTaskRenderer);
+  document.getElementById("taskRenderer").addEventListener("error", function () {
+    taskRendererFailed = true;
+    refreshTaskRenderer();
+  });
   refreshBtn.addEventListener("click", refreshAll);
   document.getElementById("taskRefreshBtn").addEventListener("click", function () {
     taskDetailRequestId += 1;
@@ -1121,6 +1138,7 @@
     refreshBtn.disabled = false;
     document.getElementById("taskRefreshBtn").disabled = false;
     refreshAll();
+    schedule();
   } else {
     showAccessError("链接中没有 Token，请使用包含 #token=... 的共享链接。");
   }
