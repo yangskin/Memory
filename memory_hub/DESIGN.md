@@ -95,12 +95,28 @@ Board 保留策略：worker 启动后立即清理一次，之后按 `BOARD_PURGE
 
 1. 整线程清理：只删除整条线程内全部为 `resolved` 且最近变更早于 `BOARD_RETENTION_DAYS`（默认 30，`0` 关闭）的帖子；
    线程内只要有 open 帖就整条保留，open 帖永远不会被自动清理。
-2. 逐帖清理心跳类重复帖：这类帖共用一条固定线程，线程里永远有一条 open 的当前心跳，整线程规则永远清不掉旧心跳，
-   因此按单帖判断：`post_type=note`、状态非 open、`expires_at` 已到期、且 `updated_at` 早于
+2. 逐帖清理机器短期 note（如原窗口续办收据）：按单帖判断：`post_type=note`、状态非 open、`expires_at` 已到期、且 `updated_at` 早于
    `BOARD_NOTE_RETENTION_HOURS`（默认 8，`0` 关闭）才删除；若帖子的 `post_id` 仍被其它帖当作 `thread_id` 引用则保留。
    任务、请求、回复永远只受整线程规则约束。
 
 每类每轮最多 20 批、每批 500 条；两类任一出错只记日志并回滚该批，不影响另一类，也不影响 brief 处理循环。
+
+### 3.3 设备状态（独立模块）
+
+设备服务心跳 `hub-health` 与执行状态 `codex-execution` 不使用 Board。它们由独立的
+`routes_device_status.py` 写入 `device_status` 表：每个（项目、通道、发布凭据、设备名）只有一行，
+`POST /v1/projects/{project_id}/device-status/{channel}` 覆盖更新（天然幂等），
+`GET /v1/projects/{project_id}/device-status?channel=&device_name=` 读取（含已过期行，由调用方判定新鲜度），
+共享面板使用只读的 `GET /v1/shared-device-status`（只返回未过期行）。通道是白名单，同一凭据最多
+64 个仍在用的设备名（兼容多台设备共用一个旧凭据），每凭据每分钟最多 60 次写入；过期超过 7 天的行由
+worker 按 Board 清理间隔删除（不受 Board 保留开关影响），表大小只随在用设备增长。Board 对这两类作者返回 410；迁移 `0015_device_status`
+删除 Board 中遗留的这两类 note。设备状态只是可见性信息，不表示在线，也不承载任务生命周期。
+
+### 3.4 写入放大控制
+
+- 鉴权成功时 `access_tokens.last_used_at` 最多每 5 分钟写一次，精度只用于判断凭据是否仍在使用。
+- `/context` 用量计数在 API 进程内聚合，每 60 秒（以及进程退出、读取 `/context/usage` 前）合并写入
+  `context_usage_daily`；进程被强杀时最多丢失一个间隔的统计。
 
 MCP dispatcher 对所有扩展参数做运行时 clamp，最终序列化边界再限制为 12,000 字符和保守
 估算 3,000 tokens。超限响应递归削减列表、字段、字符串与深度，但保持有效 JSON 和核心
@@ -119,7 +135,9 @@ Agent、时间窗口和分次查询控制工作集，Task Graph 不进入自动 
 
 - Token 格式为 `mem_v1.<token-id>.<secret>`，服务端只保存 secret hash，明文只在创建时出现一次。
 - Token 仅授予所需 scope，通常为 `events:write` 与 `context:read`；丢失或泄露时创建替代 Token 并撤销旧 `token_id`。
-- 事件正文经过敏感信息检测；命中私钥、常见 API Key、Bearer Token、数据库 URL、AWS Key、Slack Token 或 JWT 特征时，正文不持久化。
+- 事件正文、Board 正文与设备状态共用同一套敏感信息检测规则（`services/secret_scan.py`）；命中私钥、常见 API Key、Bearer Token、数据库 URL（含 MongoDB）、AWS Key、Slack Token 或 JWT 特征时：事件正文不持久化但事件保留（批量上传不整批失败），Board 与设备状态直接返回 422。
+- 请求体上限（1 MB）只由 Caddy `request_body max_size` 执行，API 不再预读整个请求体重复检查；`api` 不发布端口。客户端中途断开按 400 安静结束，不记录错误堆栈。
+- 设备注册的来源限流按真实客户端地址计算：仅当直连方属于 `MEMORY_HUB_TRUSTED_PROXIES`（Compose 默认 Docker 默认地址池）时才读取 `X-Forwarded-For`，且只取最右一项（Caddy 未配置 `trusted_proxies` 时会丢弃客户端自带的该头并写入它看到的连接地址），直连调用方无法伪造。前提是 Caddy 能看到访客真实地址：宿主前面另有负载均衡/CDN、Docker rootless 或 IPv6 连接经 docker-proxy 转发时，Caddy 看到的是中间地址，需要另行配置。改 Docker 地址池或为 `api` 发布端口时必须同步收窄该配置。
 - 上下文 API 只返回白名单 metadata 字段；个人 scope 不会被用于他人的项目 Brief。
 - `.env`、`user_config.local.json`、证书、私钥、CSR 均必须被 Git 忽略。发布前运行根目录的 `scripts/check_public_tree.py`。
 - LLM Provider 只接收 Worker 允许的 Brief 输入，不能执行工具、命令、URL 或代码。未配置真实 LLM 时使用 `fake` Provider，基础同步仍可用。

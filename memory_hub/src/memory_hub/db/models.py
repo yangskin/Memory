@@ -349,3 +349,25 @@ class ContextUsageDaily(Base):
     other_tasks_requests: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     project_activity_requests: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class DeviceStatus(Base):
+    """设备状态独立通道：每个(项目, 通道, 发布凭据, 设备名)只保留一行并覆盖更新。
+
+    状态是 advisory 可见性信息，不表示设备在线，也不承载任务生命周期；它不进入 Board。
+    """
+
+    __tablename__ = "device_status"
+    __table_args__ = (
+        Index("idx_device_status_project_channel_device", "project_id", "channel", "device_name"),
+        Index("idx_device_status_project_updated", "project_id", "updated_at"),
+    )
+
+    project_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    channel: Mapped[str] = mapped_column(String(64), primary_key=True)
+    author_auth_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    device_name: Mapped[str] = mapped_column(String(96), primary_key=True)
+    author_user_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

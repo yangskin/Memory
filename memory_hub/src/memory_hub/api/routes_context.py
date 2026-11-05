@@ -1,19 +1,21 @@
 from __future__ import annotations
 
+import logging
 from collections import deque
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import and_, desc, func, or_, select
-from sqlalchemy.dialects.postgresql import insert
 
 from memory_hub.api.dependencies import effective_user_id, require_principal
 from memory_hub.auth.permissions import Principal
 from memory_hub.db.models import BriefHead, BriefSnapshot, ContextUsageDaily, MemoryEvent
 from memory_hub.domain.shared_context import SharedContextRequest
 from memory_hub.domain.shared_feed import SharedFeedRequest
+from memory_hub.services.context_usage import upsert_usage, usage_counters, usage_day
 
 router = APIRouter()
+_LOGGER = logging.getLogger("memory_hub.api.context")
 
 _SAFE_METADATA_KEYS = frozenset({
     "branch",
@@ -109,27 +111,21 @@ def _brief(session, project_id: str, brief_type: str, subject_user_id: str) -> t
     markdown = snapshot.rendered_markdown or ""
     return {"generated_at": snapshot.generated_at.isoformat(), "covers_through_seq": snapshot.input_seq_to, "markdown": markdown[:4000], "truncated": len(markdown) > 4000}, snapshot.input_seq_to
 
-def _record_context_usage(session, project_id: str, include: list[str], returned_events: int, returned_briefs: int) -> None:
-    usage_date = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-    values = {
-        "user_brief_requests": int("user_brief" in include),
-        "project_brief_requests": int("project_brief" in include),
-        "same_task_requests": int("same_task_agents" in include),
-        "other_agents_requests": int("my_other_agents" in include),
-        "other_tasks_requests": int("other_tasks" in include),
-        "project_activity_requests": int("project_activity" in include),
-    }
-    statement = insert(ContextUsageDaily).values(project_id=project_id, usage_date=usage_date, request_count=1, returned_event_count=returned_events, returned_brief_count=returned_briefs, **values)
-    statement = statement.on_conflict_do_update(
-        index_elements=["project_id", "usage_date"],
-        set_={
-            "request_count": ContextUsageDaily.request_count + 1,
-            "returned_event_count": ContextUsageDaily.returned_event_count + returned_events,
-            "returned_brief_count": ContextUsageDaily.returned_brief_count + returned_briefs,
-            **{name: getattr(ContextUsageDaily, name) + value for name, value in values.items()},
-        },
-    )
-    session.execute(statement)
+def _record_context_usage(request: Request, session, project_id: str, include: list[str], returned_events: int, returned_briefs: int) -> None:
+    """Accumulate usage in memory and only write when the flush interval elapsed."""
+    counters = usage_counters(include, returned_events, returned_briefs)
+    buffer = getattr(request.app.state, "context_usage", None)
+    if buffer is None:
+        upsert_usage(session, project_id, usage_day(), counters)
+        session.commit()
+        return
+    buffer.add(project_id, counters)
+    if buffer.due():
+        try:
+            buffer.flush(session)
+        except Exception:
+            # 统计写入失败不影响本次读取；计数已放回缓冲，下次再合并。
+            _LOGGER.warning("context usage flush failed; counters kept for retry", exc_info=True)
 
 
 @router.post("/v1/projects/{project_id}/context")
@@ -173,8 +169,7 @@ def shared_context(project_id: str, payload: SharedContextRequest, request: Requ
         returned_events = len(result["pending_updates"])
         returned_events += sum(len(result.get(name, [])) for name in ("same_task_agents", "my_other_agents", "other_tasks", "project_activity"))
         returned_briefs = int("user_brief" in result) + int("project_brief" in result)
-        _record_context_usage(session, project_id, payload.include, returned_events, returned_briefs)
-        session.commit()
+        _record_context_usage(request, session, project_id, payload.include, returned_events, returned_briefs)
         return result
 
 
@@ -184,6 +179,10 @@ def context_usage(project_id: str, request: Request, principal: Principal = Depe
         raise HTTPException(status.HTTP_403_FORBIDDEN, "project access denied")
     since = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
     with request.app.state.session_factory() as session:
+        buffer = getattr(request.app.state, "context_usage", None)
+        if buffer is not None:
+            # 报表读取前先写出本进程尚未合并的计数，保证读到的是当前值。
+            buffer.flush(session)
         rows = list(session.scalars(select(ContextUsageDaily).where(ContextUsageDaily.project_id == project_id, ContextUsageDaily.usage_date >= since).order_by(ContextUsageDaily.usage_date)))
         return {
             "project_id": project_id,

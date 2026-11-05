@@ -4,6 +4,7 @@ from memory_hub.db.models import (
     GraphEdge,
     GraphNode,
     BriefTokenUsageDaily,
+    DeviceStatus,
     MemoryEvent,
     Task,
     TaskAttempt,
@@ -24,6 +25,7 @@ def test_required_tables_and_event_idempotency_constraint_are_declared() -> None
         "brief_heads",
         "brief_token_usage_daily",
         "context_usage_daily",
+        "device_status",
         "graph_nodes",
         "graph_edges",
         "task_events",
@@ -59,6 +61,24 @@ def test_brief_token_usage_is_project_day_scoped() -> None:
         "project_id",
         "usage_date",
     ]
+
+
+def test_device_status_is_one_row_per_project_channel_credential_and_device() -> None:
+    assert DeviceStatus.__table__.primary_key.columns.keys() == [
+        "project_id",
+        "channel",
+        "author_auth_id",
+        "device_name",
+    ]
+    assert {item.name for item in DeviceStatus.__table__.indexes} == {
+        "idx_device_status_project_channel_device",
+        "idx_device_status_project_updated",
+    }
+    from pathlib import Path
+
+    migration = (Path(__file__).resolve().parents[2] / "migrations" / "versions" / "0015_device_status.py").read_text(encoding="utf-8")
+    for name in ("idx_device_status_project_channel_device", "idx_device_status_project_updated"):
+        assert name in migration
 
 
 def test_graph_constraints_and_indexes_are_declared() -> None:

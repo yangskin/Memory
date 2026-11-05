@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException, Request, status
 from sqlalchemy.orm import Session, sessionmaker
@@ -10,6 +11,9 @@ from sqlalchemy.orm import Session, sessionmaker
 from memory_hub.auth.permissions import Principal
 from memory_hub.auth.tokens import parse_token, verify_secret
 from memory_hub.db.repositories import active_token
+
+# last_used_at 只用于判断凭据是否仍在使用，精度到分钟级即可；避免每个读请求都额外写库。
+LAST_USED_RESOLUTION = timedelta(minutes=5)
 
 
 def effective_user_id(request: Request, principal: Principal) -> str:
@@ -36,7 +40,13 @@ def require_principal(required_scope: str) -> Callable:
                 raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid authentication")
             if required_scope not in token.scopes:
                 raise HTTPException(status.HTTP_403_FORBIDDEN, "insufficient scope")
-            token.last_used_at = __import__("datetime").datetime.now(__import__("datetime").UTC)
-            session.commit()
-            return Principal(token.token_id, token.user_id, token.project_id, frozenset(token.scopes))
+            principal = Principal(token.token_id, token.user_id, token.project_id, frozenset(token.scopes))
+            now = datetime.now(UTC)
+            last_used = token.last_used_at
+            if last_used is not None and last_used.tzinfo is None:
+                last_used = last_used.replace(tzinfo=UTC)
+            if last_used is None or now - last_used >= LAST_USED_RESOLUTION:
+                token.last_used_at = now
+                session.commit()
+            return principal
     return dependency

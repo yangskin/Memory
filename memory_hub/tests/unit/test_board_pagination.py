@@ -349,37 +349,45 @@ def test_defaults_clean_transient_notes_every_eight_hours(monkeypatch):
     assert settings.board_retention_days == 30
 
 
-def test_shared_board_keeps_machine_status_channels_out_of_messages(service):
+def test_shared_board_keeps_machine_notes_out_of_messages(service):
     client, factory, headers = service
     question = add(factory, minutes=1, post_type="question")
-    # 心跳按设备固定线程每分钟新建一条 note；它们不能占用人类留言的取数窗口。
+    # 迁移前遗留的心跳快照与原窗口续办收据都是机器写入，不能占用人类留言的取数窗口。
     for i in range(60):
         add(factory, minutes=10 + i, post_type="note", author_agent="hub-health",
             expires=datetime.now(UTC) + timedelta(minutes=5))
-    execution = add(factory, minutes=80, post_type="note", author_agent="codex-execution",
-                    expires=datetime.now(UTC) + timedelta(minutes=5))
-    expired = add(factory, minutes=81, post_type="note", author_agent="hub-health",
-                  expires=datetime.now(UTC) - timedelta(seconds=1))
-    # 原窗口续办状态同样是机器通道，且不会自动 resolve，必须一并排除。
-    wake_status = add(factory, minutes=82, post_type="note", author_agent="codex-original-wake")
-    wake_notice = add(factory, minutes=83, post_type="note", author_agent="codex-original-wake-status")
+    add(factory, minutes=80, post_type="note", author_agent="codex-execution",
+        expires=datetime.now(UTC) + timedelta(minutes=5))
+    add(factory, minutes=82, post_type="note", author_agent="codex-original-wake")
+    add(factory, minutes=83, post_type="note", author_agent="codex-original-wake-status")
 
     response = client.post("/v1/shared-board", headers=headers, json={"max_items": 50})
     assert response.status_code == 200, response.text
     body = response.json()
 
-    # 留言区只剩人类留言，计数不被心跳抬高。
     assert body["total"] == 1
     assert [item["post_id"] for item in body["items"]] == [str(question)]
-    assert all(item["author_agent_id"] not in {"hub-health", "codex-execution"} for item in body["items"])
+    # 设备状态已迁到独立的 /v1/shared-device-status，Board 响应不再携带状态区。
+    assert "status_channels" not in body
 
-    # 机器状态走独立字段，且只保留仍在有效期内的快照。
-    channels = {item["post_id"] for item in body["status_channels"]}
-    assert str(execution) in channels
-    assert str(expired) not in channels
-    assert str(question) not in channels
-    # 原窗口状态只排除、不渲染，避免把续办收据当成设备摘要。
-    assert str(wake_status) not in channels and str(wake_notice) not in channels
+
+def test_board_rejects_device_status_snapshots(service):
+    client, factory, headers = service
+    for agent in ("hub-health", "codex-execution"):
+        response = client.post(f"/v1/projects/{PROJECT}/board/post", headers=headers,
+                               json={"post_type": "note", "content": "{}", "author_agent_id": agent})
+        assert response.status_code == 410, response.text
+        root = add(factory, minutes=1)
+        reply = client.post(f"/v1/projects/{PROJECT}/board/reply", headers=headers,
+                            json={"reply_to": str(root), "content": "{}", "author_agent_id": agent})
+        assert reply.status_code == 410, reply.text
+    # 其它机器通道与普通留言不受影响。
+    ok = client.post(f"/v1/projects/{PROJECT}/board/post", headers=headers,
+                     json={"post_type": "note", "content": "wake", "author_agent_id": "codex-original-wake"})
+    assert ok.status_code == 200, ok.text
+    with factory() as session:
+        agents = set(session.scalars(select(BoardPost.author_agent_id)))
+    assert not agents & {"hub-health", "codex-execution"}
 
 
 def test_excluding_agents_keeps_posts_without_a_publisher_channel(service):

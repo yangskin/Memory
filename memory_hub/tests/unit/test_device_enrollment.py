@@ -1,7 +1,6 @@
-"""真实 HTTP 路由与 SQLite 事务覆盖；PostgreSQL 迁移另由集成测试验证。"""
-from datetime import UTC, datetime, timedelta
-import hashlib
-import secrets
+"""开放注册限流与人工审批路由已移除的真实 HTTP 覆盖；PostgreSQL 迁移另由集成测试验证。"""
+import ipaddress
+from types import SimpleNamespace
 from uuid import uuid4
 
 from fastapi import FastAPI
@@ -29,6 +28,7 @@ def service():
         app = FastAPI()
         app.state.session_factory = sessionmaker(engine, expire_on_commit=False)
         app.state.rate_limiter = TokenRateLimiter()
+        app.state.settings = SimpleNamespace(trusted_proxies=(), open_enrollment_projects=("example-project",))
         app.include_router(router)
         client = TestClient(app)
         def seed(user="owner", project="example-project", scopes=None):
@@ -44,83 +44,80 @@ def service():
         AccessToken.__table__.c.scopes.type = original
 
 
-def pending(client):
-    token_id, token, hashed = create_token()
-    poll_secret = secrets.token_urlsafe(32)
-    payload = dict(enrollment_id=uuid4().hex, device_name="QA-PC", token_id=token_id,
-        token_secret_hash=hashed, poll_secret_hash=hashlib.sha256(poll_secret.encode()).hexdigest())
-    response = client.post("/v1/projects/example-project/device-enrollments", json=payload)
-    assert response.status_code == 200, response.text
-    return payload, token, poll_secret, response.json()
+def payload():
+    token_id, _, hashed = create_token()
+    return dict(enrollment_id=uuid4().hex, device_name="QA-PC", token_id=token_id,
+                token_secret_hash=hashed, poll_secret_hash=hashed)
 
 
-def test_approve_then_authenticate_without_transmitting_plain_token(service):
-    client, app, seed = service
-    headers = seed(scopes=["devices:approve"])
-    payload, token, secret, item = pending(client)
-    path = "/v1/projects/example-project/device-enrollments/" + item["enrollment_id"]
-    assert token not in str(payload) + str(item)
-    with app.state.session_factory() as session:
-        assert session.get(AccessToken, payload["token_id"]) is None
-    assert client.get(path + "/status").status_code == 401
-    assert client.get(path + "/status", headers={"X-Memory-Enrollment-Secret": "x" * 43}).status_code == 401
-    decision = {"decision": "approve", "pairing_code": item["pairing_code"]}
-    assert client.post(path + "/decision", json=decision, headers=headers).json()["status"] == "approved"
-    assert client.post(path + "/decision", json=decision, headers=headers).status_code == 200
-    assert client.post("/v1/projects/example-project/device-enrollments", json=payload).json()["status"] == "approved"
-    assert client.get(path + "/status", headers={"X-Memory-Enrollment-Secret": secret}).json()["status"] == "approved"
-    # 新设备拿到最小业务权限，不能给其它设备审批，也不能冒充其它 user。
-    assert client.get("/v1/projects/example-project/device-enrollments", headers={"Authorization": "Bearer " + token}).status_code == 403
-    with app.state.session_factory() as session:
-        credential = session.get(AccessToken, payload["token_id"])
-        assert credential.user_id == "owner"
-        assert credential.scopes == ["events:write", "context:read"]
-        credential.revoked_at = datetime.now(UTC)
-        session.commit()
-    assert client.get(path + "/status", headers={"X-Memory-Enrollment-Secret": secret}).json()["status"] == "revoked"
+OPEN = "/v1/projects/example-project/device-enrollments/open"
 
 
-def test_approval_scope_project_pairing_and_rejection(service):
-    client, app, seed = service
-    ordinary = seed()
+def test_manual_approval_routes_are_removed(service):
+    client, _, seed = service
     admin = seed(scopes=["devices:approve"])
-    outsider = seed(project="other", scopes=["devices:approve"])
-    payload, token, secret, item = pending(client)
-    path = "/v1/projects/example-project/device-enrollments/" + item["enrollment_id"] + "/decision"
-    decision = {"decision": "approve", "pairing_code": item["pairing_code"]}
-    assert client.post(path, headers=ordinary, json=decision).status_code == 403
-    assert client.post(path, headers=outsider, json=decision).status_code == 403
-    assert client.post(path, headers=admin, json={**decision, "pairing_code": "F" * 12}).status_code == 409
-    assert client.post(path, headers=admin, json={**decision, "decision": "reject"}).json()["status"] == "rejected"
-    assert client.post(path, headers=admin, json=decision).status_code == 409
-    with app.state.session_factory() as session:
-        assert session.get(AccessToken, payload["token_id"]) is None
-
-
-def test_expiry_idempotency_collision_and_schema(service):
-    client, app, seed = service
-    admin = seed(scopes=["devices:approve"])
-    payload, token, secret, item = pending(client)
-    url = "/v1/projects/example-project/device-enrollments"
-    assert client.post(url, json=payload).json() == item
-    assert client.post(url, json={**payload, "device_name": "IMPOSTOR"}).status_code == 409
-    assert client.post(url, json={**payload, "extra": "bad"}).status_code == 422
-    with app.state.session_factory() as session:
-        session.get(DeviceEnrollment, item["enrollment_id"]).expires_at = datetime.now(UTC) - timedelta(seconds=1)
-        session.commit()
-    assert client.get(url, headers=admin).json()["items"] == []
-    assert client.post(url + "/" + item["enrollment_id"] + "/decision", headers=admin,
-        json={"decision": "approve", "pairing_code": item["pairing_code"]}).status_code == 409
-    assert client.get(url + "/" + item["enrollment_id"] + "/status",
-        headers={"X-Memory-Enrollment-Secret": secret}).json()["status"] == "expired"
+    base = "/v1/projects/example-project/device-enrollments"
+    enrollment_id = uuid4().hex
+    # 匿名待审申请、状态轮询、待审列表与批准决定均不再存在；旧审批凭据也无法使用。
+    assert client.post(base, json=payload()).status_code in {404, 405}
+    assert client.get(base, headers=admin).status_code in {404, 405}
+    assert client.get(base + "/" + enrollment_id + "/status",
+                      headers={"X-Memory-Enrollment-Secret": "x" * 43}).status_code == 404
+    assert client.post(base + "/" + enrollment_id + "/decision", headers=admin,
+                       json={"decision": "approve", "pairing_code": "A" * 12}).status_code == 404
+    with service[1].state.session_factory() as session:
+        assert session.query(DeviceEnrollment).count() == 0
 
 
 def test_public_request_rate_limit(service):
     client, app, seed = service
     seed()
     for _ in range(10):
-        pending(client)
-    _, _, hashed = create_token()
-    result = client.post("/v1/projects/example-project/device-enrollments", json=dict(enrollment_id=uuid4().hex,
-        device_name="QA-PC", token_id="tok_" + "a" * 24, token_secret_hash=hashed, poll_secret_hash=hashed))
-    assert result.status_code == 429
+        assert client.post(OPEN, json=payload()).status_code == 200
+    assert client.post(OPEN, json=payload()).status_code == 429
+
+
+def test_source_limit_counts_each_real_client_behind_the_trusted_proxy(service):
+    _, app, seed = service
+    seed()
+    app.state.settings = SimpleNamespace(trusted_proxies=(ipaddress.ip_network("172.16.0.0/12"),),
+                                         open_enrollment_projects=("example-project",))
+    # 所有请求都从同一个代理地址进入，就像生产里经 Caddy 转发。
+    proxied = TestClient(app, client=("172.19.0.5", 4321))
+
+    def attempt(source):
+        return proxied.post(OPEN, json=payload(), headers={"X-Forwarded-For": source}).status_code
+
+    assert [attempt("203.0.113.1") for _ in range(10)] == [200] * 10
+    assert attempt("203.0.113.1") == 429
+    # 另一位真实访客不受前一位耗尽额度的影响。
+    assert attempt("203.0.113.2") == 200
+    # 不受信的直连方伪造转发头无法换来新额度。
+    direct = TestClient(app, client=("198.51.100.9", 4321))
+    for index in range(10):
+        assert direct.post(OPEN, headers={"X-Forwarded-For": f"203.0.113.{100 + index}"},
+                           json=payload()).status_code == 200
+    assert direct.post(OPEN, headers={"X-Forwarded-For": "203.0.113.250"}, json=payload()).status_code == 429
+
+
+def test_source_rejections_do_not_consume_the_global_limit(service):
+    _, app, _ = service
+    # 项目没有有效凭据：通过限流的请求返回 404 且不写库，避免项目每小时配额干扰限流计数。
+    app.state.settings = SimpleNamespace(trusted_proxies=(ipaddress.ip_network("172.16.0.0/12"),),
+                                         open_enrollment_projects=("empty-project",))
+    proxied = TestClient(app, client=("172.19.0.5", 4321))
+    url = "/v1/projects/empty-project/device-enrollments/open"
+
+    def attempt(source):
+        return proxied.post(url, json=payload(), headers={"X-Forwarded-For": source}).status_code
+
+    # 单一来源刷满 60 次：只有前 10 次通过，其余被来源额度拒绝。
+    flood = [attempt("203.0.113.66") for _ in range(60)]
+    assert flood == [404] * 10 + [429] * 50
+    # 被拒绝的 50 次不计入全局额度，其他来源仍可正常申请（已用 10/60）。
+    assert attempt("198.51.100.7") == 404
+    # 全局上限仍然有效：再有 4 个来源各用满 10 次 + 上面 1 次 = 51，再补 9 次达到 60。
+    for index in range(4):
+        assert [attempt(f"198.51.100.{20 + index}") for _ in range(10)] == [404] * 10
+    assert [attempt("198.51.100.7") for _ in range(9)] == [404] * 9
+    assert attempt("198.51.100.99") == 429

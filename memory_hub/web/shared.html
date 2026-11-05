@@ -623,9 +623,13 @@
       needs_attention: "需要处理", attention: "需要处理", error: "异常",
       waiting_for_approval: "等待批准", waiting_for_user: "等待用户", unknown: "状态未知" })[state] || "状态未知";
   }
+  // 新鲜度口径须与状态生产方读取端一致；页面内只在这里定义一次。
+  var STATUS_FRESH_SECONDS = 180;
+  var REPORT_FRESH_SECONDS = 600;
+  var CLOCK_SKEW_SECONDS = 60;
   function boardStatusFresh(stamp, seconds) {
     var age = (Date.now() - Date.parse(stamp)) / 1000;
-    return Number.isFinite(age) && age >= -60 && age <= seconds;
+    return Number.isFinite(age) && age >= -CLOCK_SKEW_SECONDS && age <= seconds;
   }
   function boardStatusSummary(post) {
     var data = boardStatusPayload(post);
@@ -633,19 +637,21 @@
     if (data.invalid) return "状态摘要暂不可用：数据不完整，请等待下一次更新。";
     var isHealth = boardStatusProtocol(data.protocol) === "hub-health";
     var lines = ["设备：" + (typeof data.device === "string" ? data.device : "未标明")];
-    if (!boardStatusFresh(data.observed_at, 180) ||
+    if (!boardStatusFresh(data.observed_at, STATUS_FRESH_SECONDS) ||
         (post.expires_at && Date.parse(post.expires_at) <= Date.now())) {
       lines.push("状态已过期，当前通讯与执行情况未知。");
       return lines.join("\n");
     }
     if (isHealth) {
+      // 服务卡片只显示通讯服务；任务执行情况只看 codex-execution 卡片，不重复展示。
       var services = data.services || {};
       lines.push("通讯：" + [["bridge", "派发"], ["receiver", "接收"], ["replies", "回信"]].map(function (entry) {
         return entry[1] + "" + boardStatusName((services[entry[0]] || {}).state);
       }).join("；") + "。");
+      return lines.join("\n");
     }
-    var snapshot = isHealth ? data.codex_execution : data;
-    var instances = snapshot && Array.isArray(snapshot.instances) ? snapshot.instances : [];
+    var snapshot = data;
+    var instances = Array.isArray(snapshot.instances) ? snapshot.instances : [];
     if (!instances.length) {
       lines.push("任务：未绑定对话，执行状态未知。");
     } else {
@@ -653,12 +659,12 @@
         if (!row || typeof row !== "object") { lines.push("任务：状态数据不完整。"); return; }
         var execution = row.execution || {};
         var fresh = snapshot.freshness !== "stale" && boardStatusFresh(
-          execution.observed_at || execution.checked_at, 180);
+          execution.observed_at || execution.checked_at, STATUS_FRESH_SECONDS);
         lines.push("任务：" + (typeof row.task === "string" ? row.task : "未命名") + " · " +
           (fresh ? boardStatusName(execution.state) : "状态已过期，执行情况未知") + "。");
         var report = row.reported;
         if (report) {
-          if (fresh && report.freshness === "current_turn" && boardStatusFresh(report.reported_at, 600)) {
+          if (fresh && report.freshness === "current_turn" && boardStatusFresh(report.reported_at, REPORT_FRESH_SECONDS)) {
             if (typeof report.step === "string" && report.step) lines.push("进度：" + report.step.slice(0, 240));
             if (typeof report.blocker === "string" && report.blocker) lines.push("阻塞：" + report.blocker.slice(0, 360));
           } else lines.push("旧进度已过时，不代表当前执行情况。");
@@ -695,27 +701,34 @@
     }
     return true;
   }
-  function renderStatusChannels(posts) {
-    // 机器心跳单独成区：不参与留言筛选、排序和计数。
+  function statusRowAsCard(row) {
+    // 设备状态来自独立的 device-status 模块；只借用状态卡片的摘要渲染，不当作留言。
+    return { content: row && row.content, expires_at: row && row.expires_at, created_at: row && row.updated_at,
+      author_agent_id: row && row.channel, post_type: "note", status: "open" };
+  }
+  function renderStatusChannels(rows) {
+    // 设备状态单独成区：不参与留言筛选、排序和计数。
     var area = document.getElementById("statusArea");
     if (!area) return;
-    var rows = (posts || []).filter(function (p) { return boardStatusPayload(p) !== null; });
-    if (!rows.length) {
+    var cards = (rows || []).map(statusRowAsCard).filter(function (p) { return boardStatusPayload(p) !== null; });
+    if (!cards.length) {
       document.getElementById("statusBody").innerHTML = "";
       area.hidden = true;
       return;
     }
-    rows.sort(function (a, b) { return (a.created_at < b.created_at ? 1 : -1); });
-    document.getElementById("statusBody").innerHTML = rows.map(function (p) {
+    cards.sort(function (a, b) { return (a.created_at < b.created_at ? 1 : -1); });
+    document.getElementById("statusBody").innerHTML = cards.map(function (p) {
       return renderBoardPost(p, true);
     }).join("");
     area.hidden = false;
+  }
+  function renderDeviceStatus(data) {
+    renderStatusChannels(data && data.items);
   }
   function renderBoard(data) {
     window.__boardCache = data;
     var area = document.getElementById("boardArea");
     var items = (data && data.items) || [];
-    renderStatusChannels(data && data.status_channels);
     var statusFilter = document.getElementById("boardFilter").value;
     var query = document.getElementById("boardSearch").value.trim();
     var filtered = items.filter(function (it) { return boardMatches(it, statusFilter, query); });
@@ -1026,6 +1039,20 @@
       area.innerHTML = '<div class="errorbox">留言板加载失败：' + esc(err && err.message ? err.message : String(err)) + "</div>";
     });
   }
+  function fetchDeviceStatus() {
+    var token = authToken;
+    if (!token) return;
+    fetch("/v1/shared-device-status", {
+      headers: { "Authorization": "Bearer " + token }
+    }).then(function (resp) {
+      // 服务端尚未提供设备状态（如 404）或暂时失败时只隐藏状态区，不影响留言与任务。
+      return resp.status === 200 ? resp.json() : { items: [] };
+    }).then(function (data) {
+      renderDeviceStatus(data);
+    }).catch(function () {
+      renderDeviceStatus({ items: [] });
+    });
+  }
   function showError(message) {
     var feedArea = document.getElementById("feedArea");
     feedArea.innerHTML = '<div class="errorbox">' + esc(message) + "</div>";
@@ -1058,7 +1085,7 @@
       showAccessError(err && err.message ? err.message : String(err));
     });
   }
-  function refreshAll() { fetchFeed(); fetchBoard(); }
+  function refreshAll() { fetchFeed(); fetchBoard(); fetchDeviceStatus(); }
   function schedule() {
     if (timer) clearInterval(timer);
     timer = setInterval(refreshAll, POLL_MS);

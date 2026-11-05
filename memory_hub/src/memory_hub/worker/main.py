@@ -77,6 +77,28 @@ def purge_board_if_due(factory, settings, last_run: float | None, now: float, lo
     return now
 
 
+def purge_device_status_if_due(factory, interval_seconds: float, last_run: float | None, now: float, logger) -> float | None:
+    """独立于 Board 保留开关，按同一间隔清理长期过期的设备状态行；失败只记日志。"""
+    if last_run is not None and now - last_run < interval_seconds:
+        return last_run
+    from memory_hub.api.routes_device_status import purge_stale_device_status
+
+    with factory() as session:
+        try:
+            total = 0
+            for _ in range(20):
+                removed = purge_stale_device_status(session)
+                total += removed
+                if removed == 0:
+                    break
+            if total:
+                logger.info("memory-hub device status purge removed_rows=%s", total)
+        except Exception:  # noqa: BLE001 - 清理是尽力而为，不能拖垮 worker
+            session.rollback()
+            logger.exception("memory-hub device status purge failed")
+    return now
+
+
 def main() -> None:
     settings = load_settings()
     configure_logging(settings.log_level)
@@ -89,6 +111,7 @@ def main() -> None:
     worker_id = os.getenv("MEMORY_HUB_WORKER_ID", f"worker-{os.getpid()}")
     lease_seconds = max(90, int(settings.llm_timeout_seconds) + 30)
     last_purge: float | None = None
+    last_status_purge: float | None = None
     while True:
         with factory() as session:
             processed = run_once(
@@ -108,4 +131,6 @@ def main() -> None:
         if processed:
             logger.info("memory-hub worker processed jobs=%s provider=%s", processed, settings.llm_provider)
         last_purge = purge_board_if_due(factory, settings, last_purge, time.monotonic(), logger)
+        last_status_purge = purge_device_status_if_due(
+            factory, settings.board_purge_interval_seconds, last_status_purge, time.monotonic(), logger)
         time.sleep(1)

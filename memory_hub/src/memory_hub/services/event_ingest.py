@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import re
-
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -11,20 +9,11 @@ from memory_hub.db.models import MemoryEvent
 from memory_hub.db.repositories import event_by_id, mark_brief_jobs_dirty
 from memory_hub.domain.events import EventBatchResponse, EventPayload, RejectedEvent
 from memory_hub.domain.tasks import task_event_from_metadata
+from memory_hub.services.secret_scan import SECRET_PATTERN as _SECRET
 from memory_hub.tasks.projector import TaskProjectionError, project_task_event
 
-_SECRET = re.compile(
-    r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
-    r"|(?:sk|ghp|github_pat)_[A-Za-z0-9_-]{20,}"
-    r"|Bearer\s+[A-Za-z0-9._-]{20,}"
-    r"|(?:postgres(?:ql)?|mysql)://[^\s]+"
-    r"|\bAKIA[0-9A-Z]{16}\b"
-    r"|\b(?:ASIA|A3T)[0-9A-Z]{16}\b"
-    r"|\bxox[baprs]-[A-Za-z0-9-]{10,}"
-    r"|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"
-    r"|\"type\"\s*:\s*\"service_account\"",
-    re.I,
-)
+# 与 Board 共用同一检测规则；事件来自本地 Outbox 批量上传，命中时只删除正文、保留事件，
+# 避免整批被拒后在客户端无限重试。Board 是交互式写入，命中直接返回 422。
 _PROJECT_VISIBLE_SCOPES = frozenset({"shared", "project_shared", "org_shared"})
 
 

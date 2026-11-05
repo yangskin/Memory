@@ -24,6 +24,9 @@ services:
       MEMORY_HUB_WEB_DIR: /app
       MEMORY_HUB_ENV: production
       MEMORY_HUB_OPEN_ENROLLMENT_PROJECTS: ${MEMORY_HUB_OPEN_ENROLLMENT_PROJECTS:-}
+      # api 不发布端口，只有 Compose 内网的 Caddy 能直连；默认信任 Docker 默认地址池，
+      # 以读取 Caddy 写入的真实客户端地址。若改了 Docker 地址池或给 api 发布端口，必须同步收窄。
+      MEMORY_HUB_TRUSTED_PROXIES: ${MEMORY_HUB_TRUSTED_PROXIES:-172.16.0.0/12,192.168.0.0/16}
     command: sh -c "alembic upgrade head && memory-hub-api"
     depends_on:
       postgres:

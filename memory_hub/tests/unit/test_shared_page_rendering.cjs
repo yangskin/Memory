@@ -52,24 +52,34 @@ test('brief Markdown escapes normal text and fenced code once while retaining fo
 function health(overrides = {}) {
   return { protocol: 'memory.hub-health/1', device: '测试设备', observed_at: new Date().toISOString(),
     services: { bridge: { state: 'running' }, receiver: { state: 'running' }, replies: { state: 'running' } },
-    codex_execution: { coverage: 'unbound', instances: [] }, ...overrides };
+    ...overrides };
+}
+function execution(instances, overrides = {}) {
+  return { protocol: 'memory.codex-execution/1', device: '测试设备', observed_at: new Date().toISOString(),
+    coverage: instances.length ? 'bound' : 'unbound', instances, ...overrides };
 }
 function instance(state, report) {
   return { task: '海克斯检查', thread_id: 'hidden-thread', execution: { state, checked_at: new Date().toISOString() }, reported: report };
 }
-test('health cards show only Chinese summaries and no raw metadata', () => {
+test('health cards show only Chinese service summaries and no raw metadata', () => {
   const html = post(JSON.stringify(health({ runtime_signature: 'hidden-signature' })));
   assert.match(html, /设备：测试设备/);
   assert.match(html, /派发运行中；接收运行中；回信运行中/);
-  assert.match(html, /未绑定对话，执行状态未知/);
+  // 执行情况只由 codex-execution 卡片展示，服务卡片不重复。
+  assert.ok(!html.includes('任务：'));
   for (const raw of ['protocol', 'runtime_signature', 'hidden-signature', 'hub-health', '未解决']) assert.ok(!html.includes(raw));
 });
+test('legacy health payloads with embedded execution do not duplicate task lines', () => {
+  const html = body(post(JSON.stringify(health({ codex_execution: { instances: [instance('running')] } }))));
+  assert.match(html, /派发运行中/);
+  assert.ok(!html.includes('海克斯检查'));
+});
 test('current task reports and abnormal service states remain readable', () => {
-  const data = health({ services: { bridge: { state: 'backoff' } }, codex_execution: { instances: [instance('waiting_for_user', {
+  const service = body(post(JSON.stringify(health({ services: { bridge: { state: 'backoff' } } }))));
+  assert.match(service, /派发异常退出，等待重试/);
+  const html = body(post(JSON.stringify(execution([instance('waiting_for_user', {
     freshness: 'current_turn', reported_at: new Date().toISOString(), step: '已完成源码检查', blocker: '等待确认'
-  })] } });
-  const html = body(post(JSON.stringify(data)));
-  assert.match(html, /派发异常退出，等待重试/);
+  })]))));
   assert.match(html, /海克斯检查 · 等待用户/);
   assert.match(html, /进度：已完成源码检查/);
   assert.match(html, /阻塞：等待确认/);
@@ -77,9 +87,9 @@ test('current task reports and abnormal service states remain readable', () => {
 });
 test('stale and previous-turn reports cannot imply a running task', () => {
   for (const freshness of ['stale', 'previous_turn']) {
-    const html = body(post(JSON.stringify(health({ codex_execution: { instances: [instance('idle', {
+    const html = body(post(JSON.stringify(execution([instance('idle', {
       freshness, reported_at: new Date().toISOString(), step: '正在构建', blocker: '旧阻塞'
-    })] } }))));
+    })]))));
     assert.match(html, /海克斯检查 · 空闲/);
     assert.match(html, /旧进度已过时/);
     assert.ok(!html.includes('正在构建'));
@@ -91,8 +101,9 @@ test('expired observations and missing fields are explicit instead of healthy', 
   assert.match(html, /状态已过期/);
   assert.ok(!html.includes('运行中'));
   assert.match(body(post('{"protocol":"memory.hub-health/1"}')), /状态已过期/);
-  const unknown = body(post(JSON.stringify(health({ codex_execution: { instances: [instance('new-state')] } }))));
+  const unknown = body(post(JSON.stringify(execution([instance('new-state')]))));
   assert.match(unknown, /海克斯检查 · 状态未知/);
+  assert.match(body(post(JSON.stringify(execution([])))), /未绑定对话，执行状态未知/);
 });
 test('execution-only cards are summarized and untrusted report text is escaped', () => {
   const html = post(JSON.stringify({ protocol: 'memory.codex-execution/1', device: '<img src=x>',
@@ -111,19 +122,27 @@ test('truncated automatic health messages never expose raw JSON', () => {
   assert.ok(!html.includes('signature'));
 });
 
-test('status channels stay separate from message filters, headings, and counts', () => {
+test('device status stays separate from message filters, headings, and counts', () => {
   const elements = { boardArea: {}, boardFilter: { value: 'resolved' }, boardSearch: { value: '不匹配' },
     boardTotal: {}, boardOpen: {}, boardResolved: {}, statusArea: { hidden: true }, statusBody: {} };
   context.window = {};
   context.document = { getElementById: id => elements[id] };
   vm.runInContext(section('  function boardMatches(', '  var TASK_COLORS'), context);
-  const item = { post_id: 'hidden-post', thread_id: 'hidden-thread', status: 'open',
+  const row = { channel: 'hub-health', device_name: '测试设备', author_auth_id: 'hidden-auth',
+    updated_at: new Date().toISOString(), expires_at: new Date(Date.now() + 300000).toISOString(),
     content: JSON.stringify(health({ codex_execution: { instances: [instance('idle')] } })) };
+  const executionRow = { channel: 'codex-execution', device_name: '测试设备', author_auth_id: 'hidden-auth',
+    updated_at: new Date().toISOString(), expires_at: new Date(Date.now() + 300000).toISOString(),
+    content: JSON.stringify(execution([instance('idle')])) };
   const message = { post_id: 'message-post', thread_id: 'message-thread', status: 'open', content: '普通留言' };
-  context.renderBoard({ items: [message], status_channels: [item] });
+  context.renderBoard({ items: [message] });
+  context.renderDeviceStatus({ items: [row, executionRow] });
   assert.equal(elements.statusArea.hidden, false);
   assert.match(elements.statusBody.innerHTML, /海克斯检查 · 空闲/);
+  // 同一设备的执行情况只出现一次（来自 codex-execution），服务卡片里的旧内嵌副本不再渲染。
+  assert.equal(elements.statusBody.innerHTML.split('海克斯检查').length - 1, 1);
   assert.ok(!elements.statusBody.innerHTML.includes('hidden-thread'));
+  assert.ok(!elements.statusBody.innerHTML.includes('hidden-auth'));
   assert.ok(!elements.statusBody.innerHTML.includes('protocol'));
   assert.match(elements.boardArea.innerHTML, /没有符合当前筛选的留言/);
   assert.equal(elements.boardTotal.textContent, 1);
@@ -132,21 +151,26 @@ test('status channels stay separate from message filters, headings, and counts',
 
   elements.boardFilter.value = 'all';
   elements.boardSearch.value = '';
-  context.renderBoard({ items: [message], status_channels: [item] });
+  context.renderBoard({ items: [message] });
   assert.match(elements.boardArea.innerHTML, /普通留言/);
   assert.ok(!elements.boardArea.innerHTML.includes('海克斯检查'));
+  // 留言刷新不会清掉独立的设备状态区。
+  assert.equal(elements.statusArea.hidden, false);
 
-  // 只有状态时，留言区仍为空；响应省略状态时必须清理上一次的快照。
-  context.renderBoard({ items: [], status_channels: [item] });
+  // 只有状态时，留言区仍为空；状态响应为空或无效时必须清理上一次的快照。
+  context.renderBoard({ items: [] });
   assert.match(elements.boardArea.innerHTML, /留言板为空/);
   assert.equal(elements.boardTotal.textContent, 0);
-  assert.equal(elements.statusArea.hidden, false);
-  context.renderBoard({ items: [message] });
+  context.renderDeviceStatus({});
   assert.equal(elements.statusArea.hidden, true);
   assert.equal(elements.statusBody.innerHTML, '');
-  context.renderBoard({ items: [], status_channels: [message] });
+  context.renderDeviceStatus({ items: [{ channel: 'other', content: '普通文本' }] });
   assert.equal(elements.statusArea.hidden, true);
   assert.equal(elements.statusBody.innerHTML, '');
+  // 已知通道但内容损坏时显示“数据不完整”，不泄露原文。
+  context.renderDeviceStatus({ items: [{ channel: 'codex-execution', content: '{"protocol":"memory.codex-execution/1", "x": "secret' }] });
+  assert.match(elements.statusBody.innerHTML, /数据不完整/);
+  assert.ok(!elements.statusBody.innerHTML.includes('secret'));
 });
 
 
@@ -175,7 +199,7 @@ test('unknown versions, types, and malformed namespaces remain ordinary escaped 
   }
 });
 
-function bootDashboard({ token = 'test-token', failFirstFeed = false } = {}) {
+function bootDashboard({ token = 'test-token', failFirstFeed = false, deviceStatus = 200 } = {}) {
   const elements = {};
   for (const match of page.matchAll(/id="([^"]+)"/g)) {
     elements[match[1]] = {
@@ -206,7 +230,11 @@ function bootDashboard({ token = 'test-token', failFirstFeed = false } = {}) {
         if (failFirstFeed && feedCalls++ === 0) return Promise.reject(new Error('network unavailable'));
         payload = { project_id: 'test-project', events: [], brief: null };
       } else if (url === '/v1/shared-board') {
-        payload = { items: [], status_channels: [] };
+        payload = { items: [] };
+      } else if (url === '/v1/shared-device-status') {
+        if (deviceStatus !== 200) return Promise.resolve({ status: deviceStatus, json: () => Promise.resolve({}) });
+        payload = { items: [{ channel: 'hub-health', device_name: '测试设备', updated_at: new Date().toISOString(),
+          expires_at: new Date(Date.now() + 300000).toISOString(), content: JSON.stringify(health()) }] };
       } else if (url.includes('/tasks?')) {
         payload = { items: [{ task_id: 'task-1', title: 'Example task', state: 'active' }], total: 1 };
       } else if (url.includes('/task-graph?')) {
@@ -288,4 +316,21 @@ test('missing token is reported without starting authenticated requests or polli
   assert.match(dashboard.elements.accessNotice.textContent, /链接中没有 Token/);
   assert.equal(dashboard.requests.length, 0);
   assert.equal(dashboard.intervals.length, 0);
+});
+
+test('dashboard loads device status from its own endpoint and hides it when unavailable', async () => {
+  const dashboard = bootDashboard();
+  await settleDashboard();
+  const statusRequest = dashboard.requests.find(request => request.url === '/v1/shared-device-status');
+  assert.ok(statusRequest);
+  assert.match(statusRequest.options.headers.Authorization, /^Bearer test-token$/);
+  assert.equal(dashboard.elements.statusArea.hidden, false);
+  assert.match(dashboard.elements.statusBody.innerHTML, /设备：测试设备/);
+
+  // 服务端尚未升级（404）时只隐藏状态区，留言与任务照常可用。
+  const legacy = bootDashboard({ deviceStatus: 404 });
+  await settleDashboard();
+  assert.equal(legacy.elements.statusArea.hidden, true);
+  assert.equal(legacy.elements.accessNotice.textContent, '共享链接验证通过');
+  assert.match(legacy.elements.taskDetail.innerHTML, /Example task/);
 });

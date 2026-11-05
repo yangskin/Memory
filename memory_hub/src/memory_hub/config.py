@@ -2,8 +2,25 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from dataclasses import dataclass
+
+IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+
+def _trusted_proxies(raw: str) -> tuple[IPNetwork, ...]:
+    """解析受信反向代理地址/网段；写错直接启动失败，不静默退回到不受信任。"""
+    networks = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(item, strict=False))
+        except ValueError:
+            raise ValueError("MEMORY_HUB_TRUSTED_PROXIES contains an invalid address or network: " + item) from None
+    return tuple(networks)
 
 
 @dataclass(frozen=True)
@@ -27,10 +44,13 @@ class Settings:
     brief_max_attempts: int
     # 已结案线程的保留天数；0 表示关闭整线程清理。open 的帖子永远不会被清理。
     board_retention_days: int
-    # 已处理且已过期的 note（心跳类重复帖）的保留小时数；0 表示关闭逐帖清理。
+    # 已处理且已过期的 note（原窗口续办收据等机器短期 note）的保留小时数；0 表示关闭逐帖清理。
+    # 设备心跳已迁到独立 device_status 表，不再写入 Board。
     board_note_retention_hours: int
     board_purge_interval_seconds: int
     open_enrollment_projects: tuple[str, ...] = ()
+    # 只有来自这些地址的连接才读取 X-Forwarded-For；为空表示不信任任何转发头。
+    trusted_proxies: tuple[IPNetwork, ...] = ()
 
 
 def load_settings() -> Settings:
@@ -56,4 +76,5 @@ def load_settings() -> Settings:
         board_note_retention_hours=max(0, int(os.getenv("BOARD_NOTE_RETENTION_HOURS", "8"))),
         board_purge_interval_seconds=max(60, int(os.getenv("BOARD_PURGE_INTERVAL_SECONDS", "28800"))),
         open_enrollment_projects=tuple(p.strip() for p in os.getenv("MEMORY_HUB_OPEN_ENROLLMENT_PROJECTS", "").split(",") if p.strip()),
+        trusted_proxies=_trusted_proxies(os.getenv("MEMORY_HUB_TRUSTED_PROXIES", "")),
     )

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import hashlib
 import math
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -9,33 +8,19 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from memory_hub.api.dependencies import effective_user_id, require_principal
-from memory_hub.auth.permissions import Principal
+from memory_hub.auth.permissions import Principal, author_auth_id
 from sqlalchemy import select
 from memory_hub.db.models import BoardPost, DeviceEnrollment, AccessToken
 from memory_hub.db.repositories import board_post_by_id, encode_board_cursor, list_board_posts
 from memory_hub.domain.board import BoardPostRequest, BoardQueryRequest, BoardReplyRequest, BoardResolveRequest
+from memory_hub.services.secret_scan import contains_secret
 
 router = APIRouter()
 
-# 机器状态通道：由 Hub 心跳、执行观察与原窗口续办收据写入 note，不属于人类留言。
-# 全部通道都从留言区排除，避免状态快照占满配额或污染留言计数。
-STATUS_CHANNEL_AGENTS = ("hub-health", "codex-execution", "codex-original-wake", "codex-original-wake-status")
-# 只有这两类带人类可读的状态摘要，其余通道仅排除、不在看板状态区渲染。
-DISPLAY_STATUS_AGENTS = ("hub-health", "codex-execution")
-STATUS_CHANNEL_MAX_ITEMS = 20
-
-_SECRET = re.compile(
-    r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
-    r"|(?:sk|ghp|github_pat)_[A-Za-z0-9_-]{20,}"
-    r"|Bearer\s+[A-Za-z0-9._-]{20,}"
-    r"|(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?)://[^\s]+"
-    r"|\bAKIA[0-9A-Z]{16}\b"
-    r"|\b(?:ASIA|A3T)[0-9A-Z]{16}\b"
-    r"|\bxox[baprs]-[A-Za-z0-9-]{10,}"
-    r"|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"
-    r"|\"type\"\s*:\s*\"service_account\"",
-    re.I,
-)
+# 设备状态（hub-health / codex-execution）已迁到独立的 device-status 模块，Board 不再接收。
+RETIRED_STATUS_AGENTS = ("hub-health", "codex-execution")
+# 机器写入的 note 不属于人类留言：原窗口续办收据仍在 Board，遗留状态作者一并排除。
+MACHINE_NOTE_AGENTS = RETIRED_STATUS_AGENTS + ("codex-original-wake", "codex-original-wake-status")
 
 
 def _assert_project(principal: Principal, project_id: str) -> None:
@@ -44,8 +29,13 @@ def _assert_project(principal: Principal, project_id: str) -> None:
 
 
 def _ensure_board_content_safe(content: str) -> None:
-    if _SECRET.search(content):
+    if contains_secret(content):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "board content appears to include secret material")
+
+
+def _ensure_not_device_status(author_agent_id: str | None) -> None:
+    if author_agent_id in RETIRED_STATUS_AGENTS:
+        raise HTTPException(status.HTTP_410_GONE, "device status moved to /device-status; board no longer accepts it")
 
 
 def _enforce_rate_limit(request: Request, principal: Principal, category: str, limit: int) -> None:
@@ -90,7 +80,7 @@ def _item(post: BoardPost, *, include_content: bool = False, include_references:
 
 def auth_id(project_id: str, token_id: str) -> str:
     # 公开不可逆标识，不返回令牌ID、凭据或其秘密部分。
-    return hashlib.sha256(("memory.board-author/1:" + project_id + ":" + token_id).encode()).hexdigest()
+    return author_auth_id(project_id, token_id)
 
 
 @router.get("/v1/projects/{project_id}/device-identities")
@@ -154,6 +144,7 @@ def board_query(project_id: str, payload: BoardQueryRequest, request: Request, p
 def board_post(project_id: str, payload: BoardPostRequest, request: Request, principal: Principal = Depends(require_principal("events:write"))) -> dict[str, object]:
     _assert_project(principal, project_id)
     _ensure_board_content_safe(payload.content)
+    _ensure_not_device_status(payload.author_agent_id)
 
     now = datetime.now(UTC)
     post_id = payload.post_id or uuid4()
@@ -198,6 +189,7 @@ def board_post(project_id: str, payload: BoardPostRequest, request: Request, pri
 def board_reply(project_id: str, payload: BoardReplyRequest, request: Request, principal: Principal = Depends(require_principal("events:write"))) -> dict[str, object]:
     _assert_project(principal, project_id)
     _ensure_board_content_safe(payload.content)
+    _ensure_not_device_status(payload.author_agent_id)
 
     factory = request.app.state.session_factory
     with factory() as session:
@@ -273,9 +265,9 @@ def shared_board(payload: BoardQueryRequest, request: Request, principal: Princi
     """Read-only bounded board feed for the dashboard.
 
     The project is taken from the token's principal, never from the request
-    body. ``items`` holds human posts only; machine status heartbeats are
-    returned separately in ``status_channels`` with their own quota, so they
-    never consume the message window or inflate the message counts.
+    body. ``items`` holds human posts only; machine-written notes are excluded
+    so they never consume the message window or inflate the message counts.
+    Device status lives in the separate ``/v1/shared-device-status`` view.
     Full content and references require explicit request flags.
     """
     _enforce_rate_limit(request, principal, "board_read", 120)
@@ -286,23 +278,11 @@ def shared_board(payload: BoardQueryRequest, request: Request, principal: Princi
             session,
             project_id=project_id,
             max_items=payload.max_items,
-            exclude_author_agents=list(STATUS_CHANNEL_AGENTS),
-        )
-        status_posts = list_board_posts(
-            session,
-            project_id=project_id,
-            max_items=STATUS_CHANNEL_MAX_ITEMS,
-            author_agents=list(DISPLAY_STATUS_AGENTS),
-            # 只取仍在有效期内的状态快照，过期心跳不代表当前状态。
-            include_expired=False,
+            exclude_author_agents=list(MACHINE_NOTE_AGENTS),
         )
         return {
             "project_id": project_id,
             "generated_at": datetime.now(UTC).isoformat(),
             "total": len(posts),
             "items": [_item(post, include_content=payload.include_content, include_references=payload.include_references) for post in posts],
-            "status_channels": [
-                _item(post, include_content=payload.include_content, include_references=payload.include_references)
-                for post in status_posts
-            ],
         }

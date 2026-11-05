@@ -223,16 +223,10 @@ docker compose -p <project-id> exec api memory-hub token revoke --token-id <toke
 ```bash
 python scripts/check_public_tree.py
 ```
-## 新设备申请与管理员批准
+## 新设备自动注册
 
-另支持可信自动接入：`POST /v1/projects/{project_id}/device-enrollments/auto` 要求同项目 `devices:enroll` 凭据。复用申请数据格式，在事务内直接签发绑定该凭据用户的独立设备 Token；仅授予 `events:write`、`context:read`，不继承注册、审批或身份委托权限。重复请求幂等，撤销后的设备不能用同一申请重新激活。`GET /v1/projects/{project_id}/connection` 使用业务 Token 返回身份及业务能力，不返回 Token。管理员可用现有 `token create --scope devices:enroll` 签发接入凭据，秘密须通过受保护的本地文件或环境传递。原人工批准路径保持兼容。
+`POST /v1/projects/{project_id}/device-enrollments/auto` 要求同项目 `devices:enroll` 凭据（邀请凭据）。设备本地生成 Token 与查询秘密，只提交哈希；服务端在事务内直接签发绑定该凭据用户的独立设备 Token，仅授予 `events:write`、`context:read`，不继承注册或身份委托权限。重复请求幂等，撤销后的设备不能用同一申请重新激活。管理员可用现有 `token create --scope devices:enroll` 签发邀请凭据，秘密须通过受保护的本地文件或环境传递。
 
-`device-enrollments` 提供无 Token 的待审批申请与持查询秘密的状态查询。初次申请不授予项目权限。管理员接口需同项目 `devices:approve`，核对配对码后创建只有 `events:write` / `context:read` 的独立凭据，身份绑定批准者。服务端只收到并保存秘密哈希，Token 明文由申请设备保存。
+`POST /v1/projects/{project_id}/device-enrollments/open` 仅对 `MEMORY_HUB_OPEN_ENROLLMENT_PROJECTS` 明确列出的已有项目开放，无需凭据；服务端为每次注册生成独立 `open-device:` 用户身份，并按来源、全局和项目每小时配额限流。`GET /v1/projects/{project_id}/connection` 使用业务 Token 返回身份及业务能力，不返回 Token。
 
-在**现有**部署目录同步本次源码后执行：
-
-```sh
-sh Enable-DeviceEnrollment.sh <compose-project> <admin-token-id>
-```
-
-脚本先备份数据库，再更新 API/迁移和检查健康，最后为指定已有 Token 增加审批权限。Token ID 用既有 `token list` 查询，不传明文、不更换管理员 Token。单独授权可用 `memory-hub token grant-device-approval --token-id <id>`。不要重新 bootstrap 生产服务。消费项目应提供申请与管理员审批入口，审批者核对配对码，批准后客户端才可保存凭据继续使用。状态查询请求头为 `X-Memory-Enrollment-Secret`，服务端与客户端必须使用匹配版本；不接受旧的项目专用请求头。公开仓库不依赖消费项目的脚本或部署状态文档。
+人工配对码审批路径（匿名待审申请、`/status` 查询、待审列表、`/decision` 批准接口、`devices:approve` 权限、`token grant-device-approval` 命令与 `Enable-DeviceEnrollment.sh`）已于 2026-11-05 删除。`device_enrollments` 表与既有迁移保留，仍用于上述两条自动注册记录；历史上已签发的设备 Token 不受影响，可用 `token revoke` 单独撤销。部署更新只需在现有部署目录同步源码并重建 API，不要重新 bootstrap 生产服务。公开仓库不依赖消费项目的脚本或部署状态文档。

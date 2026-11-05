@@ -107,7 +107,9 @@ def test_open_enrollment_is_project_scoped_and_issues_independent_tokens(service
     assert client.post("/v1/projects/project/board/post", headers=headers,
                        json={"post_type": "note", "content": "open test"}).status_code == 200
     assert client.get("/v1/projects/project/tasks", headers=headers).status_code == 200
-    assert client.get("/v1/projects/project/device-enrollments", headers=headers).status_code == 403
+    # 开放注册的设备 Token 不能再签发设备（无 devices:enroll）。
+    assert client.post("/v1/projects/project/device-enrollments/auto", json=request_data()[0],
+                       headers=headers).status_code == 403
     second, second_token = request_data("SECOND-PC")
     assert client.post(url, json=second).status_code == 200
     second_info = client.get("/v1/projects/project/connection", headers={"Authorization": "Bearer " + second_token}).json()
@@ -135,7 +137,6 @@ def test_new_device_board_task_lifecycle_and_project_brief(service):
     headers = {"Authorization": "Bearer " + token, "X-Memory-User-ID": "forged"}
     info = client.get(base + "/connection", headers=headers).json()
     assert info["user_id"] == "owner" and all(info["capabilities"].values())
-    assert client.get(base + "/device-enrollments", headers=headers).status_code == 403
     assert client.post(base + "/device-enrollments/auto", json=request_data()[0], headers=headers).status_code == 403
     assert client.get("/v1/projects/other/connection", headers=headers).status_code == 403
     post = client.post(base + "/board/post", headers=headers, json={"post_type": "note", "content": "Enrollment test"})
