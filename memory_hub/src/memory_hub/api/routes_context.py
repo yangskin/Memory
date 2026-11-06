@@ -9,7 +9,7 @@ from sqlalchemy import and_, desc, func, or_, select
 
 from memory_hub.api.dependencies import effective_user_id, require_principal
 from memory_hub.auth.permissions import Principal
-from memory_hub.db.models import BriefHead, BriefSnapshot, ContextUsageDaily, MemoryEvent
+from memory_hub.db.models import BriefHead, BriefJob, BriefSnapshot, ContextUsageDaily, MemoryEvent
 from memory_hub.domain.shared_context import SharedContextRequest
 from memory_hub.domain.shared_feed import SharedFeedRequest
 from memory_hub.services.context_usage import upsert_usage, usage_counters, usage_day
@@ -206,6 +206,27 @@ def context_usage(project_id: str, request: Request, principal: Principal = Depe
         }
 
 
+def _project_brief_status(job: BriefJob | None, lag: int) -> dict[str, object]:
+    state = "ready" if lag == 0 else "unavailable"
+    retry_at = None
+    if job is not None:
+        if job.status == "failed":
+            state = "failed"
+        elif job.status == "running":
+            lease_until = job.lease_until
+            if lease_until is not None and lease_until.tzinfo is None:
+                lease_until = lease_until.replace(tzinfo=UTC)
+            state = "running" if lease_until and lease_until > datetime.now(UTC) else "stalled"
+        elif job.status == "pending":
+            state = "pending"
+            if job.last_error == "daily_token_budget_exceeded":
+                state = "budget_exceeded"
+            elif job.last_error:
+                state = "retrying"
+            retry_at = job.not_before.isoformat()
+    return {"state": state, "retry_at": retry_at}
+
+
 @router.post("/v1/shared-feed")
 def shared_feed(payload: SharedFeedRequest, request: Request, principal: Principal = Depends(require_principal("context:read"))) -> dict[str, object]:
     """Read-only dashboard feed of project-visible shared memory only.
@@ -231,8 +252,6 @@ def shared_feed(payload: SharedFeedRequest, request: Request, principal: Princip
             events = _fair_shared_events(candidates, payload.max_items)
             events_from_history = bool(events)
         latest_seq = max((event.server_seq for event in events), default=0)
-        project_latest_seq = int(session.scalar(select(func.coalesce(func.max(MemoryEvent.server_seq), 0)).where(MemoryEvent.project_id == project_id, MemoryEvent.occurred_at >= since, visible)) or 0)
-
         head = session.get(BriefHead, (project_id, "project_recent", ""))
         brief: dict[str, object] | None = None
         watermark = 0
@@ -247,6 +266,15 @@ def shared_feed(payload: SharedFeedRequest, request: Request, principal: Princip
                 if payload.include_brief_details:
                     brief["structured"] = snapshot.structured_brief
                 watermark = snapshot.input_seq_to
+        job = session.get(BriefJob, f"project_recent:{project_id}:-")
+        # An unchanged input can be checked without generating another snapshot.
+        processed = max(watermark, job.processed_through_seq if job else 0)
+        pending_query = select(func.count()).select_from(MemoryEvent).where(
+            MemoryEvent.project_id == project_id, visible, MemoryEvent.server_seq > processed,
+        )
+        if not events_from_history:
+            pending_query = pending_query.where(MemoryEvent.occurred_at >= since)
+        lag = int(session.scalar(pending_query) or 0)
         return {
             "project_id": project_id,
             "generated_at": datetime.now(UTC).isoformat(),
@@ -254,7 +282,8 @@ def shared_feed(payload: SharedFeedRequest, request: Request, principal: Princip
                 "latest_shared_seq": latest_seq,
                 "project_brief_generated_at": brief["generated_at"] if brief else None,
                 "project_brief_covers_through_seq": watermark,
-                "project_brief_lag_events": max(0, project_latest_seq - watermark),
+                "project_brief_lag_events": lag,
+                "project_brief_status": _project_brief_status(job, lag),
             },
             "brief": brief,
             "events_from_history": events_from_history,

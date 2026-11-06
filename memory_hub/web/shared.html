@@ -583,12 +583,27 @@
     saveFeedCache(feed);
     var freshnessEl = document.getElementById("freshness");
     freshnessEl.style.display = "grid";
+    var briefStatus = f.project_brief_status || { state: lag > 0 ? "unknown" : "ready" };
+    var labels = {
+      ready: ["ok", "已同步"],
+      pending: ["busy", "等待整理"],
+      running: ["busy", "整理中"],
+      budget_exceeded: ["err", "等待额度"],
+      retrying: ["err", "生成失败，等待重试"],
+      failed: ["err", "简报生成失败"],
+      stalled: ["err", "简报处理超时"],
+      unavailable: ["err", "简报未调度"],
+      unknown: ["err", "简报状态未知"]
+    };
+    var label = labels[briefStatus.state] || labels.unknown;
     freshnessEl.innerHTML =
       "<span>简报生成 <b>" + fmtTime(f.project_brief_generated_at) + "</b></span>" +
       "<span>简报覆盖至 seq <b>" + (f.project_brief_covers_through_seq || 0) + "</b></span>" +
       "<span>最新共同事件 seq <b>" + (f.latest_shared_seq || 0) + "</b></span>" +
-      "<span>简报待整理事件 <b>" + lag + "</b></span>";
-    setPill(lag > 0 ? "busy" : "ok", lag > 0 ? "整理中" : "已同步");
+      "<span>简报待整理事件 <b>" + lag + "</b></span>" +
+      (briefStatus.state === "budget_exceeded" ? "<span>今日简报预算不足，暂停生成；现有简报仍可查看。</span>" : "") +
+      (briefStatus.retry_at ? "<span>计划尝试时间 <b>" + esc(fmtTime(briefStatus.retry_at)) + "</b>（非完成时间）</span>" : "");
+    setPill(label[0], label[1]);
     lastUpdated.textContent = "更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
     document.getElementById("taskRefreshBtn").disabled = false;
     fetchTaskWorkspace();

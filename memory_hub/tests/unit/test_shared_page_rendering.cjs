@@ -199,7 +199,7 @@ test('unknown versions, types, and malformed namespaces remain ordinary escaped 
   }
 });
 
-function bootDashboard({ token = 'test-token', failFirstFeed = false, deviceStatus = 200 } = {}) {
+function bootDashboard({ token = 'test-token', failFirstFeed = false, deviceStatus = 200, freshness = {} } = {}) {
   const elements = {};
   for (const match of page.matchAll(/id="([^"]+)"/g)) {
     elements[match[1]] = {
@@ -228,7 +228,7 @@ function bootDashboard({ token = 'test-token', failFirstFeed = false, deviceStat
       let payload;
       if (url === '/v1/shared-feed') {
         if (failFirstFeed && feedCalls++ === 0) return Promise.reject(new Error('network unavailable'));
-        payload = { project_id: 'test-project', events: [], brief: null };
+        payload = { project_id: 'test-project', events: [], brief: null, freshness };
       } else if (url === '/v1/shared-board') {
         payload = { items: [] };
       } else if (url === '/v1/shared-device-status') {
@@ -260,6 +260,35 @@ function bootDashboard({ token = 'test-token', failFirstFeed = false, deviceStat
   };
 }
 const settleDashboard = () => new Promise(resolve => setImmediate(resolve));
+
+test('dashboard shows actual brief job state after refresh instead of treating all lag as running', async () => {
+  for (const [state, label] of Object.entries({
+    ready: '已同步', pending: '等待整理', running: '整理中',
+    budget_exceeded: '等待额度', retrying: '生成失败，等待重试',
+    failed: '简报生成失败', stalled: '简报处理超时', unavailable: '简报未调度'
+  })) {
+    const dashboard = bootDashboard({ freshness: {
+      project_brief_lag_events: state === 'ready' ? 0 : 2,
+      project_brief_status: { state, retry_at: state === 'budget_exceeded' ? '2026-11-07T00:00:00Z' : null }
+    } });
+    await settleDashboard();
+    assert.equal(dashboard.elements.statusPill.textContent, label);
+    if (state === 'budget_exceeded') {
+      assert.match(dashboard.elements.freshness.innerHTML, /预算不足/);
+      assert.match(dashboard.elements.freshness.innerHTML, /计划尝试时间/);
+      assert.match(dashboard.elements.freshness.innerHTML, /非完成时间/);
+      dashboard.intervals[0].callback();
+      await settleDashboard();
+      assert.equal(dashboard.elements.statusPill.textContent, '等待额度');
+    }
+  }
+});
+
+test('legacy lag without job status does not claim a worker is running', async () => {
+  const dashboard = bootDashboard({ freshness: { project_brief_lag_events: 6503 } });
+  await settleDashboard();
+  assert.equal(dashboard.elements.statusPill.textContent, '简报状态未知');
+});
 
 test('dashboard authenticates and loads data before the deferred graph renderer is available', async () => {
   const dashboard = bootDashboard();

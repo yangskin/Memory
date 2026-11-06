@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from memory_hub.api.main import create_app
 from memory_hub.auth.tokens import create_token
-from memory_hub.db.models import AccessToken, BriefHead, BriefSnapshot, MemoryEvent
+from memory_hub.db.models import AccessToken, BriefHead, BriefJob, BriefSnapshot, MemoryEvent
 
 
 pytestmark = pytest.mark.skipif(not os.getenv("MEMORY_HUB_DATABASE_URL"), reason="requires PostgreSQL")
@@ -231,6 +231,87 @@ def test_shared_feed_requires_auth() -> None:
     app = create_app()
     client = TestClient(app)
     assert client.post("/v1/shared-feed", json={}).status_code == 401
+
+
+@pytest.mark.parametrize(
+    "status,error,lease_seconds,expected",
+    [
+        ("pending", "daily_token_budget_exceeded", None, "budget_exceeded"),
+        ("pending", "HTTPStatusError", None, "retrying"),
+        ("pending", None, None, "pending"),
+        ("running", None, 60, "running"),
+        ("running", None, -60, "stalled"),
+        ("running", None, None, "stalled"),
+        ("failed", "private-error-details", None, "failed"),
+        ("completed", None, None, "ready"),
+    ],
+)
+def test_shared_feed_exposes_safe_project_brief_job_status(status, error, lease_seconds, expected) -> None:
+    app = create_app()
+    project_id = f"brief-status-{uuid4().hex}"
+    token = _seed_token(app, project_id=project_id)
+    now = datetime.now(UTC)
+    retry_at = now + timedelta(hours=1)
+    with app.state.session_factory() as session:
+        session.add(BriefJob(
+            job_key=f"project_recent:{project_id}:-", project_id=project_id,
+            brief_type="project_recent", requested_through_seq=0, status=status,
+            last_error=error, not_before=retry_at,
+            lease_until=now + timedelta(seconds=lease_seconds) if lease_seconds is not None else None,
+        ))
+        session.commit()
+    response = TestClient(app).post("/v1/shared-feed", headers={"Authorization": "Bearer " + token}, json={})
+    assert response.status_code == 200
+    assert response.json()["freshness"]["project_brief_status"] == {
+        "state": expected, "retry_at": retry_at.isoformat() if status == "pending" else None,
+    }
+    assert "private-error-details" not in response.text and "HTTPStatusError" not in response.text
+
+
+def test_shared_feed_counts_visible_pending_rows_and_honors_processed_watermark() -> None:
+    app = create_app()
+    project_id = f"brief-lag-{uuid4().hex}"
+    token = _seed_token(app, project_id=project_id)
+    _seed_brief(app, project_id=project_id)
+    now = datetime.now(UTC)
+    with app.state.session_factory() as session:
+        for scope, operation, content, project in [
+            ("project_shared", "record", "pending first", project_id),
+            ("personal", "record", "private", project_id),
+            ("project_shared", "record", "other project", project_id + "-other"),
+            ("project_shared", "checkpoint", " ", project_id),
+            ("project_shared", "task_sync", "retired", project_id),
+            ("project_shared", "record", "pending last", project_id),
+        ]:
+            event = MemoryEvent(event_id=uuid4(), project_id=project, user_id="alice", agent_id="pytest",
+                                agent_instance_id="pytest", operation=operation, scope=scope,
+                                content_markdown=content, metadata_json={}, occurred_at=now,
+                                content_hash="sha256:" + "7" * 64)
+            session.add(event)
+            session.flush()
+        last_seq = event.server_seq
+        # Private and cross-project jobs must not control the shared status.
+        for kind, project, subject in [("user_recent", project_id, "alice"), ("project_recent", project_id + "-other", "-")]:
+            session.add(BriefJob(job_key=f"{kind}:{project}:{subject}", project_id=project, brief_type=kind,
+                                subject_user_id=None if subject == "-" else subject, requested_through_seq=last_seq,
+                                not_before=now, status="failed", last_error="private-error-details"))
+        session.commit()
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer " + token}
+    first = client.post("/v1/shared-feed", headers=headers, json={})
+    assert first.status_code == 200
+    assert first.json()["freshness"]["project_brief_lag_events"] == 2
+    assert first.json()["freshness"]["project_brief_status"]["state"] == "unavailable"
+    assert "private-error-details" not in first.text
+    with app.state.session_factory() as session:
+        session.add(BriefJob(job_key=f"project_recent:{project_id}:-", project_id=project_id,
+                            brief_type="project_recent", requested_through_seq=last_seq,
+                            processed_through_seq=last_seq, not_before=now, status="completed"))
+        session.commit()
+    second = client.post("/v1/shared-feed", headers=headers, json={}).json()
+    assert second["freshness"]["project_brief_covers_through_seq"] == 0
+    assert second["freshness"]["project_brief_lag_events"] == 0
+    assert second["freshness"]["project_brief_status"]["state"] == "ready"
 
 
 def test_shared_feed_requires_context_read_scope() -> None:
