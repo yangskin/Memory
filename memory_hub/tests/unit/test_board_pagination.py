@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 from memory_hub.api.routes_board import router
 from memory_hub.auth.rate_limit import TokenRateLimiter
 from memory_hub.auth.tokens import create_token
-from memory_hub.db.models import AccessToken, BoardPost
+from memory_hub.db.models import AccessToken, BoardPost, TokenDevice
 from memory_hub.db.repositories import (
     decode_board_cursor, encode_board_cursor, list_board_posts, purge_resolved_board_posts,
     purge_transient_board_notes,
@@ -32,6 +32,7 @@ def service():
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     try:
         AccessToken.__table__.create(engine)
+        TokenDevice.__table__.create(engine)
         BoardPost.__table__.create(engine)
         app = FastAPI()
         factory = sessionmaker(engine, expire_on_commit=False)

@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from memory_hub.api.client_address import client_source
 from memory_hub.api.dependencies import require_principal
 from memory_hub.auth.permissions import Principal
-from memory_hub.db.models import AccessToken, DeviceEnrollment
+from memory_hub.db.models import AccessToken, DeviceEnrollment, TokenDevice
 from memory_hub.db.repositories import active_token
 
 router = APIRouter()
@@ -91,6 +91,8 @@ def auto_enroll(project_id: str, payload: EnrollmentRequest, request: Request,
         session.add(AccessToken(token_id=payload.token_id, token_secret_hash=payload.token_secret_hash,
                                token_prefix="mem_v1." + payload.token_id[:13],
                                user_id=principal.user_id, project_id=project_id, scopes=list(DEVICE_SCOPES)))
+        session.add(TokenDevice(token_id=payload.token_id, project_id=project_id, device_name=payload.device_name,
+                                source="enrollment", bound_at=_now()))
         try:
             session.commit()
         except IntegrityError:
@@ -98,14 +100,54 @@ def auto_enroll(project_id: str, payload: EnrollmentRequest, request: Request,
         return _view(item)
 
 
+class BindingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    device_name: str = Field(pattern=r"^[^\W_][\w.:-]{0,95}$")
+
+
+def _binding_view(binding):
+    return {"ok": True, "device_name": binding.device_name, "source": binding.source,
+            "bound_at": _aware(binding.bound_at).isoformat()}
+
+
+@router.post("/v1/projects/{project_id}/device-binding")
+def bind_device(project_id: str, payload: BindingRequest, request: Request,
+                principal: Principal = Depends(require_principal("context:read"))):
+    """迁移前签发的凭据由客户端自动一次性绑定；同名幂等，绑定后不可改。"""
+    _project(principal, project_id)
+    _limit(request, "device_binding", 10, principal.token_id)
+    if "identity:delegate" in principal.scopes:
+        # 共享凭据代表多台设备，绑定会让它们坍缩为同一身份。
+        raise HTTPException(403, "shared_credential_not_bindable")
+    with request.app.state.session_factory() as session:
+        existing = session.get(TokenDevice, principal.token_id)
+        if existing is None:
+            session.add(TokenDevice(token_id=principal.token_id, project_id=project_id, device_name=payload.device_name,
+                                    source="binding", bound_at=_now()))
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                existing = session.get(TokenDevice, principal.token_id)
+                if existing is None:
+                    raise HTTPException(409, "device_binding_conflict") from None
+            else:
+                existing = session.get(TokenDevice, principal.token_id)
+        if existing.project_id != project_id or existing.device_name != payload.device_name:
+            raise HTTPException(409, "device_binding_conflict")
+        return _binding_view(existing)
+
+
 @router.get("/v1/projects/{project_id}/connection")
 def connection(project_id: str, principal: Principal = Depends(require_principal("context:read"))):
     """Read-only capability check; identity is always derived from the token."""
     _project(principal, project_id)
     return {"ok": True, "project_id": principal.project_id, "user_id": principal.user_id,
+            "device_name": principal.device_name,
             "capabilities": {"board_read": True, "tasks_read": True, "project_brief": True,
                              "board_write": "events:write" in principal.scopes,
-                             "tasks_write": "events:write" in principal.scopes}}
+                             "tasks_write": "events:write" in principal.scopes,
+                             "task_commands": True}}
 
 
 @router.post("/v1/projects/{project_id}/device-enrollments/open")
@@ -148,6 +190,8 @@ def open_enroll(project_id: str, payload: EnrollmentRequest, request: Request):
                                token_prefix="mem_v1." + payload.token_id[:13],
                                user_id="open-device:" + uuid4().hex,
                                project_id=project_id, scopes=list(DEVICE_SCOPES)))
+        session.add(TokenDevice(token_id=payload.token_id, project_id=project_id, device_name=payload.device_name,
+                                source="enrollment", bound_at=_now()))
         try:
             session.commit()
         except IntegrityError:

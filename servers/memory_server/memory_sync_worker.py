@@ -26,6 +26,14 @@ def _connection_fingerprint(config: SharedMemoryConfig) -> str:
 
 
 def hub_connection_status(repo_root: Path) -> dict[str, object]:
+    from .memory_task_sync import task_outbox_failure_count
+
+    status = _hub_connection_status(repo_root)
+    status["task_outbox_failures"] = task_outbox_failure_count(repo_root)
+    return status
+
+
+def _hub_connection_status(repo_root: Path) -> dict[str, object]:
     worker = _WORKERS.get(repo_root.resolve())
     if worker is None:
         return {"status": "not_started"}
@@ -114,6 +122,13 @@ class MemorySyncWorker:
                 self.connection_status = {"status": "connection_failed", "reason": str(exc)}
             except Exception:
                 self.connection_status = {"status": "connection_failed", "reason": "local_connection_error"}
+        try:
+            # 先转换旧 task_sync 事件，避免它们被新 Hub 以 task_sync_retired 拒绝后丢失。
+            from .memory_task_sync import flush_task_outbox
+
+            flush_task_outbox(runtime, budget_seconds=5.0)
+        except Exception:
+            logger.warning("task command outbox flush failed", exc_info=False)
         rows = store.claim_due_events(config.upload_batch_size) if config.upload_enabled else []
         if rows:
             import json

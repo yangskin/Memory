@@ -18,6 +18,7 @@ from urllib.request import build_opener, HTTPSHandler, HTTPRedirectHandler, Requ
 from uuid import uuid4
 
 from .memory_config import load_config, local_hub_credentials_path
+from .memory_device import DeviceNameError, device_name as local_device_name
 from .memory_locks import file_lock
 from .memory_sync_client import _SSL_CONTEXT
 
@@ -87,11 +88,31 @@ def _save_private(path: Path, payload: dict):
 
 def _probe(config, send):
     info = send(config, "GET", "/connection")
+    # 任务命令能力不作为接入前提：Hub 未升级时记忆、留言与简报照常工作，只有任务操作不可用。
     required = ("board_read", "board_write", "tasks_read", "tasks_write", "project_brief")
+    capabilities = info.get("capabilities") or {}
     if (info.get("ok") is not True or info.get("project_id") != config.project_id
             or not isinstance(info.get("user_id"), str) or not info["user_id"]
-            or any(info.get("capabilities", {}).get(key) is not True for key in required)):
+            or any(capabilities.get(key) is not True for key in required)):
         raise EnrollmentError("hub_capabilities_incomplete")
+    task_commands = capabilities.get("task_commands") is True
+    device_name = info.get("device_name")
+    identity = "unsupported"
+    if task_commands:
+        try:
+            local = local_device_name()
+        except DeviceNameError:
+            raise EnrollmentError("invalid_device_name") from None
+        if device_name is None:
+            # 迁移前签发的凭据：以本机计算机名自动完成一次性绑定，无需人工步骤。
+            bound = send(config, "POST", "/device-binding", {"device_name": local})
+            if bound.get("ok") is not True or bound.get("device_name") != local:
+                raise EnrollmentError("device_binding_failed")
+            device_name = local
+        elif not isinstance(device_name, str) or not device_name:
+            raise EnrollmentError("invalid_hub_response")
+        # 名字不一致不阻断记忆接入，只让任务操作明确失败（电脑改名后需重新注册）。
+        identity = "ok" if device_name == local else "device_identity_mismatch"
     # Exercise actual read routes, not just a declaration of scopes.
     board = send(config, "POST", "/board/query", {"filter": "unresolved", "max_items": 1})
     tasks = send(config, "GET", "/tasks?limit=1")
@@ -105,6 +126,7 @@ def _probe(config, send):
         raise EnrollmentError("invalid_hub_response")
     generated_at = (snapshot or {}).get("generated_at")
     return {"status": "ready", "checks": list(required), "checked_at": datetime.now(UTC).isoformat(),
+            "task_commands": task_commands, "device_name": device_name, "device_identity": identity,
             "project_brief_available": bool(snapshot),
             "project_brief_generated_at": generated_at if isinstance(generated_at, str) else None}
 
@@ -150,9 +172,10 @@ def ensure_hub_connection(runtime, *, send=_request):
             except (ValueError, KeyError, TypeError):
                 raise EnrollmentError("invalid_enrollment_state") from None
         else:
-            device = socket.gethostname()
-            if not re.fullmatch(r"[^\W_][\w.:-]{0,95}", device):
-                raise EnrollmentError("invalid_device_name")
+            try:
+                device = local_device_name()
+            except DeviceNameError:
+                raise EnrollmentError("invalid_device_name") from None
             state = {"server_url": config.server_url, "project_id": config.project_id,
                      "enrollment_id": uuid4().hex, "device_name": device,
                      "token": "mem_v1.tok_" + secrets.token_urlsafe(18) + "." + secrets.token_urlsafe(43),

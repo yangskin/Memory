@@ -1,9 +1,14 @@
-"""Local event-sourced Task Graph storage for the ``memory_task_sync`` MCP tool."""
+"""``memory_task_sync``：Hub 任务权威的无状态客户端。
+
+Hub 是任务状态唯一的计算者。本模块只转发命令与读取；本地唯一的持久数据是
+``report``/``submit`` 在传输失败时的待发命令队列（不保存任何任务状态）。
+"""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import time
 from collections.abc import Callable
@@ -11,1598 +16,583 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
-from uuid import NAMESPACE_URL, uuid5
 
 from .memory_config import MemoryConfig
+from .memory_device import DeviceNameError, device_name as local_device_name
 from .memory_result import error_result, ok_result
 from .memory_sync_client import MemoryHubClient
 
-TASK_SYNC_VERSION = "1.0"
-MAX_GRAPH_NODES = 200
-MAX_GRAPH_EDGES = 400
-MAX_HISTORY_EVENTS = 200
-
-TASK_STATES = frozenset({"open", "active", "blocked", "review", "done", "cancelled"})
-TASK_MUTATION_ACTIONS = frozenset(
-    {"create", "assign", "claim", "decline", "report", "block", "resume", "submit", "review", "reassign", "cancel"}
+TASK_COMMAND_ACTIONS = frozenset(
+    {"create", "assign", "reassign", "claim", "decline", "report", "block", "resume", "submit", "review", "cancel"}
 )
-OFFLINE_TASK_ACTIONS = frozenset({"report", "submit"})
-RETRYABLE_TASK_AUTHORITY_STATUSES = frozenset({0, 408, 429, 500, 502, 503, 504})
-IMMEDIATE_TASK_AUTHORITY_RETRY_STATUSES = frozenset({0, 408, 500, 502, 503, 504})
-MAX_TASK_AUTHORITY_ATTEMPTS = 2
+READ_ACTIONS = frozenset({"sync", "task", "history"})
+OUTBOX_ACTIONS = frozenset({"outbox", "outbox_dismiss"})
+OFFLINE_ACTIONS = frozenset({"report", "submit"})
+RETRYABLE_STATUSES = frozenset({0, 408, 429, 500, 502, 503, 504})
+IMMEDIATE_RETRY_STATUSES = frozenset({0, 408, 500, 502, 503, 504})
+COMMAND_FIELDS = (
+    "command_id", "task_id", "expected_version", "expected_assignment_epoch", "channel", "agent",
+    "title", "objective", "acceptance", "priority", "depends_on", "parent_task_id", "produced_memory",
+    "assignee", "summary", "reason", "evidence", "decision", "submission_id",
+)
+_COMMON_FIELDS = frozenset({"command_id", "channel", "agent"})
+# 与 Hub 契约一致：每个动作只发送它接受的字段，规则里“每次都带 expected_version”的写法不会导致 422。
+ACTION_FIELDS: dict[str, frozenset[str]] = {
+    "create": frozenset({"task_id", "expected_version", "title", "objective", "acceptance", "priority",
+                         "depends_on", "parent_task_id", "produced_memory"}),
+    "assign": frozenset({"task_id", "expected_version", "expected_assignment_epoch", "assignee"}),
+    "reassign": frozenset({"task_id", "expected_version", "expected_assignment_epoch", "assignee"}),
+    "claim": frozenset({"task_id", "expected_version", "expected_assignment_epoch"}),
+    "decline": frozenset({"task_id", "expected_version", "expected_assignment_epoch"}),
+    "report": frozenset({"task_id", "expected_assignment_epoch", "summary"}),
+    "block": frozenset({"task_id", "expected_version", "expected_assignment_epoch", "reason"}),
+    "resume": frozenset({"task_id", "expected_version", "expected_assignment_epoch"}),
+    "submit": frozenset({"task_id", "expected_version", "expected_assignment_epoch", "summary", "evidence"}),
+    "review": frozenset({"task_id", "expected_version", "expected_assignment_epoch", "decision", "summary", "submission_id"}),
+    "cancel": frozenset({"task_id", "expected_version", "expected_assignment_epoch", "reason"}),
+}
+SYNC_PAGE_SIZE = 100
+SYNC_MAX_PAGES = 20
+FLUSH_BUDGET_SECONDS = 2.0
+MAX_RETRY_DELAY_SECONDS = 300.0
+LEGACY_STATE_KEY = "legacy_task_sync_migrated"
+CONFIRMED_STATE_KEY = "hub_task_commands_confirmed"
+CAPABILITY_RECHECK_SECONDS = 300.0
+_AGENT_INVALID = re.compile(r"[^A-Za-z0-9._-]")
+_device_cache: dict[str, str] = {}
+_capability_cache: dict[str, tuple[bool, float]] = {}
 
 
-def _now() -> str:
+def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _json(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+def _timeout(shared: Any) -> float:
+    return max(0.1, float(getattr(shared, "task_command_timeout_seconds", getattr(shared, "upload_timeout_seconds", 5.0))))
 
 
-def _load_json(value: object, default: object) -> object:
+def _project_path(shared: Any, suffix: str) -> str:
+    return f"/v1/projects/{quote(str(shared.project_id), safe='')}{suffix}"
+
+
+def _agent_label(value: object) -> str | None:
+    text = _AGENT_INVALID.sub("-", str(value or "").strip())[:64].strip("-")
+    return text or None
+
+
+def _remote_error(status: int, response: dict[str, Any], default_code: str) -> dict[str, Any]:
+    details: dict[str, Any] = {"remote_status": status}
+    for key in ("field", "current", "retry_after_seconds"):
+        if response.get(key) is not None:
+            details[key] = response[key]
+    code = str(response.get("error") or default_code)
+    message = str(response.get("message") or response.get("detail") or response.get("error") or f"Hub returned HTTP {status}")
+    if status in RETRYABLE_STATUSES:
+        details["retryable"] = True
+        code = "task_authority_unavailable"
+    return error_result(code, message, **details)
+
+
+def _token_key(shared: Any) -> str:
+    raw = f"{getattr(shared, 'server_url', '')}|{shared.project_id}|{getattr(shared, 'token', '')}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _ensure_device(shared: Any) -> tuple[str | None, dict[str, Any] | None]:
+    """返回 Hub 绑定的本机设备名；未绑定的旧凭据以计算机名自动完成一次性绑定，并核对两者一致。"""
+    key = _token_key(shared)
+    if key in _device_cache:
+        return _device_cache[key], None
+    client = MemoryHubClient(shared)
+    status, info = client.get(_project_path(shared, "/connection"), {}, _timeout(shared))
+    if status != 200:
+        return None, _remote_error(status, info, "hub_connection_failed")
+    if (info.get("capabilities") or {}).get("task_commands") is not True:
+        return None, error_result("hub_version_unsupported", "the connected Hub does not support task commands; upgrade the Hub")
     try:
-        loaded = json.loads(str(value))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return default
-    return loaded
+        local = local_device_name()
+    except DeviceNameError:
+        return None, error_result("invalid_device_name", "local computer name cannot be used as a Hub device identity")
+    device = info.get("device_name")
+    if device is None:
+        status, bound = client.post(_project_path(shared, "/device-binding"), {"device_name": local}, _timeout(shared))
+        if status != 200 or bound.get("device_name") != local:
+            return None, _remote_error(status, bound, "device_binding_failed")
+        device = local
+    if not isinstance(device, str) or not device:
+        return None, error_result("invalid_hub_response", "Hub returned an invalid device identity")
+    if device != local:
+        return None, error_result("device_identity_mismatch",
+                                  "this credential is bound to another device name; re-enroll this computer",
+                                  bound_device=device, local_device=local)
+    _device_cache[key] = device
+    return device, None
 
 
-def _text(value: object, *, field: str, required: bool = False, maximum: int = 4096) -> str:
-    if value is None:
-        value = ""
-    if not isinstance(value, str):
-        raise ValueError(f"{field} must be a string")
-    result = value.strip()
-    if required and not result:
-        raise ValueError(f"{field} is required")
-    if len(result) > maximum:
-        raise ValueError(f"{field} exceeds {maximum} characters")
-    return result
+def hub_supports_task_commands(config: Any) -> bool:
+    """只读判断已连接的 Hub 是否声明任务命令能力；网络失败或未配置一律视为不支持。
+
+    支持结果永久缓存；不支持的结果每 CAPABILITY_RECHECK_SECONDS 复查一次，Hub 升级后长驻进程无需重启即可生效。
+    """
+    shared = getattr(config, "shared_memory", None)
+    if shared is None or not getattr(shared, "active", False):
+        return False
+    key = _token_key(shared)
+    cached = _capability_cache.get(key)
+    if cached is not None and (cached[0] or time.monotonic() - cached[1] < CAPABILITY_RECHECK_SECONDS):
+        return cached[0]
+    try:
+        status, info = MemoryHubClient(shared).get(_project_path(shared, "/connection"), {}, _timeout(shared))
+    except Exception:
+        return False
+    if status != 200:
+        return False
+    supported = (info.get("capabilities") or {}).get("task_commands") is True
+    _capability_cache[key] = (supported, time.monotonic())
+    return supported
 
 
-def _string_list(value: object, *, field: str, maximum: int = 64) -> list[str]:
-    if value is None:
-        return []
-    if not isinstance(value, list):
-        raise ValueError(f"{field} must be an array")
-    result: list[str] = []
-    seen: set[str] = set()
-    for item in value:
-        text = _text(item, field=field, maximum=1024)
-        if text and text not in seen:
-            seen.add(text)
-            result.append(text)
-        if len(result) >= maximum:
+def _command_body(action: str, args: dict[str, Any]) -> dict[str, Any]:
+    body: dict[str, Any] = {"action": action}
+    allowed = ACTION_FIELDS.get(action, frozenset()) | _COMMON_FIELDS
+    for key in COMMAND_FIELDS:
+        if key not in allowed:
+            continue
+        value = args.get(key)
+        if value is None or (isinstance(value, str) and key != "command_id" and not value.strip() and key not in {"objective", "acceptance"}):
+            continue
+        body[key] = value
+    if "agent" in body:
+        label = _agent_label(body["agent"])
+        if label is None:
+            body.pop("agent")
+        else:
+            body["agent"] = label
+    return body
+
+
+def _post_command(shared: Any, body: dict[str, Any], *, attempts: int = 2) -> tuple[int, dict[str, Any]]:
+    timeout = _timeout(shared)
+    deadline = time.monotonic() + timeout
+    status, response = 0, {"error": "remote_unavailable"}
+    for attempt in range(attempts):
+        remaining = deadline - time.monotonic()
+        if attempt and remaining <= 0:
             break
-    return result
+        status, response = MemoryHubClient(shared).post(_project_path(shared, "/task-commands"), body, max(0.1, min(timeout, remaining)))
+        if status not in IMMEDIATE_RETRY_STATUSES:
+            break
+    return status, response
 
 
-def _integer(value: object, *, field: str, minimum: int = 0) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise ValueError(f"{field} must be an integer greater than or equal to {minimum}")
+class TaskCommandOutbox:
+    """跨进程持久的待发命令队列；只保存命令，不保存任务状态。网络调用不在写锁内进行。"""
+
+    def __init__(self, repo_root: Path) -> None:
+        self.path = Path(repo_root) / ".ai-memory" / "task-command-outbox.db"
+
+    def _connect(self) -> sqlite3.Connection:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.path, timeout=5, isolation_level=None)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout=5000")
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS pending_commands (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                command_id TEXT NOT NULL UNIQUE,
+                task_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                request TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'pending',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_retry_at REAL NOT NULL DEFAULT 0,
+                lease_until REAL NOT NULL DEFAULT 0,
+                last_error TEXT,
+                last_message TEXT,
+                current_task TEXT,
+                origin TEXT NOT NULL DEFAULT 'offline',
+                created_at TEXT NOT NULL,
+                failed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_pending_commands_task ON pending_commands(task_id, seq);
+            CREATE TABLE IF NOT EXISTS outbox_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            """
+        )
+        return connection
+
+    def _run(self, operation: Callable[[sqlite3.Connection], Any]) -> Any:
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                result = operation(connection)
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+            connection.execute("COMMIT")
+            return result
+        finally:
+            connection.close()
+
+    def enqueue(self, body: dict[str, Any], *, origin: str = "offline", state: str = "pending",
+                error: str | None = None, message: str | None = None) -> bool:
+        def insert(connection: sqlite3.Connection) -> bool:
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO pending_commands(command_id, task_id, action, request, state, origin, last_error, "
+                "last_message, created_at, failed_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (str(body["command_id"]), str(body.get("task_id") or ""), str(body["action"]),
+                 json.dumps(body, ensure_ascii=False, separators=(",", ":")), state, origin, error, message,
+                 _now_iso(), _now_iso() if state == "failed" else None),
+            )
+            return cursor.rowcount == 1
+        return bool(self._run(insert))
+
+    def get_state(self, key: str) -> str | None:
+        connection = self._connect()
+        try:
+            row = connection.execute("SELECT value FROM outbox_state WHERE key=?", (key,)).fetchone()
+            return None if row is None else str(row["value"])
+        finally:
+            connection.close()
+
+    def put_state(self, key: str, value: str) -> None:
+        self._run(lambda c: c.execute("INSERT OR REPLACE INTO outbox_state(key, value) VALUES(?, ?)", (key, value)))
+
+    def _lease_next(self, now: float) -> sqlite3.Row | None:
+        """租用最早一条可发送的命令；同一任务内若更早的命令仍在等待重试，则不越过它。"""
+        def lease(connection: sqlite3.Connection) -> sqlite3.Row | None:
+            heads = connection.execute(
+                "SELECT p.* FROM pending_commands p WHERE p.state='pending' AND p.seq = ("
+                " SELECT MIN(q.seq) FROM pending_commands q WHERE q.state='pending' AND q.task_id=p.task_id)"
+                " ORDER BY p.seq"
+            ).fetchall()
+            for row in heads:
+                if row["next_retry_at"] <= now and row["lease_until"] <= now:
+                    connection.execute("UPDATE pending_commands SET lease_until=? WHERE seq=?", (now + 30, row["seq"]))
+                    return row
+            return None
+        return self._run(lease)
+
+    def _settle(self, seq: int, status: int, response: dict[str, Any], attempts: int) -> str:
+        if status == 200:
+            self._run(lambda c: c.execute("DELETE FROM pending_commands WHERE seq=?", (seq,)))
+            return "sent"
+        if status in RETRYABLE_STATUSES:
+            delay = min(MAX_RETRY_DELAY_SECONDS, 5.0 * (2 ** min(attempts, 6)))
+            retry_after = response.get("retry_after_seconds")
+            if isinstance(retry_after, (int, float)):
+                delay = max(delay, float(retry_after))
+            self._run(lambda c: c.execute(
+                "UPDATE pending_commands SET attempts=?, next_retry_at=?, lease_until=0, last_error=?, last_message=? WHERE seq=?",
+                (attempts + 1, time.time() + delay, "task_authority_unavailable", f"HTTP {status}", seq)))
+            return "retry"
+        current = response.get("current")
+        self._run(lambda c: c.execute(
+            "UPDATE pending_commands SET state='failed', attempts=?, lease_until=0, last_error=?, last_message=?, current_task=?, "
+            "failed_at=? WHERE seq=?",
+            (attempts + 1, str(response.get("error") or f"http_{status}"),
+             str(response.get("message") or response.get("detail") or "")[:2000],
+             json.dumps(current, ensure_ascii=False) if isinstance(current, dict) else None, _now_iso(), seq)))
+        return "failed"
+
+    def flush(self, shared: Any, *, budget_seconds: float = FLUSH_BUDGET_SECONDS) -> dict[str, int]:
+        counts = {"sent": 0, "retry": 0, "failed": 0}
+        if not self.path.exists() or not bool(getattr(shared, "active", False)):
+            return counts
+        deadline = time.monotonic() + max(0.0, budget_seconds)
+        while time.monotonic() < deadline:
+            row = self._lease_next(time.time())
+            if row is None:
+                break
+            status, response = _post_command(shared, json.loads(row["request"]), attempts=1)
+            counts[self._settle(int(row["seq"]), status, response, int(row["attempts"]))] += 1
+        return counts
+
+    def failures(self, limit: int = 20) -> list[dict[str, Any]]:
+        if not self.path.exists():
+            return []
+        connection = self._connect()
+        try:
+            rows = connection.execute(
+                "SELECT * FROM pending_commands WHERE state='failed' ORDER BY seq LIMIT ?", (max(1, limit),)).fetchall()
+        finally:
+            connection.close()
+        return [self._view(row) for row in rows]
+
+    def failure_count(self) -> int:
+        if not self.path.exists():
+            return 0
+        connection = self._connect()
+        try:
+            return int(connection.execute("SELECT COUNT(*) FROM pending_commands WHERE state='failed'").fetchone()[0])
+        finally:
+            connection.close()
+
+    def entries(self) -> list[dict[str, Any]]:
+        if not self.path.exists():
+            return []
+        connection = self._connect()
+        try:
+            rows = connection.execute("SELECT * FROM pending_commands ORDER BY seq").fetchall()
+        finally:
+            connection.close()
+        return [self._view(row) for row in rows]
+
+    def dismiss(self, command_ids: list[str]) -> dict[str, list[str]]:
+        def remove(connection: sqlite3.Connection) -> dict[str, list[str]]:
+            removed, rejected = [], []
+            for command_id in command_ids:
+                cursor = connection.execute("DELETE FROM pending_commands WHERE command_id=? AND state='failed'", (command_id,))
+                (removed if cursor.rowcount else rejected).append(command_id)
+            return {"removed": removed, "not_failed": rejected}
+        return self._run(remove)
+
+    @staticmethod
+    def _view(row: sqlite3.Row) -> dict[str, Any]:
+        current = json.loads(row["current_task"]) if row["current_task"] else None
+        return {
+            "command_id": row["command_id"], "task_id": row["task_id"], "action": row["action"], "state": row["state"],
+            "origin": row["origin"], "attempts": row["attempts"], "error": row["last_error"],
+            "message": row["last_message"], "current": current, "created_at": row["created_at"], "failed_at": row["failed_at"],
+        }
+
+
+def migrate_legacy_task_data(config: MemoryConfig) -> dict[str, int]:
+    """一次性把未上传或已被新 Hub 拒收的旧 ``task_sync`` 事件转换为待发命令，然后删除旧本地任务库。
+
+    调用方必须先确认 Hub 声明支持任务命令；旧 Hub 下旧事件按原协议照常上传。
+    """
+    outbox = TaskCommandOutbox(config.repo_root)
+    if outbox.get_state(LEGACY_STATE_KEY):
+        return {"converted": 0, "failed": 0}
+    counts = {"converted": 0, "failed": 0}
+    sync_db = Path(config.repo_root) / ".ai-memory" / "shared-sync.db"
+    if sync_db.exists():
+        from .memory_sync_store import SyncStore
+
+        store = SyncStore(sync_db)
+        connection = store._connect()
+        try:
+            rows = connection.execute(
+                "SELECT event_id, payload_json FROM outbox_events WHERE state IN ('pending','uploading') "
+                "OR (state='rejected' AND last_error='task_sync_retired') ORDER BY local_seq").fetchall()
+        finally:
+            connection.close()
+        reports_before: dict[str, int] = {}
+        for row in rows:
+            try:
+                envelope = json.loads(str(row["payload_json"]))
+            except ValueError:
+                continue
+            if not isinstance(envelope, dict) or envelope.get("operation") != "task_sync":
+                continue
+            event = (envelope.get("metadata") or {}).get("task_event")
+            body = _legacy_command(event, reports_before) if isinstance(event, dict) else None
+            if body is None:
+                task_event = event if isinstance(event, dict) else {}
+                outbox.enqueue({"command_id": str(task_event.get("command_id") or row["event_id"]),
+                                "task_id": str(task_event.get("task_id") or ""),
+                                "action": str(task_event.get("event_type") or "unknown")},
+                               origin="legacy", state="failed", error="legacy_task_event_not_replayable",
+                               message="this pre-upgrade task event cannot be replayed automatically; redo it with a new command")
+                counts["failed"] += 1
+            else:
+                outbox.enqueue(body, origin="legacy")
+                counts["converted"] += 1
+            store.reject(str(row["event_id"]), "migrated_to_task_commands")
+    outbox.put_state(LEGACY_STATE_KEY, _now_iso())
+    for suffix in ("", "-wal", "-shm"):
+        (Path(config.repo_root) / ".ai-memory" / f"task-graph.db{suffix}").unlink(missing_ok=True)
+    return counts
+
+
+def _legacy_command(event: dict[str, Any], reports_before: dict[str, int]) -> dict[str, Any] | None:
+    kind = event.get("event_type")
+    task_id = event.get("task_id")
+    command_id = event.get("command_id")
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    if kind not in {"TaskReported", "TaskSubmitted"} or not isinstance(task_id, str) or not isinstance(command_id, str):
+        return None
+    body: dict[str, Any] = {"command_id": command_id, "task_id": task_id,
+                            "expected_assignment_epoch": event.get("expected_assignment_epoch")}
+    if str(event.get("actor_id") or "").endswith("-dispatch"):
+        body["channel"] = "dispatch"
+    if kind == "TaskReported":
+        reports_before[task_id] = reports_before.get(task_id, 0) + 1
+        body.update(action="report", summary=payload.get("summary"))
+    else:
+        expected = event.get("expected_version")
+        if not isinstance(expected, int):
+            return None
+        # 旧版本里离线 report 也会递增本地版本；它们从未到达 Hub，补发前扣除。
+        body.update(action="submit", summary=payload.get("summary"), evidence=payload.get("evidence") or [],
+                    expected_version=max(0, expected - reports_before.pop(task_id, 0)))
+    if not isinstance(body.get("expected_assignment_epoch"), int) or not body.get("summary"):
+        return None
+    return body
+
+
+def _sync(shared: Any, device: str, args: dict[str, Any]) -> dict[str, Any]:
+    assignee = _optional_text(args, "assignee") or device
+    state = _optional_text(args, "state") or "working"
+    items: list[dict[str, Any]] = []
+    cursor: str | None = None
+    for _ in range(SYNC_MAX_PAGES):
+        params: dict[str, Any] = {"state": state, "assignee": assignee, "order": "created", "limit": SYNC_PAGE_SIZE}
+        if cursor:
+            params["cursor"] = cursor
+        status, page = MemoryHubClient(shared).get(_project_path(shared, "/tasks"), params, _timeout(shared))
+        if status != 200:
+            return _remote_error(status, page, "task_read_failed")
+        if not isinstance(page.get("items"), list):
+            return error_result("invalid_hub_response", "Hub task catalog response is invalid")
+        items.extend(page["items"])
+        next_cursor = page.get("next_cursor")
+        if next_cursor is None:
+            return ok_result("Hub tasks loaded", device_name=device, assignee=assignee, state=state, tasks=items, total=len(items))
+        if not isinstance(next_cursor, str) or next_cursor == cursor:
+            break
+        cursor = next_cursor
+    return error_result("hub_scan_incomplete", "Hub task catalog did not finish within the page budget",
+                        loaded=len(items), max_pages=SYNC_MAX_PAGES)
+
+
+def _bounded_int(args: dict[str, Any], key: str, default: int, minimum: int, maximum: int) -> int:
+    value = args.get(key, default)
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+        raise ValueError(f"{key} must be an integer between {minimum} and {maximum}")
     return value
 
 
-def _node_id(node_type: str, node_key: str) -> str:
-    return f"{node_type}:{node_key}"
-
-
-def _command_hash(args: dict[str, Any]) -> str:
-    prefix = "hub_projection:" if args.get("_hub_projection") is True else ""
-    return prefix + "sha256:" + hashlib.sha256(_json(args).encode("utf-8")).hexdigest()
-
-
-def _store_path(config: MemoryConfig) -> Path:
-    return config.repo_root / ".ai-memory" / "task-graph.db"
-
-
-class TaskSyncStore:
-    """Small stdlib-only local Task Graph event store and projection."""
-
-    def __init__(
-        self,
-        path: Path,
-        authorize: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
-    ) -> None:
-        self.path = path
-        self._authorize = authorize
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._initialize()
-
-    def _authorize_task_event(
-        self,
-        task_event: dict[str, Any],
-    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-        if self._authorize is None:
-            return None, None
-        result = self._authorize(task_event)
-        if not isinstance(result, dict):
-            return error_result("task_authority_unavailable", "Hub task authority returned an invalid response"), None
-        if not result.get("ok"):
-            return result, None
-        shared_sync = result.get("shared_sync")
-        return None, dict(shared_sync) if isinstance(shared_sync, dict) else None
-
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=5, isolation_level=None)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA busy_timeout=5000")
-        return connection
-
-    def _initialize(self) -> None:
-        with self._connect() as connection:
-            connection.execute("PRAGMA journal_mode=WAL")
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS task_events (
-                    event_seq INTEGER PRIMARY KEY AUTOINCREMENT,
-                    command_id TEXT NOT NULL UNIQUE,
-                    task_id TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    actor_id TEXT NOT NULL,
-                    expected_version INTEGER NOT NULL,
-                    expected_assignment_epoch INTEGER,
-                    payload_json TEXT NOT NULL,
-                    occurred_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_task_events_task_seq
-                    ON task_events(task_id, event_seq);
-                CREATE TABLE IF NOT EXISTS task_commands (
-                    command_id TEXT PRIMARY KEY,
-                    command_hash TEXT NOT NULL,
-                    result_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS tasks (
-                    task_id TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    objective TEXT NOT NULL DEFAULT '',
-                    acceptance TEXT NOT NULL DEFAULT '',
-                    priority TEXT NOT NULL DEFAULT 'normal',
-                    state TEXT NOT NULL,
-                    version INTEGER NOT NULL,
-                    assignment_epoch INTEGER NOT NULL DEFAULT 0,
-                    current_attempt_id TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS task_agents (
-                    agent_id TEXT PRIMARY KEY,
-                    role TEXT NOT NULL DEFAULT '',
-                    capabilities_json TEXT NOT NULL DEFAULT '[]',
-                    owner TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL DEFAULT 'available',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS task_attempts (
-                    attempt_id TEXT PRIMARY KEY,
-                    task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
-                    epoch INTEGER NOT NULL,
-                    assignee TEXT NOT NULL REFERENCES task_agents(agent_id),
-                    assigned_by TEXT NOT NULL REFERENCES task_agents(agent_id),
-                    status TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    UNIQUE(task_id, epoch)
-                );
-                CREATE TABLE IF NOT EXISTS task_submissions (
-                    submission_id TEXT PRIMARY KEY,
-                    task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
-                    attempt_id TEXT NOT NULL REFERENCES task_attempts(attempt_id),
-                    summary TEXT NOT NULL,
-                    evidence_json TEXT NOT NULL DEFAULT '[]',
-                    task_version INTEGER NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS task_reviews (
-                    review_id TEXT PRIMARY KEY,
-                    task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
-                    submission_id TEXT NOT NULL REFERENCES task_submissions(submission_id),
-                    reviewer TEXT NOT NULL REFERENCES task_agents(agent_id),
-                    decision TEXT NOT NULL,
-                    summary TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS task_graph_nodes (
-                    node_id TEXT PRIMARY KEY,
-                    node_type TEXT NOT NULL,
-                    node_key TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    UNIQUE(node_type, node_key)
-                );
-                CREATE TABLE IF NOT EXISTS task_graph_edges (
-                    source_node_id TEXT NOT NULL REFERENCES task_graph_nodes(node_id) ON DELETE CASCADE,
-                    target_node_id TEXT NOT NULL REFERENCES task_graph_nodes(node_id) ON DELETE CASCADE,
-                    relation_type TEXT NOT NULL,
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY(source_node_id, target_node_id, relation_type)
-                );
-                """
-            )
-
-    def execute(self, args: dict[str, Any]) -> dict[str, Any]:
-        action = _text(args.get("action") or "sync", field="action", maximum=64).lower()
-        if action == "sync":
-            return self.bundle(task_id=args.get("task_id"), agent_id=args.get("agent_id"), cursor=args.get("cursor"))
-        if action == "history":
-            return self.history(task_id=args.get("task_id"), cursor=args.get("cursor"), max_items=args.get("max_items"))
-        if action == "create":
-            return self._create(args)
-        if action == "assign":
-            return self._assign(args, reassign=False)
-        if action == "claim":
-            return self._claim(args)
-        if action == "decline":
-            return self._decline(args)
-        if action == "report":
-            return self._report(args)
-        if action == "block":
-            return self._block(args)
-        if action == "resume":
-            return self._resume(args)
-        if action == "submit":
-            return self._submit(args)
-        if action == "review":
-            return self._review(args)
-        if action == "reassign":
-            return self._assign(args, reassign=True)
-        if action == "cancel":
-            return self._cancel(args)
-        return error_result("invalid_input", f"unknown task action: {action}")
-
-    def _create(self, args: dict[str, Any]) -> dict[str, Any]:
-        try:
-            command_id = _text(args.get("command_id"), field="command_id", required=True, maximum=256)
-            expected_version = _integer(args.get("expected_version"), field="expected_version")
-            if expected_version != 0:
-                return error_result("version_conflict", "create requires expected_version=0", expected_version=expected_version)
-            actor_id = _text(args.get("actor_id") or args.get("agent_id"), field="actor_id", required=True, maximum=256)
-            task_id = _text(args.get("task_id"), field="task_id", maximum=256)
-            if not task_id:
-                digest = hashlib.sha256(command_id.encode("utf-8")).hexdigest()[:20]
-                task_id = f"task_{digest}"
-            title = _text(args.get("title"), field="title", required=True, maximum=1024)
-            objective = _text(args.get("objective"), field="objective", maximum=8192)
-            acceptance = _text(args.get("acceptance"), field="acceptance", maximum=8192)
-            priority = _text(args.get("priority") or "normal", field="priority", maximum=64)
-            depends_on = _string_list(args.get("depends_on"), field="depends_on")
-            produced_memory = _string_list(args.get("produced_memory"), field="produced_memory")
-            parent_task_id = _text(args.get("parent_task_id"), field="parent_task_id", maximum=256)
-        except ValueError as exc:
-            return error_result("invalid_input", str(exc))
-
-        command_hash = _command_hash(args)
-        occurred_at = _now()
-        payload = {
-            "title": title,
-            "objective": objective,
-            "acceptance": acceptance,
-            "priority": priority,
-            "depends_on": depends_on,
-            "produced_memory": produced_memory,
-            "parent_task_id": parent_task_id or None,
-        }
-        task_event = {
-            "version": TASK_SYNC_VERSION,
-            "command_id": command_id,
-            "event_type": "TaskCreated",
-            "task_id": task_id,
-            "actor_id": actor_id,
-            "expected_version": expected_version,
-            "expected_assignment_epoch": None,
-            "task_version": 1,
-            "assignment_epoch": 0,
-            "payload": payload,
-            "occurred_at": occurred_at,
-        }
-        try:
-            with self._connect() as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                duplicate = connection.execute(
-                    "SELECT command_hash, result_json FROM task_commands WHERE command_id=?", (command_id,)
-                ).fetchone()
-                if duplicate is not None:
-                    if str(duplicate["command_hash"]) != command_hash:
-                        connection.execute("ROLLBACK")
-                        return error_result("command_id_conflict", "command_id was already used with different input")
-                    connection.execute("ROLLBACK")
-                    result = _load_json(duplicate["result_json"], {})
-                    if isinstance(result, dict):
-                        result["idempotent"] = True
-                        return result
-                    return error_result("corrupt_command_result", "stored task command result is invalid")
-
-                if connection.execute("SELECT 1 FROM tasks WHERE task_id=?", (task_id,)).fetchone() is not None:
-                    connection.execute("ROLLBACK")
-                    return error_result("task_exists", "task_id already exists", task_id=task_id)
-                self._upsert_agent(connection, actor_id, occurred_at)
-                connection.execute(
-                    """
-                    INSERT INTO tasks(task_id,title,objective,acceptance,priority,state,version,assignment_epoch,current_attempt_id,created_at,updated_at)
-                    VALUES(?,?,?,?,?,'open',1,0,NULL,?,?)
-                    """,
-                    (task_id, title, objective, acceptance, priority, occurred_at, occurred_at),
-                )
-                authority_error, shared_sync = self._authorize_task_event(task_event)
-                if authority_error is not None:
-                    connection.execute("ROLLBACK")
-                    return authority_error
-                self._refresh_task_graph(connection, task_id, payload, occurred_at)
-                connection.execute(
-                    """
-                    INSERT INTO task_events(command_id,task_id,event_type,actor_id,expected_version,expected_assignment_epoch,payload_json,occurred_at)
-                    VALUES(?,?,?,?,?,?,?,?)
-                    """,
-                    (command_id, task_id, "TaskCreated", actor_id, expected_version, None, _json(payload), occurred_at),
-                )
-                bundle = self._bundle(connection, task_id=task_id, agent_id=None, cursor=None)
-                result = ok_result(
-                    "task created",
-                    action="create",
-                    task_id=task_id,
-                    version=1,
-                    assignment_epoch=0,
-                    task_event=task_event,
-                    bundle=bundle,
-                    idempotent=False,
-                )
-                if shared_sync is not None:
-                    result["shared_sync"] = shared_sync
-                connection.execute(
-                    "INSERT INTO task_commands(command_id,command_hash,result_json,created_at) VALUES(?,?,?,?)",
-                    (command_id, command_hash, _json(result), occurred_at),
-                )
-                connection.execute("COMMIT")
-                return result
-        except sqlite3.Error as exc:
-            return error_result("task_store_unavailable", str(exc))
-
-    def _mutate_task(
-        self,
-        args: dict[str, Any],
-        *,
-        action: str,
-        requires_epoch: bool,
-        mutation,
-    ) -> dict[str, Any]:
-        try:
-            command_id = _text(args.get("command_id"), field="command_id", required=True, maximum=256)
-            expected_version = _integer(args.get("expected_version"), field="expected_version")
-            actor_id = _text(args.get("actor_id") or args.get("agent_id"), field="actor_id", required=True, maximum=256)
-            task_id = _text(args.get("task_id"), field="task_id", required=True, maximum=256)
-            raw_epoch = args.get("expected_assignment_epoch")
-            if requires_epoch and raw_epoch is None:
-                return error_result("missing_assignment_epoch", f"{action} requires expected_assignment_epoch")
-            expected_epoch = _integer(raw_epoch, field="expected_assignment_epoch") if raw_epoch is not None else None
-        except ValueError as exc:
-            return error_result("invalid_input", str(exc))
-
-        command_hash = _command_hash(args)
-        timestamp = _now()
-        try:
-            with self._connect() as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                duplicate = connection.execute(
-                    "SELECT command_hash, result_json FROM task_commands WHERE command_id=?", (command_id,)
-                ).fetchone()
-                if duplicate is not None:
-                    if str(duplicate["command_hash"]) != command_hash:
-                        connection.execute("ROLLBACK")
-                        return error_result("command_id_conflict", "command_id was already used with different input")
-                    connection.execute("ROLLBACK")
-                    result = _load_json(duplicate["result_json"], {})
-                    if isinstance(result, dict):
-                        result["idempotent"] = True
-                        return result
-                    return error_result("corrupt_command_result", "stored task command result is invalid")
-
-                task = connection.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
-                if task is None:
-                    connection.execute("ROLLBACK")
-                    return error_result("task_not_found", "task_id does not exist", task_id=task_id)
-                if int(task["version"]) != expected_version:
-                    connection.execute("ROLLBACK")
-                    return error_result(
-                        "version_conflict",
-                        "task version does not match expected_version",
-                        task_id=task_id,
-                        expected_version=expected_version,
-                        current_version=int(task["version"]),
-                    )
-                if requires_epoch and int(task["assignment_epoch"]) != expected_epoch:
-                    connection.execute("ROLLBACK")
-                    return error_result(
-                        "assignment_epoch_conflict",
-                        "task assignment epoch does not match expected_assignment_epoch",
-                        task_id=task_id,
-                        expected_assignment_epoch=expected_epoch,
-                        current_assignment_epoch=int(task["assignment_epoch"]),
-                    )
-                outcome = mutation(connection, task, actor_id, timestamp)
-                if isinstance(outcome, dict):
-                    connection.execute("ROLLBACK")
-                    return outcome
-                event_type, payload, message = outcome
-                updated = connection.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
-                if updated is None:
-                    connection.execute("ROLLBACK")
-                    return error_result("task_not_found", "task disappeared during mutation", task_id=task_id)
-                task_event = {
-                    "version": TASK_SYNC_VERSION,
-                    "command_id": command_id,
-                    "event_type": event_type,
-                    "task_id": task_id,
-                    "actor_id": actor_id,
-                    "expected_version": expected_version,
-                    "expected_assignment_epoch": expected_epoch,
-                    "task_version": int(updated["version"]),
-                    "assignment_epoch": int(updated["assignment_epoch"]),
-                    "payload": payload,
-                    "occurred_at": timestamp,
-                }
-                authority_error, shared_sync = self._authorize_task_event(task_event)
-                if authority_error is not None:
-                    connection.execute("ROLLBACK")
-                    return authority_error
-                self._refresh_task_graph(connection, task_id, {}, timestamp)
-                connection.execute(
-                    """
-                    INSERT INTO task_events(command_id,task_id,event_type,actor_id,expected_version,expected_assignment_epoch,payload_json,occurred_at)
-                    VALUES(?,?,?,?,?,?,?,?)
-                    """,
-                    (command_id, task_id, event_type, actor_id, expected_version, expected_epoch, _json(payload), timestamp),
-                )
-                bundle = self._bundle(connection, task_id=task_id, agent_id=None, cursor=None)
-                result = ok_result(
-                    message,
-                    action=action,
-                    task_id=task_id,
-                    version=int(updated["version"]),
-                    assignment_epoch=int(updated["assignment_epoch"]),
-                    task_event=task_event,
-                    bundle=bundle,
-                    idempotent=False,
-                )
-                if shared_sync is not None:
-                    result["shared_sync"] = shared_sync
-                connection.execute(
-                    "INSERT INTO task_commands(command_id,command_hash,result_json,created_at) VALUES(?,?,?,?)",
-                    (command_id, command_hash, _json(result), timestamp),
-                )
-                connection.execute("COMMIT")
-                return result
-        except sqlite3.Error as exc:
-            return error_result("task_store_unavailable", str(exc))
-
-    def _current_attempt(self, connection: sqlite3.Connection, task: sqlite3.Row) -> sqlite3.Row | dict[str, Any]:
-        attempt_id = str(task["current_attempt_id"] or "")
-        if not attempt_id:
-            return error_result("no_current_attempt", "task has no current attempt", task_id=str(task["task_id"]))
-        attempt = connection.execute("SELECT * FROM task_attempts WHERE attempt_id=?", (attempt_id,)).fetchone()
-        if attempt is None:
-            return error_result("no_current_attempt", "current attempt is unavailable", task_id=str(task["task_id"]))
-        return attempt
-
-    def _executor_attempt(
-        self,
-        connection: sqlite3.Connection,
-        task: sqlite3.Row,
-        actor_id: str,
-        *,
-        allowed_statuses: set[str],
-    ) -> sqlite3.Row | dict[str, Any]:
-        attempt = self._current_attempt(connection, task)
-        if isinstance(attempt, dict):
-            return attempt
-        if str(attempt["assignee"]) != actor_id:
-            return error_result("assignment_forbidden", "only the current assignee may perform this task action")
-        if str(attempt["status"]) not in allowed_statuses:
-            return error_result(
-                "invalid_attempt_state",
-                "current attempt does not permit this task action",
-                current_attempt_status=str(attempt["status"]),
-            )
-        return attempt
-
-    def _advance_task(
-        self,
-        connection: sqlite3.Connection,
-        task_id: str,
-        timestamp: str,
-        *,
-        state: str | None = None,
-        current_attempt_id: str | None | object = ..., 
-        assignment_epoch: int | None = None,
-    ) -> None:
-        assignments = ["version=version+1", "updated_at=?"]
-        values: list[object] = [timestamp]
-        if state is not None:
-            assignments.append("state=?")
-            values.append(state)
-        if current_attempt_id is not ...:
-            assignments.append("current_attempt_id=?")
-            values.append(current_attempt_id)
-        if assignment_epoch is not None:
-            assignments.append("assignment_epoch=?")
-            values.append(assignment_epoch)
-        values.append(task_id)
-        connection.execute(f"UPDATE tasks SET {', '.join(assignments)} WHERE task_id=?", values)
-
-    def _assign(self, args: dict[str, Any], *, reassign: bool) -> dict[str, Any]:
-        action = "reassign" if reassign else "assign"
-        try:
-            assignee = _text(args.get("assignee"), field="assignee", required=True, maximum=256)
-            requested_attempt = _text(args.get("attempt_id"), field="attempt_id", maximum=256)
-        except ValueError as exc:
-            return error_result("invalid_input", str(exc))
-
-        def mutate(connection: sqlite3.Connection, task: sqlite3.Row, actor_id: str, timestamp: str):
-            state = str(task["state"])
-            if state in {"done", "cancelled", "review"}:
-                return error_result("invalid_task_state", f"cannot {action} a {state} task")
-            if reassign and not task["current_attempt_id"]:
-                return error_result("no_current_attempt", "reassign requires a current attempt")
-            previous = self._current_attempt(connection, task) if task["current_attempt_id"] else None
-            if isinstance(previous, sqlite3.Row) and str(previous["status"]) in {"offered", "active"}:
-                connection.execute(
-                    "UPDATE task_attempts SET status='superseded',updated_at=? WHERE attempt_id=?",
-                    (timestamp, str(previous["attempt_id"])),
-                )
-            epoch = int(task["assignment_epoch"]) + 1
-            attempt_seed = f"{task['task_id']}:{epoch}:{args.get('command_id')}"
-            attempt_id = requested_attempt or f"attempt_{hashlib.sha256(attempt_seed.encode('utf-8')).hexdigest()[:20]}"
-            if connection.execute("SELECT 1 FROM task_attempts WHERE attempt_id=?", (attempt_id,)).fetchone() is not None:
-                return error_result("attempt_exists", "attempt_id already exists", attempt_id=attempt_id)
-            self._upsert_agent(connection, actor_id, timestamp)
-            self._upsert_agent(connection, assignee, timestamp)
-            connection.execute(
-                """
-                INSERT INTO task_attempts(attempt_id,task_id,epoch,assignee,assigned_by,status,created_at,updated_at)
-                VALUES(?,?,?,?,?,'offered',?,?)
-                """,
-                (attempt_id, str(task["task_id"]), epoch, assignee, actor_id, timestamp, timestamp),
-            )
-            self._advance_task(
-                connection,
-                str(task["task_id"]),
-                timestamp,
-                state="open",
-                current_attempt_id=attempt_id,
-                assignment_epoch=epoch,
-            )
-            return (
-                "TaskReassigned" if reassign else "TaskAssigned",
-                {"attempt_id": attempt_id, "assignee": assignee, "assigned_by": actor_id, "epoch": epoch},
-                "task reassigned" if reassign else "task assigned",
-            )
-
-        return self._mutate_task(args, action=action, requires_epoch=reassign, mutation=mutate)
-
-    def _claim(self, args: dict[str, Any]) -> dict[str, Any]:
-        def mutate(connection: sqlite3.Connection, task: sqlite3.Row, actor_id: str, timestamp: str):
-            if str(task["state"]) != "open":
-                return error_result("invalid_task_state", "only an open task may be claimed")
-            attempt = self._executor_attempt(connection, task, actor_id, allowed_statuses={"offered"})
-            if isinstance(attempt, dict):
-                return attempt
-            connection.execute("UPDATE task_attempts SET status='active',updated_at=? WHERE attempt_id=?", (timestamp, str(attempt["attempt_id"])))
-            self._advance_task(connection, str(task["task_id"]), timestamp, state="active")
-            return "TaskClaimed", {"attempt_id": str(attempt["attempt_id"])}, "task claimed"
-
-        return self._mutate_task(args, action="claim", requires_epoch=True, mutation=mutate)
-
-    def _decline(self, args: dict[str, Any]) -> dict[str, Any]:
-        def mutate(connection: sqlite3.Connection, task: sqlite3.Row, actor_id: str, timestamp: str):
-            attempt = self._executor_attempt(connection, task, actor_id, allowed_statuses={"offered", "active"})
-            if isinstance(attempt, dict):
-                return attempt
-            connection.execute("UPDATE task_attempts SET status='superseded',updated_at=? WHERE attempt_id=?", (timestamp, str(attempt["attempt_id"])))
-            self._advance_task(connection, str(task["task_id"]), timestamp, state="open", current_attempt_id=None)
-            return "TaskDeclined", {"attempt_id": str(attempt["attempt_id"])}, "task assignment declined"
-
-        return self._mutate_task(args, action="decline", requires_epoch=True, mutation=mutate)
-
-    def _report(self, args: dict[str, Any]) -> dict[str, Any]:
-        try:
-            summary = _text(args.get("summary"), field="summary", required=True, maximum=8192)
-        except ValueError as exc:
-            return error_result("invalid_input", str(exc))
-
-        def mutate(connection: sqlite3.Connection, task: sqlite3.Row, actor_id: str, timestamp: str):
-            attempt = self._executor_attempt(connection, task, actor_id, allowed_statuses={"active"})
-            if isinstance(attempt, dict):
-                return attempt
-            self._advance_task(connection, str(task["task_id"]), timestamp)
-            return "TaskReported", {"attempt_id": str(attempt["attempt_id"]), "summary": summary}, "task report recorded"
-
-        return self._mutate_task(args, action="report", requires_epoch=True, mutation=mutate)
-
-    def _block(self, args: dict[str, Any]) -> dict[str, Any]:
-        try:
-            reason = _text(args.get("reason"), field="reason", required=True, maximum=8192)
-        except ValueError as exc:
-            return error_result("invalid_input", str(exc))
-
-        def mutate(connection: sqlite3.Connection, task: sqlite3.Row, actor_id: str, timestamp: str):
-            if str(task["state"]) != "active":
-                return error_result("invalid_task_state", "only an active task may be blocked")
-            attempt = self._executor_attempt(connection, task, actor_id, allowed_statuses={"active"})
-            if isinstance(attempt, dict):
-                return attempt
-            self._advance_task(connection, str(task["task_id"]), timestamp, state="blocked")
-            return "TaskBlocked", {"attempt_id": str(attempt["attempt_id"]), "reason": reason}, "task blocked"
-
-        return self._mutate_task(args, action="block", requires_epoch=True, mutation=mutate)
-
-    def _resume(self, args: dict[str, Any]) -> dict[str, Any]:
-        def mutate(connection: sqlite3.Connection, task: sqlite3.Row, actor_id: str, timestamp: str):
-            if str(task["state"]) != "blocked":
-                return error_result("invalid_task_state", "only a blocked task may be resumed")
-            attempt = self._executor_attempt(connection, task, actor_id, allowed_statuses={"active"})
-            if isinstance(attempt, dict):
-                return attempt
-            self._advance_task(connection, str(task["task_id"]), timestamp, state="active")
-            return "TaskResumed", {"attempt_id": str(attempt["attempt_id"])}, "task resumed"
-
-        return self._mutate_task(args, action="resume", requires_epoch=True, mutation=mutate)
-
-    def _submit(self, args: dict[str, Any]) -> dict[str, Any]:
-        try:
-            summary = _text(args.get("summary"), field="summary", required=True, maximum=8192)
-            evidence = _string_list(args.get("evidence"), field="evidence")
-            requested_submission = _text(args.get("submission_id"), field="submission_id", maximum=256)
-        except ValueError as exc:
-            return error_result("invalid_input", str(exc))
-
-        def mutate(connection: sqlite3.Connection, task: sqlite3.Row, actor_id: str, timestamp: str):
-            if str(task["state"]) != "active":
-                return error_result("invalid_task_state", "only an active task may be submitted")
-            attempt = self._executor_attempt(connection, task, actor_id, allowed_statuses={"active"})
-            if isinstance(attempt, dict):
-                return attempt
-            submission_seed = f"{task['task_id']}:{args.get('command_id')}"
-            submission_id = requested_submission or f"submission_{hashlib.sha256(submission_seed.encode('utf-8')).hexdigest()[:20]}"
-            if connection.execute("SELECT 1 FROM task_submissions WHERE submission_id=?", (submission_id,)).fetchone() is not None:
-                return error_result("submission_exists", "submission_id already exists", submission_id=submission_id)
-            next_version = int(task["version"]) + 1
-            connection.execute(
-                """
-                INSERT INTO task_submissions(submission_id,task_id,attempt_id,summary,evidence_json,task_version,created_at)
-                VALUES(?,?,?,?,?,?,?)
-                """,
-                (submission_id, str(task["task_id"]), str(attempt["attempt_id"]), summary, _json(evidence), next_version, timestamp),
-            )
-            connection.execute("UPDATE task_attempts SET status='submitted',updated_at=? WHERE attempt_id=?", (timestamp, str(attempt["attempt_id"])))
-            self._advance_task(connection, str(task["task_id"]), timestamp, state="review")
-            return "TaskSubmitted", {"attempt_id": str(attempt["attempt_id"]), "submission_id": submission_id, "summary": summary, "evidence": evidence}, "task submitted for review"
-
-        return self._mutate_task(args, action="submit", requires_epoch=True, mutation=mutate)
-
-    def _review(self, args: dict[str, Any]) -> dict[str, Any]:
-        try:
-            decision = _text(args.get("decision"), field="decision", required=True, maximum=64)
-            if decision not in {"approved", "changes_requested"}:
-                return error_result("invalid_input", "decision must be approved or changes_requested")
-            summary = _text(args.get("summary"), field="summary", maximum=8192)
-            requested_submission = _text(args.get("submission_id"), field="submission_id", maximum=256)
-            requested_review = _text(args.get("review_id"), field="review_id", maximum=256)
-        except ValueError as exc:
-            return error_result("invalid_input", str(exc))
-
-        def mutate(connection: sqlite3.Connection, task: sqlite3.Row, actor_id: str, timestamp: str):
-            if str(task["state"]) != "review":
-                return error_result("invalid_task_state", "only a task in review may be reviewed")
-            submission = None
-            if requested_submission:
-                submission = connection.execute(
-                    "SELECT * FROM task_submissions WHERE submission_id=? AND task_id=?",
-                    (requested_submission, str(task["task_id"])),
-                ).fetchone()
-            else:
-                submission = connection.execute(
-                    "SELECT * FROM task_submissions WHERE task_id=? ORDER BY created_at DESC,submission_id DESC LIMIT 1",
-                    (str(task["task_id"]),),
-                ).fetchone()
-            if submission is None:
-                return error_result("submission_not_found", "no matching submission is available for review")
-            submission_attempt = connection.execute(
-                "SELECT assignee FROM task_attempts WHERE attempt_id=? AND task_id=?",
-                (str(submission["attempt_id"]), str(task["task_id"])),
-            ).fetchone()
-            if submission_attempt is None:
-                return error_result("submission_not_found", "submission attempt is unavailable for review")
-            if str(submission_attempt["assignee"]) == actor_id:
-                return error_result(
-                    "reviewer_conflict",
-                    "reviewer must differ from the submission executor",
-                    task_id=str(task["task_id"]),
-                    submission_id=str(submission["submission_id"]),
-                )
-            review_seed = f"{task['task_id']}:{args.get('command_id')}"
-            review_id = requested_review or f"review_{hashlib.sha256(review_seed.encode('utf-8')).hexdigest()[:20]}"
-            if connection.execute("SELECT 1 FROM task_reviews WHERE review_id=?", (review_id,)).fetchone() is not None:
-                return error_result("review_exists", "review_id already exists", review_id=review_id)
-            self._upsert_agent(connection, actor_id, timestamp)
-            connection.execute(
-                "INSERT INTO task_reviews(review_id,task_id,submission_id,reviewer,decision,summary,created_at) VALUES(?,?,?,?,?,?,?)",
-                (review_id, str(task["task_id"]), str(submission["submission_id"]), actor_id, decision, summary, timestamp),
-            )
-            if decision == "approved":
-                self._advance_task(connection, str(task["task_id"]), timestamp, state="done")
-            else:
-                connection.execute(
-                    "UPDATE task_attempts SET status='active',updated_at=? WHERE attempt_id=?",
-                    (timestamp, str(submission["attempt_id"])),
-                )
-                self._advance_task(connection, str(task["task_id"]), timestamp, state="active")
-            return "TaskReviewed", {"review_id": review_id, "submission_id": str(submission["submission_id"]), "decision": decision, "summary": summary}, "task review recorded"
-
-        return self._mutate_task(args, action="review", requires_epoch=False, mutation=mutate)
-
-    def _cancel(self, args: dict[str, Any]) -> dict[str, Any]:
-        try:
-            reason = _text(args.get("reason"), field="reason", maximum=8192)
-        except ValueError as exc:
-            return error_result("invalid_input", str(exc))
-
-        def mutate(connection: sqlite3.Connection, task: sqlite3.Row, _actor_id: str, timestamp: str):
-            state = str(task["state"])
-            if state in {"done", "cancelled"}:
-                return error_result("invalid_task_state", f"cannot cancel a {state} task")
-            attempt = self._current_attempt(connection, task) if task["current_attempt_id"] else None
-            if isinstance(attempt, sqlite3.Row) and str(attempt["status"]) in {"offered", "active"}:
-                connection.execute("UPDATE task_attempts SET status='superseded',updated_at=? WHERE attempt_id=?", (timestamp, str(attempt["attempt_id"])))
-            self._advance_task(connection, str(task["task_id"]), timestamp, state="cancelled")
-            return "TaskCancelled", {"reason": reason or None}, "task cancelled"
-
-        return self._mutate_task(args, action="cancel", requires_epoch=False, mutation=mutate)
-
-    def _upsert_agent(self, connection: sqlite3.Connection, agent_id: str, timestamp: str) -> None:
-        connection.execute(
-            """
-            INSERT INTO task_agents(agent_id,created_at,updated_at) VALUES(?,?,?)
-            ON CONFLICT(agent_id) DO UPDATE SET updated_at=excluded.updated_at
-            """,
-            (agent_id, timestamp, timestamp),
-        )
-
-    def _upsert_node(
-        self,
-        connection: sqlite3.Connection,
-        *,
-        node_type: str,
-        node_key: str,
-        name: str,
-        metadata: dict[str, object],
-        timestamp: str,
-    ) -> str:
-        node_id = _node_id(node_type, node_key)
-        connection.execute(
-            """
-            INSERT INTO task_graph_nodes(node_id,node_type,node_key,name,metadata_json,created_at,updated_at)
-            VALUES(?,?,?,?,?,?,?)
-            ON CONFLICT(node_id) DO UPDATE SET name=excluded.name,metadata_json=excluded.metadata_json,updated_at=excluded.updated_at
-            """,
-            (node_id, node_type, node_key, name, _json(metadata), timestamp, timestamp),
-        )
-        return node_id
-
-    def _upsert_edge(
-        self,
-        connection: sqlite3.Connection,
-        *,
-        source_node_id: str,
-        target_node_id: str,
-        relation_type: str,
-        timestamp: str,
-    ) -> None:
-        connection.execute(
-            """
-            INSERT INTO task_graph_edges(source_node_id,target_node_id,relation_type,metadata_json,created_at,updated_at)
-            VALUES(?,?,?,'{}',?,?)
-            ON CONFLICT(source_node_id,target_node_id,relation_type) DO UPDATE SET updated_at=excluded.updated_at
-            """,
-            (source_node_id, target_node_id, relation_type, timestamp, timestamp),
-        )
-
-    def _project_agent_node(self, connection: sqlite3.Connection, agent_id: str, timestamp: str) -> str:
-        agent = connection.execute("SELECT * FROM task_agents WHERE agent_id=?", (agent_id,)).fetchone()
-        if agent is None:
-            self._upsert_agent(connection, agent_id, timestamp)
-            agent = connection.execute("SELECT * FROM task_agents WHERE agent_id=?", (agent_id,)).fetchone()
-        capabilities = _load_json(agent["capabilities_json"], []) if agent is not None else []
-        return self._upsert_node(
-            connection,
-            node_type="agent",
-            node_key=agent_id,
-            name=agent_id,
-            metadata={
-                "role": str(agent["role"] or "") if agent is not None else "",
-                "capabilities": capabilities if isinstance(capabilities, list) else [],
-                "owner": str(agent["owner"] or "") if agent is not None else "",
-                "status": str(agent["status"] or "available") if agent is not None else "available",
-            },
-            timestamp=timestamp,
-        )
-
-    def _refresh_task_graph(
-        self,
-        connection: sqlite3.Connection,
-        task_id: str,
-        links: dict[str, object],
-        timestamp: str,
-    ) -> None:
-        task = connection.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
-        if task is None:
-            return
-        task_node = self._upsert_node(
-            connection,
-            node_type="task",
-            node_key=task_id,
-            name=str(task["title"]),
-            metadata={
-                "title": str(task["title"]),
-                "objective": str(task["objective"]),
-                "acceptance": str(task["acceptance"]),
-                "priority": str(task["priority"]),
-                "state": str(task["state"]),
-                "version": int(task["version"]),
-                "assignment_epoch": int(task["assignment_epoch"]),
-                "current_attempt": task["current_attempt_id"],
-            },
-            timestamp=timestamp,
-        )
-        for dependency_id in links.get("depends_on") or []:
-            dependency = str(dependency_id)
-            dependency_node = self._upsert_node(
-                connection,
-                node_type="task",
-                node_key=dependency,
-                name=dependency,
-                metadata={"external": True},
-                timestamp=timestamp,
-            )
-            self._upsert_edge(
-                connection,
-                source_node_id=task_node,
-                target_node_id=dependency_node,
-                relation_type="depends_on",
-                timestamp=timestamp,
-            )
-        parent_task_id = str(links.get("parent_task_id") or "")
-        if parent_task_id:
-            parent_node = self._upsert_node(
-                connection,
-                node_type="task",
-                node_key=parent_task_id,
-                name=parent_task_id,
-                metadata={"external": True},
-                timestamp=timestamp,
-            )
-            self._upsert_edge(
-                connection,
-                source_node_id=parent_node,
-                target_node_id=task_node,
-                relation_type="parent_of",
-                timestamp=timestamp,
-            )
-        for asset_id in links.get("produced_memory") or []:
-            asset = str(asset_id)
-            asset_node = self._upsert_node(
-                connection,
-                node_type="asset",
-                node_key=asset,
-                name=asset,
-                metadata={},
-                timestamp=timestamp,
-            )
-            self._upsert_edge(
-                connection,
-                source_node_id=task_node,
-                target_node_id=asset_node,
-                relation_type="produced_memory",
-                timestamp=timestamp,
-            )
-        connection.execute(
-            "DELETE FROM task_graph_edges WHERE source_node_id=? AND relation_type='current_attempt'",
-            (task_node,),
-        )
-        attempts = connection.execute(
-            "SELECT * FROM task_attempts WHERE task_id=? ORDER BY epoch,created_at,attempt_id",
-            (task_id,),
-        ).fetchall()
-        for attempt in attempts:
-            attempt_id = str(attempt["attempt_id"])
-            assignee = str(attempt["assignee"])
-            assigned_by = str(attempt["assigned_by"])
-            assignee_node = self._project_agent_node(connection, assignee, timestamp)
-            assigned_by_node = self._project_agent_node(connection, assigned_by, timestamp)
-            attempt_node = self._upsert_node(
-                connection,
-                node_type="attempt",
-                node_key=attempt_id,
-                name=attempt_id,
-                metadata={
-                    "task_id": task_id,
-                    "epoch": int(attempt["epoch"]),
-                    "assignee": assignee,
-                    "assigned_by": assigned_by,
-                    "status": str(attempt["status"]),
-                    "created_at": str(attempt["created_at"]),
-                },
-                timestamp=timestamp,
-            )
-            if str(task["current_attempt_id"] or "") == attempt_id:
-                self._upsert_edge(
-                    connection,
-                    source_node_id=task_node,
-                    target_node_id=attempt_node,
-                    relation_type="current_attempt",
-                    timestamp=timestamp,
-                )
-            self._upsert_edge(
-                connection,
-                source_node_id=attempt_node,
-                target_node_id=assignee_node,
-                relation_type="assigned_to",
-                timestamp=timestamp,
-            )
-            self._upsert_edge(
-                connection,
-                source_node_id=attempt_node,
-                target_node_id=assigned_by_node,
-                relation_type="assigned_by",
-                timestamp=timestamp,
-            )
-        submissions = connection.execute(
-            "SELECT * FROM task_submissions WHERE task_id=? ORDER BY created_at,submission_id",
-            (task_id,),
-        ).fetchall()
-        for submission in submissions:
-            submission_id = str(submission["submission_id"])
-            attempt_node = _node_id("attempt", str(submission["attempt_id"]))
-            submission_node = self._upsert_node(
-                connection,
-                node_type="submission",
-                node_key=submission_id,
-                name=submission_id,
-                metadata={
-                    "task_id": task_id,
-                    "attempt_id": str(submission["attempt_id"]),
-                    "summary": str(submission["summary"]),
-                    "evidence": _load_json(submission["evidence_json"], []),
-                    "version": int(submission["task_version"]),
-                    "created_at": str(submission["created_at"]),
-                },
-                timestamp=timestamp,
-            )
-            self._upsert_edge(
-                connection,
-                source_node_id=attempt_node,
-                target_node_id=submission_node,
-                relation_type="has_submission",
-                timestamp=timestamp,
-            )
-        reviews = connection.execute(
-            "SELECT * FROM task_reviews WHERE task_id=? ORDER BY created_at,review_id",
-            (task_id,),
-        ).fetchall()
-        for review in reviews:
-            reviewer = str(review["reviewer"])
-            self._project_agent_node(connection, reviewer, timestamp)
-            review_id = str(review["review_id"])
-            submission_node = _node_id("submission", str(review["submission_id"]))
-            review_node = self._upsert_node(
-                connection,
-                node_type="review",
-                node_key=review_id,
-                name=review_id,
-                metadata={
-                    "task_id": task_id,
-                    "submission_id": str(review["submission_id"]),
-                    "reviewer": reviewer,
-                    "decision": str(review["decision"]),
-                    "summary": str(review["summary"]),
-                    "created_at": str(review["created_at"]),
-                },
-                timestamp=timestamp,
-            )
-            self._upsert_edge(
-                connection,
-                source_node_id=submission_node,
-                target_node_id=review_node,
-                relation_type="has_review",
-                timestamp=timestamp,
-            )
-
-    def _bundle(
-        self,
-        connection: sqlite3.Connection,
-        *,
-        task_id: object,
-        agent_id: object,
-        cursor: object,
-    ) -> dict[str, object]:
-        task_filter = _text(task_id, field="task_id", maximum=256) if task_id is not None else ""
-        agent_filter = _text(agent_id, field="agent_id", maximum=256) if agent_id is not None else ""
-        cursor_value = _integer(cursor, field="cursor", minimum=0) if cursor not in (None, "") else 0
-        clauses = ["1=1"]
-        values: list[object] = []
-        if task_filter:
-            clauses.append("t.task_id=?")
-            values.append(task_filter)
-        if agent_filter:
-            clauses.append("a.assignee=?")
-            values.append(agent_filter)
-        tasks = connection.execute(
-            f"""
-            SELECT t.*, a.assignee, a.status AS attempt_status
-            FROM tasks AS t
-            LEFT JOIN task_attempts AS a ON a.attempt_id=t.current_attempt_id
-            WHERE {' AND '.join(clauses)}
-            ORDER BY t.updated_at DESC, t.task_id
-            LIMIT ?
-            """,
-            (*values, MAX_GRAPH_NODES),
-        ).fetchall()
-        task_node_ids = [_node_id("task", str(task["task_id"])) for task in tasks]
-        selected_node_ids = set(task_node_ids)
-        if task_node_ids:
-            placeholders = ",".join("?" for _ in task_node_ids)
-            for edge in connection.execute(
-                f"SELECT * FROM task_graph_edges WHERE source_node_id IN ({placeholders}) OR target_node_id IN ({placeholders})",
-                (*task_node_ids, *task_node_ids),
-            ):
-                selected_node_ids.add(str(edge["source_node_id"]))
-                selected_node_ids.add(str(edge["target_node_id"]))
-            task_ids = [str(task["task_id"]) for task in tasks]
-            task_placeholders = ",".join("?" for _ in task_ids)
-            attempts = connection.execute(
-                f"SELECT attempt_id,assignee,assigned_by FROM task_attempts WHERE task_id IN ({task_placeholders})",
-                task_ids,
-            ).fetchall()
-            attempt_ids = [str(attempt["attempt_id"]) for attempt in attempts]
-            selected_node_ids.update(_node_id("attempt", attempt_id) for attempt_id in attempt_ids)
-            selected_node_ids.update(_node_id("agent", str(attempt["assignee"])) for attempt in attempts)
-            selected_node_ids.update(_node_id("agent", str(attempt["assigned_by"])) for attempt in attempts)
-            if attempt_ids:
-                attempt_placeholders = ",".join("?" for _ in attempt_ids)
-                submissions = connection.execute(
-                    f"SELECT submission_id FROM task_submissions WHERE attempt_id IN ({attempt_placeholders})",
-                    attempt_ids,
-                ).fetchall()
-                submission_ids = [str(submission["submission_id"]) for submission in submissions]
-                selected_node_ids.update(_node_id("submission", submission_id) for submission_id in submission_ids)
-                if submission_ids:
-                    submission_placeholders = ",".join("?" for _ in submission_ids)
-                    reviews = connection.execute(
-                        f"SELECT review_id,reviewer FROM task_reviews WHERE submission_id IN ({submission_placeholders})",
-                        submission_ids,
-                    ).fetchall()
-                    selected_node_ids.update(_node_id("review", str(review["review_id"])) for review in reviews)
-                    selected_node_ids.update(_node_id("agent", str(review["reviewer"])) for review in reviews)
-        selected = sorted(selected_node_ids)[:MAX_GRAPH_NODES]
-        nodes: list[dict[str, object]] = []
-        if selected:
-            placeholders = ",".join("?" for _ in selected)
-            for node in connection.execute(
-                f"SELECT * FROM task_graph_nodes WHERE node_id IN ({placeholders}) ORDER BY node_type,node_key", selected
-            ):
-                metadata = _load_json(node["metadata_json"], {})
-                nodes.append(
-                    {
-                        "id": str(node["node_id"]),
-                        "type": str(node["node_type"]),
-                        "key": str(node["node_key"]),
-                        "name": str(node["name"]),
-                        "metadata": metadata if isinstance(metadata, dict) else {},
-                    }
-                )
-        edges: list[dict[str, object]] = []
-        if selected:
-            placeholders = ",".join("?" for _ in selected)
-            for edge in connection.execute(
-                f"""
-                SELECT * FROM task_graph_edges
-                WHERE source_node_id IN ({placeholders}) AND target_node_id IN ({placeholders})
-                ORDER BY relation_type,source_node_id,target_node_id
-                LIMIT ?
-                """,
-                (*selected, *selected, MAX_GRAPH_EDGES),
-            ):
-                metadata = _load_json(edge["metadata_json"], {})
-                edges.append(
-                    {
-                        "source": str(edge["source_node_id"]),
-                        "target": str(edge["target_node_id"]),
-                        "relation_type": str(edge["relation_type"]),
-                        "metadata": metadata if isinstance(metadata, dict) else {},
-                    }
-                )
-        roots = {"current": [], "assigned": [], "review": [], "attention": []}
-        for task in tasks:
-            node_id = _node_id("task", str(task["task_id"]))
-            state = str(task["state"])
-            assignee = str(task["assignee"] or "")
-            attempt_status = str(task["attempt_status"] or "")
-            if state == "active" and (not agent_filter or assignee == agent_filter):
-                roots["current"].append(node_id)
-            if assignee and attempt_status in {"offered", "active"} and (not agent_filter or assignee == agent_filter):
-                roots["assigned"].append(node_id)
-            if state == "review":
-                roots["review"].append(node_id)
-            if state in {"open", "blocked"}:
-                roots["attention"].append(node_id)
-        latest = connection.execute("SELECT COALESCE(MAX(event_seq), 0) AS latest FROM task_events").fetchone()
-        return {
-            "version": TASK_SYNC_VERSION,
-            "roots": roots,
-            "nodes": nodes,
-            "edges": edges,
-            "cursor": str(max(cursor_value, int(latest["latest"] if latest else 0))),
-        }
-
-    def bundle(self, *, task_id: object = None, agent_id: object = None, cursor: object = None) -> dict[str, Any]:
-        try:
-            with self._connect() as connection:
-                return ok_result("task graph bundle read", bundle=self._bundle(connection, task_id=task_id, agent_id=agent_id, cursor=cursor))
-        except (sqlite3.Error, ValueError) as exc:
-            return error_result("task_store_unavailable", str(exc))
-
-    def history(self, *, task_id: object = None, cursor: object = None, max_items: object = None) -> dict[str, Any]:
-        try:
-            task_filter = _text(task_id, field="task_id", maximum=256) if task_id is not None else ""
-            after = _integer(cursor, field="cursor", minimum=0) if cursor not in (None, "") else 0
-            limit = _integer(max_items, field="max_items", minimum=1) if max_items is not None else 50
-            limit = min(limit, MAX_HISTORY_EVENTS)
-            clauses = ["event_seq>?"]
-            values: list[object] = [after]
-            if task_filter:
-                clauses.append("task_id=?")
-                values.append(task_filter)
-            with self._connect() as connection:
-                rows = connection.execute(
-                    f"SELECT * FROM task_events WHERE {' AND '.join(clauses)} ORDER BY event_seq LIMIT ?",
-                    (*values, limit),
-                ).fetchall()
-            events = [
-                {
-                    "seq": int(row["event_seq"]),
-                    "command_id": str(row["command_id"]),
-                    "task_id": str(row["task_id"]),
-                    "event_type": str(row["event_type"]),
-                    "actor_id": str(row["actor_id"]),
-                    "expected_version": int(row["expected_version"]),
-                    "expected_assignment_epoch": row["expected_assignment_epoch"],
-                    "payload": _load_json(row["payload_json"], {}),
-                    "occurred_at": str(row["occurred_at"]),
-                }
-                for row in rows
-            ]
-            next_cursor = str(events[-1]["seq"] if events else after)
-            return ok_result("task history read", events=events, cursor=next_cursor)
-        except (sqlite3.Error, ValueError) as exc:
-            return error_result("task_store_unavailable", str(exc))
-
-
-def _task_sync_memory_event(config: MemoryConfig, task_event: dict[str, Any]) -> dict[str, Any]:
-    """Build one deterministic outer event for a task command."""
-
-    from .memory_sync_protocol import build_memory_event
-
-    task_id = str(task_event.get("task_id") or "")
-    command_id = str(task_event.get("command_id") or "")
-    actor_id = str(task_event.get("actor_id") or "")
-    event = build_memory_event(
-        {
-            "operation": "task_sync",
-            "scope": "project_shared",
-            "task_id": task_id,
-            "agent_id": actor_id,
-            "content_markdown": "",
-            "task_event": task_event,
-        },
-        {"ok": True, "task_id": task_id},
-        repo_root=config.repo_root,
-    )
-    event["event_id"] = str(uuid5(NAMESPACE_URL, f"memory-task-sync:{config.repo_root.resolve()}:{command_id}"))
-    return event
-
-
-def _authorize_hub_task_event(config: MemoryConfig, task_event: dict[str, Any]) -> dict[str, Any]:
-    """Send a coordinated task command to the Hub before local commit."""
-
-    shared = getattr(config, "shared_memory", None)
-    scopes = set(getattr(shared, "sync_scopes", ()) or ())
-    if "project_shared" not in scopes:
-        return error_result(
-            "task_authority_scope_disabled",
-            "Hub task authority requires project_shared in shared_memory.sync_scopes",
-        )
-    event = _task_sync_memory_event(config, task_event)
-    timeout_seconds = float(
-        getattr(shared, "task_command_timeout_seconds", getattr(shared, "upload_timeout_seconds", 5.0))
-    )
-    timeout_seconds = max(0.1, timeout_seconds)
-    deadline = time.monotonic() + timeout_seconds
-    status = 0
-    response: dict[str, Any] = {"error": "remote_unavailable"}
-    attempts = 0
-    while attempts < MAX_TASK_AUTHORITY_ATTEMPTS:
-        remaining = deadline - time.monotonic()
-        if attempts and remaining <= 0:
-            break
-        attempts += 1
-        status, response = MemoryHubClient(shared).post(
-            f"/v1/projects/{shared.project_id}/events/batch",
-            {"events": [event]},
-            max(0.1, min(timeout_seconds, remaining)),
-        )
-        if status not in IMMEDIATE_TASK_AUTHORITY_RETRY_STATUSES:
-            break
-    event_id = str(event["event_id"])
-    if status == 200:
-        acknowledged = {str(value) for value in list(response.get("accepted", [])) + list(response.get("duplicates", []))}
-        if event_id in acknowledged:
-            shared_sync: dict[str, object] = {
-                "enabled": True,
-                "mode": "hub_authoritative",
-                "queued": False,
-                "remote_event_id": event_id,
-            }
-            if attempts > 1:
-                shared_sync["authority_attempts"] = attempts
-                shared_sync["recovered_after_retry"] = True
-            return ok_result(
-                "Hub accepted task command",
-                shared_sync=shared_sync,
-            )
-        for rejected in response.get("rejected", []):
-            if isinstance(rejected, dict) and str(rejected.get("event_id") or "") == event_id:
-                return error_result(
-                    str(rejected.get("code") or "task_authority_rejected"),
-                    str(rejected.get("message") or "Hub rejected task command"),
-                    remote_authority=True,
-                )
-        return error_result(
-            "task_authority_unavailable",
-            "Hub did not acknowledge the task command",
-            remote_status=status,
-            authority_attempts=attempts,
-        )
-    message = str(response.get("error") or f"Hub task command failed with HTTP {status}")
-    if status in RETRYABLE_TASK_AUTHORITY_STATUSES:
-        details: dict[str, object] = {
-            "remote_status": status,
-            "retryable": True,
-            "authority_attempts": attempts,
-        }
-        if response.get("retry_after_seconds") is not None:
-            details["retry_after_seconds"] = response["retry_after_seconds"]
-        return error_result(
-            "task_authority_unavailable",
-            message,
-            **details,
-        )
-    return error_result(
-        "task_authority_rejected",
-        message,
-        remote_status=status,
-        remote_authority=True,
-        authority_attempts=attempts,
-    )
-
-
-def _valid_hub_event(event: Any) -> bool:
-    if not isinstance(event, dict):
-        return False
-    strings = ("command_id", "task_id", "event_type", "actor_id", "occurred_at")
-    integers = ("seq", "expected_version", "task_version", "assignment_epoch")
-    return (all(isinstance(event.get(key), str) and event[key] for key in strings)
-            and all(type(event.get(key)) is int and event[key] >= 0 for key in integers)
-            and (event.get("expected_assignment_epoch") is None or type(event["expected_assignment_epoch"]) is int and event["expected_assignment_epoch"] >= 0)
-            and isinstance(event.get("payload"), dict))
-
-
-def _valid_hub_task(task: Any) -> bool:
-    if not isinstance(task, dict):
-        return False
-    strings = ("task_id", "title", "objective", "acceptance", "priority")
-    attempt = task.get("current_attempt")
-    valid_attempt = attempt is None or (isinstance(attempt, dict)
-        and all(isinstance(attempt.get(key), str) and attempt[key] for key in ("attempt_id", "assignee", "status"))
-        and type(attempt.get("epoch")) is int and attempt["epoch"] >= 1)
-    return (all(isinstance(task.get(key), str) for key in strings)
-            and task.get("state") in TASK_STATES and type(task.get("version")) is int and task["version"] >= 1
-            and type(task.get("assignment_epoch")) is int and task["assignment_epoch"] >= 0 and valid_attempt)
-
-
-def _read_hub_tasks(shared: Any, args: dict[str, Any], action: str) -> dict[str, Any]:
-    """共享任务读取只认 Hub；连接失败不得用本地空库伪装成功。"""
-
-    if not getattr(shared, "active", False) or not getattr(shared, "read_enabled", True):
-        return error_result("task_authority_unavailable", "Hub task reads require active shared memory with reads enabled", source="remote")
-    try:
-        params: dict[str, Any] = {}
-        task_id = _text(args.get("task_id"), field="task_id", maximum=256)
-        if task_id:
-            params["task_id"] = task_id
-        cursor = _integer(args["cursor"], field="cursor") if args.get("cursor") not in (None, "") else 0
-        if action == "sync":
-            agent_id = _text(args.get("agent_id"), field="agent_id", maximum=256)
-            if agent_id:
-                params["agent_id"] = agent_id
-            endpoint = "task-graph"
-        else:
-            limit = _integer(args["max_items"], field="max_items", minimum=1) if args.get("max_items") is not None else 50
-            params.update(cursor=cursor, max_items=min(limit, MAX_HISTORY_EVENTS))
-            endpoint = "task-events"
-    except ValueError as exc:
-        return error_result("invalid_input", str(exc))
-    timeout = max(0.1, float(getattr(shared, "active_query_timeout_ms", 1200)) / 1000)
-    status, response = MemoryHubClient(shared).get(
-        f"/v1/projects/{quote(shared.project_id, safe='')}/{endpoint}", params, timeout,
-    )
-    if status != 200:
-        return error_result(
-            "task_authority_unavailable" if status in RETRYABLE_TASK_AUTHORITY_STATUSES else "task_authority_rejected",
-            "Hub task read failed; local task state was not substituted",
-            source="remote", remote_status=status, retryable=status in RETRYABLE_TASK_AUTHORITY_STATUSES,
-        )
-    # 仅校验读取合同，不导入投影或推进任何任务生命周期。
-    valid = isinstance(response, dict) and isinstance(response.get("cursor"), str) and response["cursor"].isdigit()
-    if action == "sync":
-        valid = valid and response.get("version") == TASK_SYNC_VERSION and isinstance(response.get("roots"), dict)
-        valid = valid and all(isinstance(response.get(key), list) for key in ("nodes", "edges"))
-        valid = valid and all(isinstance(response["roots"].get(key), list) for key in ("current", "assigned", "review", "attention"))
-        valid = valid and all(isinstance(node, dict) and all(isinstance(node.get(key), str) for key in ("id", "type", "key"))
-                              and isinstance(node.get("metadata"), dict) for node in response.get("nodes", []))
-        valid = valid and all(isinstance(edge, dict) for edge in response.get("edges", []))
-    else:
-        valid = valid and isinstance(response.get("events"), list) and all(_valid_hub_event(event) for event in response.get("events", []))
-    if not valid:
-        return error_result("task_authority_invalid_response", "Hub task read returned an invalid Graph Bundle or Timeline", source="remote", remote_status=status)
-    provenance = {"source": "remote", "authoritative": True, "remote_status": status}
-    if action == "sync" and task_id:
-        # Graph 引用节点可能只有 external 占位；定向读取用正式任务目录补齐本体版本。
-        catalog_cursor = None
-        matches = []
-        for _page in range(50):
-            query = {"state": "all", "q": task_id, "limit": 100}
-            if catalog_cursor is not None:
-                query["cursor"] = catalog_cursor
-            catalog_status, catalog = MemoryHubClient(shared).get(
-                f"/v1/projects/{quote(shared.project_id, safe='')}/tasks", query, timeout,
-            )
-            if catalog_status != 200 or not isinstance(catalog.get("items"), list):
-                return error_result("task_authority_unavailable", "Hub task catalog could not confirm the requested task", source="remote", remote_status=catalog_status)
-            matches = [item for item in catalog["items"] if isinstance(item, dict) and item.get("task_id") == task_id]
-            if matches:
-                break
-            next_cursor = catalog.get("next_cursor")
-            if not next_cursor:
-                return error_result("task_not_found", "Requested task was not found in the Hub catalog", source="remote")
-            if not isinstance(next_cursor, str) or next_cursor == catalog_cursor:
-                return error_result("task_authority_invalid_response", "Hub task catalog cursor did not advance", source="remote")
-            catalog_cursor = next_cursor
-        if len(matches) != 1:
-            return error_result("task_read_limit", "Hub task catalog exceeded the bounded exact task search", source="remote")
-        task = matches[0]
-        if not _valid_hub_task(task):
-            return error_result("task_authority_invalid_response", "Hub task catalog omitted lifecycle fields", source="remote")
-        for node in response["nodes"]:
-            if node.get("type") == "task" and node.get("key") == task_id:
-                node["name"] = task["title"]
-                node["metadata"] = {key: task[key] for key in ("title", "objective", "acceptance", "priority", "state", "version", "assignment_epoch")}
-                node["metadata"]["current_attempt"] = (task.get("current_attempt") or {}).get("attempt_id")
-        provenance["task_snapshot"] = task
-    if action == "sync":
-        return ok_result("Hub task graph bundle read", bundle=response, **provenance)
-    return ok_result("Hub task history read", events=response["events"], cursor=response["cursor"], **provenance)
-
-
-def _matches_accepted_hub_command(args: dict[str, Any], event: dict[str, Any], action: str) -> bool:
-    """对已接受事件比较原命令意图，不把服务器派生 ID 当成调用方必填参数。"""
-
-    if args.get("action", "sync").strip().lower() != action:
-        return False
-    requested_task_id = _text(args.get("task_id"), field="task_id", maximum=256)
-    if action == "create" and not requested_task_id:
-        command_id = _text(args.get("command_id"), field="command_id", required=True, maximum=256)
-        requested_task_id = "task_" + hashlib.sha256(command_id.encode("utf-8")).hexdigest()[:20]
-    actor_id = _text(args.get("actor_id") or args.get("agent_id"), field="actor_id", required=True, maximum=256)
-    if requested_task_id != event["task_id"] or actor_id != event["actor_id"]:
-        return False
-    if args.get("expected_version") != event["expected_version"]:
-        return False
-    if action != "create" and args.get("expected_assignment_epoch") != event.get("expected_assignment_epoch"):
-        return False
-    defaults = {
-        "create": {"title": "", "objective": "", "acceptance": "", "priority": "normal", "depends_on": [], "produced_memory": [], "parent_task_id": None},
-        "assign": {"assignee": ""}, "reassign": {"assignee": ""}, "claim": {}, "decline": {},
-        "report": {"summary": ""}, "block": {"reason": ""}, "resume": {},
-        "submit": {"summary": "", "evidence": []}, "review": {"decision": "", "summary": ""}, "cancel": {"reason": ""},
-    }
-    payload = event["payload"]
-    for key, default in defaults[action].items():
-        value = args.get(key, default)
-        if key == "priority":
-            value = value or "normal"
-        if isinstance(default, list):
-            value = _string_list(value, field=key)
-        else:
-            value = _text(value, field=key, maximum=8192)
-            if key == "parent_task_id" or (key == "reason" and action == "cancel"):
-                value = value or None
-        if value != payload.get(key, default):
-            return False
-    for key in ("attempt_id", "submission_id", "review_id"):
-        requested_id = _text(args.get(key), field=key, maximum=256)
-        if requested_id and requested_id != payload.get(key):
-            return False
-    return True
-
-
-def _hydrate_hub_task(store: TaskSyncStore, shared: Any, args: dict[str, Any]) -> dict[str, Any] | None:
-    """只把指定任务已被 Hub 接受的事件补入本地派生投影，不发送新建/改派命令。"""
-
-    task_id = _text(args.get("task_id"), field="task_id", maximum=256)
-    if not task_id and str(args.get("action")).strip().lower() == "create":
-        command_id = _text(args.get("command_id"), field="command_id", required=True, maximum=256)
-        task_id = "task_" + hashlib.sha256(command_id.encode("utf-8")).hexdigest()[:20]
-    if not task_id:
-        return error_result("invalid_input", "task_id is required")
-    expected = _integer(args.get("expected_version"), field="expected_version")
-    requested_command_id = _text(args.get("command_id"), field="command_id", required=True, maximum=256)
-    with store._connect() as connection:
-        row = connection.execute("SELECT version FROM tasks WHERE task_id=?", (task_id,)).fetchone()
-        local_version = int(row["version"]) if row is not None else 0
-    if local_version == expected:
+def _optional_text(args: dict[str, Any], key: str) -> str | None:
+    value = args.get(key)
+    if value is None:
         return None
-    actions = {"TaskCreated": "create", "TaskAssigned": "assign", "TaskReassigned": "reassign",
-               "TaskClaimed": "claim", "TaskDeclined": "decline", "TaskReported": "report",
-               "TaskBlocked": "block", "TaskResumed": "resume", "TaskSubmitted": "submit",
-               "TaskReviewed": "review", "TaskCancelled": "cancel"}
-    cursor = 0
-    accepted_retry = None
-    for _page in range(50):
-        history = _read_hub_tasks(shared, {"task_id": task_id, "cursor": cursor, "max_items": MAX_HISTORY_EVENTS}, "history")
-        if not history.get("ok"):
-            return history
-        events = history["events"]
-        if not events:
-            if accepted_retry is not None:
-                with store._connect() as connection:
-                    connection.execute(
-                        "INSERT INTO task_commands(command_id,command_hash,result_json,created_at) VALUES(?,?,?,?) "
-                        "ON CONFLICT(command_id) DO UPDATE SET command_hash=excluded.command_hash,result_json=excluded.result_json",
-                        (requested_command_id, _command_hash(args), _json(accepted_retry), _now()),
-                    )
-            return accepted_retry
-        for event in events:
-            if event.get("task_id") != task_id or event.get("event_type") not in actions:
-                return error_result("task_projection_conflict", "Hub Timeline contains an unsupported or unrelated task event")
-            version = event.get("task_version")
-            if type(version) is not int or version < 1:
-                return error_result("task_projection_conflict", "Hub Timeline omitted task_version")
-            if event.get("command_id") == requested_command_id:
-                if not _matches_accepted_hub_command(args, event, actions[event["event_type"]]):
-                    return error_result("command_id_conflict", "command_id was already accepted by Hub with different input")
-                accepted_retry = ok_result(
-                    "Hub already accepted task command", action=actions[event["event_type"]], task_id=task_id,
-                    version=version, assignment_epoch=event["assignment_epoch"], idempotent=True,
-                    source="remote", shared_sync={"enabled": True, "mode": "hub_authoritative", "queued": False},
-                )
-            if version <= local_version:
-                continue
-            if event.get("expected_version") != local_version or version != local_version + 1:
-                return error_result("task_projection_conflict", "Hub Timeline is not contiguous with the local task projection")
-            command = {**event["payload"], "_hub_projection": True, "action": actions[event["event_type"]], "task_id": task_id,
-                       "command_id": event["command_id"], "actor_id": event["actor_id"],
-                       "expected_version": event["expected_version"],
-                       "expected_assignment_epoch": event.get("expected_assignment_epoch")}
-            imported = store.execute(command)
-            if not imported.get("ok") or imported.get("version") != version or imported.get("assignment_epoch") != event.get("assignment_epoch"):
-                return error_result("task_projection_conflict", "Could not replay the accepted Hub event into the local task projection")
-            local_version = version
-        next_cursor = int(history["cursor"])
-        if next_cursor <= cursor:
-            return error_result("task_projection_conflict", "Hub Timeline cursor did not advance")
-        cursor = next_cursor
-    return error_result("task_projection_limit", "Hub Timeline exceeded the bounded import; no new task command was sent")
+    if not isinstance(value, str) or not value.strip() or len(value) > 256:
+        raise ValueError(f"{key} must be a non-empty string of at most 256 characters")
+    return value.strip()
+
+
+def _read(shared: Any, action: str, args: dict[str, Any]) -> dict[str, Any]:
+    if action == "task":
+        task_id = _optional_text(args, "task_id")
+        if not task_id:
+            return error_result("invalid_input", "task_id is required")
+        status, body = MemoryHubClient(shared).get(_project_path(shared, "/tasks/" + quote(task_id, safe="")), {}, _timeout(shared))
+        if status != 200:
+            return _remote_error(status, body, "task_read_failed")
+        if not isinstance(body.get("task"), dict):
+            return error_result("invalid_hub_response", "Hub task detail response is invalid")
+        return ok_result("Hub task loaded", task=body["task"])
+    params: dict[str, Any] = {"max_items": _bounded_int(args, "max_items", 50, 1, 200), "cursor": _bounded_int(args, "cursor", 0, 0, 2**63 - 1)}
+    task_id = _optional_text(args, "task_id")
+    if task_id:
+        params["task_id"] = task_id
+    status, body = MemoryHubClient(shared).get(_project_path(shared, "/task-events"), params, _timeout(shared))
+    if status != 200:
+        return _remote_error(status, body, "task_read_failed")
+    if not isinstance(body.get("events"), list) or not isinstance(body.get("cursor"), str) or not body["cursor"].isdigit():
+        return error_result("invalid_hub_response", "Hub task history response is invalid")
+    return ok_result("Hub task history loaded", events=body["events"], cursor=body["cursor"])
+
+
+def _command(config: MemoryConfig, shared: Any, action: str, args: dict[str, Any]) -> dict[str, Any]:
+    body = _command_body(action, args)
+    if not isinstance(body.get("command_id"), str) or not body["command_id"].strip():
+        return error_result("invalid_input", "command_id is required for task commands")
+    status, response = _post_command(shared, body)
+    if status == 200:
+        return ok_result("Hub accepted task command", **{k: v for k, v in response.items() if k not in {"ok", "message"}},
+                         status="accepted", authoritative=True)
+    if status in RETRYABLE_STATUSES and action in OFFLINE_ACTIONS:
+        if not body.get("task_id"):
+            return _remote_error(status, response, "task_authority_unavailable")
+        try:
+            TaskCommandOutbox(config.repo_root).enqueue(body)
+        except (OSError, sqlite3.Error) as exc:
+            return error_result("task_outbox_unavailable", f"Hub unavailable and the local command queue is not writable: {exc}")
+        return ok_result("Hub unavailable; command queued and will be resent with the same command_id",
+                         command_id=body["command_id"], task_id=body["task_id"], action=action,
+                         status="queued", authoritative=False, remote_status=status)
+    return _remote_error(status, response, "task_command_rejected")
 
 
 def task_sync(config: MemoryConfig, args: dict[str, Any]) -> dict[str, Any]:
-    """Execute a task command locally, with Hub authority in shared mode."""
-
-    try:
-        action = str(args.get("action") or "sync").strip().lower()
-        shared = getattr(config, "shared_memory", None)
-        if action in {"sync", "history"} and bool(getattr(shared, "enabled", False)):
-            return _read_hub_tasks(shared, args, action)
-        authorize = None
-        if action in TASK_MUTATION_ACTIONS and bool(getattr(shared, "enabled", False)):
-            if not bool(getattr(shared, "active", False)):
-                if action not in OFFLINE_TASK_ACTIONS:
-                    return error_result(
-                        "task_authority_unavailable",
-                        f"{action} requires an active Hub when shared task authority is enabled",
-                        action=action,
-                        offline_allowed_actions=sorted(OFFLINE_TASK_ACTIONS),
-                    )
-            else:
-                def authorize(event: dict[str, Any]) -> dict[str, Any]:
-                    authority = _authorize_hub_task_event(config, event)
-                    if authority.get("ok") or action not in OFFLINE_TASK_ACTIONS or not authority.get("retryable"):
-                        return authority
-                    return ok_result(
-                        "Hub unavailable; task command recorded for later sync",
-                        shared_sync={
-                            "enabled": True,
-                            "mode": "offline_pending",
-                            "queued": False,
-                            "remote_status": authority.get("remote_status", 0),
-                        },
-                    )
-        if action in TASK_MUTATION_ACTIONS and bool(getattr(shared, "active", False)):
-            store = TaskSyncStore(_store_path(config))
-            with store._connect() as connection:
-                cached = connection.execute("SELECT command_hash FROM task_commands WHERE command_id=?", (_text(args.get("command_id"), field="command_id", required=True, maximum=256),)).fetchone()
-            if cached is not None and not str(cached["command_hash"]).startswith("hub_projection:"):
-                return store.execute(args)
-            hydration_error = _hydrate_hub_task(store, shared, args)
-            if hydration_error is not None:
-                return hydration_error
-        return TaskSyncStore(_store_path(config), authorize=authorize).execute(args)
-    except ValueError as exc:
-        return error_result("invalid_input", str(exc))
-    except (OSError, sqlite3.Error) as exc:
-        return error_result("task_store_unavailable", str(exc))
-
-
-def enqueue_task_sync_event(config: MemoryConfig, result: dict[str, Any]) -> dict[str, Any]:
-    """Queue a completed local task event for Hub upload without blocking the caller."""
-
-    if not result.get("ok") or not isinstance(result.get("task_event"), dict):
-        return result
-    existing_sync = result.get("shared_sync")
-    if isinstance(existing_sync, dict) and existing_sync.get("mode") == "hub_authoritative":
-        return result
+    """转发任务操作到 Hub；Hub 未配置时返回 ``task_hub_required``。"""
+    action = str(args.get("action") or "sync").strip().lower()
+    if action not in TASK_COMMAND_ACTIONS | READ_ACTIONS | OUTBOX_ACTIONS:
+        return error_result("invalid_input", f"unsupported action {action}")
+    if "actor_id" in args:
+        return error_result("actor_not_accepted", "actor identity is derived by the Hub from this device credential")
     shared = getattr(config, "shared_memory", None)
-    if not getattr(shared, "enabled", False):
-        return result
-    task_event = dict(result["task_event"])
+    outbox = TaskCommandOutbox(config.repo_root)
     try:
-        from .memory_events import get_current_user
-        from .memory_sync_store import SyncStore
+        if action == "outbox":
+            return _attach_failures(ok_result("Task command queue loaded", entries=outbox.entries()), outbox)
+        if action == "outbox_dismiss":
+            ids = args.get("command_ids") or ([args["command_id"]] if args.get("command_id") else [])
+            if not isinstance(ids, list) or not ids or not all(isinstance(item, str) and item for item in ids):
+                return error_result("invalid_input", "command_ids must be a non-empty list of failed command ids")
+            return _attach_failures(ok_result("Task command queue updated", **outbox.dismiss(ids)), outbox)
+        scopes = set(getattr(shared, "sync_scopes", ()) or ())
+        if not bool(getattr(shared, "enabled", False)) or "project_shared" not in scopes:
+            return error_result("task_hub_required", "task commands require an enabled Hub with project_shared sync")
+        if not bool(getattr(shared, "active", False)):
+            return error_result("hub_not_ready", "Hub enrollment or connection configuration is incomplete; retry later")
+        device, failure = _ensure_device(shared)
+        if failure is not None:
+            # 只有此前确认过支持任务命令的 Hub 才允许离线排队，避免把命令攒给尚未升级的 Hub。
+            confirmed = outbox.get_state(CONFIRMED_STATE_KEY) == _token_key(shared)
+            if action in OFFLINE_ACTIONS and failure.get("retryable") and confirmed:
+                result = _command(config, shared, action, args)
+            else:
+                return _attach_failures(failure, outbox)
+        else:
+            outbox.put_state(CONFIRMED_STATE_KEY, _token_key(shared))
+            migrate_legacy_task_data(config)
+            outbox.flush(shared)
+            result = _sync(shared, device, args) if action == "sync" else (
+                _read(shared, action, args) if action in READ_ACTIONS else _command(config, shared, action, args))
+    except (OSError, sqlite3.Error) as exc:
+        return error_result("task_outbox_unavailable", str(exc))
+    except (TypeError, ValueError) as exc:
+        return error_result("invalid_input", str(exc))
+    return _attach_failures(result, outbox)
 
-        task_id = str(task_event.get("task_id") or "")
-        event = _task_sync_memory_event(config, task_event)
-        if event["scope"] not in getattr(shared, "sync_scopes", frozenset()):
-            return result
-        queued = SyncStore(config.repo_root / ".ai-memory" / "shared-sync.db").enqueue(
-            event["event_id"], event, event["content_hash"], get_current_user(config.repo_root)
-        )
-        if queued:
-            from .memory_sync_worker import wake_sync_worker
 
-            wake_sync_worker(config.repo_root)
-        sync_status = dict(existing_sync) if isinstance(existing_sync, dict) else {}
-        sync_status.update({"enabled": True, "queued": queued})
-        result["shared_sync"] = sync_status
-    except Exception:
-        sync_status = dict(existing_sync) if isinstance(existing_sync, dict) else {}
-        sync_status.update({"enabled": True, "queued": False})
-        result["shared_sync"] = sync_status
+def _attach_failures(result: dict[str, Any], outbox: TaskCommandOutbox) -> dict[str, Any]:
+    try:
+        failures = outbox.failures()
+    except (OSError, sqlite3.Error):
+        return result
+    if failures:
+        result["outbox_failures"] = failures
     return result
 
 
-__all__ = ["TASK_SYNC_VERSION", "TaskSyncStore", "enqueue_task_sync_event", "task_sync"]
+def flush_task_outbox(config: MemoryConfig, *, budget_seconds: float = 5.0) -> dict[str, int]:
+    """后台同步周期调用：Hub 声明支持任务命令后，完成一次性旧数据转换并补发待发命令。"""
+    shared = getattr(config, "shared_memory", None)
+    if not bool(getattr(shared, "active", False)) or not hub_supports_task_commands(config):
+        return {"sent": 0, "retry": 0, "failed": 0}
+    migrate_legacy_task_data(config)
+    return TaskCommandOutbox(config.repo_root).flush(shared, budget_seconds=budget_seconds)
+
+
+def task_outbox_failure_count(repo_root: Path) -> int:
+    try:
+        return TaskCommandOutbox(repo_root).failure_count()
+    except (OSError, sqlite3.Error):
+        return 0
+
+
+__all__ = [
+    "TaskCommandOutbox",
+    "flush_task_outbox",
+    "migrate_legacy_task_data",
+    "task_outbox_failure_count",
+    "task_sync",
+]

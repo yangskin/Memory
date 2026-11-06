@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 from memory_hub.api.routes_enrollment import router
 from memory_hub.auth.rate_limit import TokenRateLimiter
 from memory_hub.auth.tokens import create_token
-from memory_hub.db.models import AccessToken, DeviceEnrollment
+from memory_hub.db.models import AccessToken, DeviceEnrollment, TokenDevice
 
 
 @pytest.fixture
@@ -24,6 +24,7 @@ def service():
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     try:
         AccessToken.__table__.create(engine)
+        TokenDevice.__table__.create(engine)
         DeviceEnrollment.__table__.create(engine)
         app = FastAPI()
         app.state.session_factory = sessionmaker(engine, expire_on_commit=False)

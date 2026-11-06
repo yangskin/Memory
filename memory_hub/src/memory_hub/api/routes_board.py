@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from memory_hub.api.dependencies import effective_user_id, require_principal
 from memory_hub.auth.permissions import Principal, author_auth_id
 from sqlalchemy import select
-from memory_hub.db.models import BoardPost, DeviceEnrollment, AccessToken
+from memory_hub.db.models import BoardPost, TokenDevice, AccessToken
 from memory_hub.db.repositories import board_post_by_id, encode_board_cursor, list_board_posts
 from memory_hub.domain.board import BoardPostRequest, BoardQueryRequest, BoardReplyRequest, BoardResolveRequest
 from memory_hub.services.secret_scan import contains_secret
@@ -92,14 +92,15 @@ def device_identities(project_id: str, request: Request, device_name: str | None
         raise HTTPException(422, "invalid device name")
     now = datetime.now(UTC)
     with request.app.state.session_factory() as session:
-        query = select(DeviceEnrollment, AccessToken).join(AccessToken, DeviceEnrollment.token_id == AccessToken.token_id).where(
-            DeviceEnrollment.project_id == project_id, DeviceEnrollment.status == "approved",
+        # 只信任设备绑定（计算机名）；注册记录里的名字来自主机名，可能与计算机名不同。
+        query = select(TokenDevice, AccessToken).join(AccessToken, TokenDevice.token_id == AccessToken.token_id).where(
+            TokenDevice.project_id == project_id,
             AccessToken.project_id == project_id, AccessToken.revoked_at.is_(None),
             AccessToken.expires_at.is_(None) | (AccessToken.expires_at > now))
-        query = query.where(DeviceEnrollment.device_name == device_name) if device_name is not None else query.where(AccessToken.token_id == principal.token_id)
+        query = query.where(TokenDevice.device_name == device_name) if device_name is not None else query.where(AccessToken.token_id == principal.token_id)
         rows = session.execute(query.limit(2)).all()
-        return {"ok": True, "identities": [{"device_name": enrollment.device_name,
-            "author_user_id": token.user_id, "author_auth_id": auth_id(project_id, token.token_id)} for enrollment, token in rows]}
+        return {"ok": True, "identities": [{"device_name": binding.device_name,
+            "author_user_id": token.user_id, "author_auth_id": auth_id(project_id, token.token_id)} for binding, token in rows]}
 
 
 @router.post("/v1/projects/{project_id}/board/query")

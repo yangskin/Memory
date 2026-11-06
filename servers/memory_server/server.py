@@ -6,7 +6,7 @@ Exposes 5 default MCP tools:
     2. memory_write   — structured memory records, observations, checkpoints
     3. memory_board_read  — dedicated Project Board queries
     4. memory_board_write — dedicated Project Board post/reply/resolve actions
-    5. memory_task_sync — Graph Agent task lifecycle and Graph Bundle reads
+    5. memory_task_sync — Hub task commands, device task list, task detail and timeline
 
 Admin/sync/rebuild/diagnose/lineage/LLM-enhance flows are CLI/internal only.
 

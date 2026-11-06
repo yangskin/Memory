@@ -28,8 +28,9 @@ def transport(calls):
             return {"status": "approved", "enrollment_id": payload["enrollment_id"],
                     "device_name": payload["device_name"], "pairing_code": payload["poll_secret_hash"][:12].upper()}
         if path == "/connection":
-            return {"ok": True, "project_id": "project", "user_id": "owner",
-                    "capabilities": {key: True for key in ["board_read", "board_write", "tasks_read", "tasks_write", "project_brief"]}}
+            return {"ok": True, "project_id": "project", "user_id": "owner", "device_name": "TEST-PC",
+                    "capabilities": {key: True for key in ["board_read", "board_write", "tasks_read", "tasks_write",
+                                                           "project_brief", "task_commands"]}}
         return {"freshness": {}, "project_brief": {"markdown": "Important project memory"}} if path == "/context" else {"items": []}
     return send
 
@@ -190,6 +191,57 @@ def test_ready_status_is_invalidated_when_effective_credentials_change(runtime, 
     assert sync.hub_connection_status(runtime.repo_root)["status"] == "configured"
     worker.run_once()
     assert worker.connection_status == {"status": "connection_failed", "reason": "hub_http_401"}
+
+
+def test_unbound_legacy_credential_is_bound_with_the_computer_name(runtime, monkeypatch):
+    monkeypatch.setattr(enrollment, "local_device_name", lambda: "LEGACY-PC")
+    calls = []
+    healthy = transport(calls)
+
+    def send(config, method, path, payload=None):
+        if path == "/connection":
+            return {**healthy(config, method, path, payload), "device_name": None}
+        if path == "/device-binding":
+            calls.append((config, method, path, payload))
+            return {"ok": True, "device_name": payload["device_name"], "source": "binding"}
+        return healthy(config, method, path, payload)
+    config = replace(runtime.shared_memory, local_token="mem_v1.tok_" + "c" * 24 + "." + "d" * 58)
+    result = enrollment._probe(config, send)
+    assert result["status"] == "ready" and result["device_name"] == "LEGACY-PC"
+    assert [c[3] for c in calls if c[2] == "/device-binding"] == [{"device_name": "LEGACY-PC"}]
+
+def test_old_hub_without_task_commands_is_still_ready_for_memory(runtime, monkeypatch):
+    """Hub 未升级时记忆与留言照常接入；不绑定设备，只记录任务命令不可用。"""
+    monkeypatch.setattr(enrollment, "local_device_name", lambda: "TEST-PC")
+    calls = []
+    healthy = transport(calls)
+
+    def send(config, method, path, payload=None):
+        body = healthy(config, method, path, payload)
+        if path == "/connection":
+            body["capabilities"].pop("task_commands")
+            body["device_name"] = None
+        if path == "/device-binding":
+            pytest.fail("old Hub must not receive a device binding")
+        return body
+    result = enrollment._probe(runtime.shared_memory, send)
+    assert result["status"] == "ready" and result["task_commands"] is False
+    assert result["device_identity"] == "unsupported" and result["device_name"] is None
+
+
+def test_device_name_mismatch_keeps_memory_ready_but_marks_identity(runtime, monkeypatch):
+    monkeypatch.setattr(enrollment, "local_device_name", lambda: "RENAMED-PC")
+    result = enrollment._probe(runtime.shared_memory, transport([]))
+    assert result["status"] == "ready" and result["device_identity"] == "device_identity_mismatch"
+
+
+def test_registration_reports_the_computer_name(runtime, monkeypatch):
+    monkeypatch.setattr(enrollment, "local_device_name", lambda: "DESK-01")
+    calls = []
+    enrollment.ensure_hub_connection(runtime, send=transport(calls))
+    registered = [c[3] for c in calls if c[2].startswith("/device-enrollments") and c[1] == "POST"]
+    assert registered and registered[0]["device_name"] == "DESK-01"
+
 
 
 def test_existing_credential_is_probed_after_worker_restart(runtime, monkeypatch):

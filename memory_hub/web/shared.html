@@ -345,7 +345,7 @@
         <option value="done">已完成</option>
         <option value="cancelled">已取消</option>
       </select>
-      <input id="taskAgentFilter" type="search" placeholder="按 Agent ID 筛选" autocomplete="off">
+      <input id="taskAgentFilter" type="search" placeholder="按执行设备精确筛选" autocomplete="off">
       <button id="taskRefreshBtn" disabled>刷新任务</button>
       <span id="taskStats">—</span>
     </div>
@@ -773,6 +773,8 @@
   var taskFilterTimer = null;
   function destroyTaskLineage() {
     if (taskLineage) { taskLineage.destroy(); taskLineage = null; }
+    var notice = document.getElementById("taskLineageTruncated");
+    if (notice) notice.remove();
   }
   function taskNodeLabel(node) {
     var value = String(node.name || node.key || node.type || "");
@@ -868,14 +870,47 @@
       return '<div class="task-event"><span class="task-event-dot"></span><div><div class="task-event-title">' + esc(event.event_type) + '</div><div class="task-event-meta">' + esc(event.actor_id || "") + ' · ' + fmtTime(event.occurred_at) + '</div>' + (summary ? '<div class="task-event-summary">' + esc(summary) + '</div>' : "") + '</div></div>';
     }).join("");
   }
-  function taskLineageData(bundle) {
-    return { nodes: (bundle && bundle.nodes) || [], edges: (bundle && bundle.edges) || [] };
+  function taskLineageData(detail) {
+    // 由 /tasks/{id} 详情组装节点与边；类型与原 Graph Bundle 一致，ID 只在本页内使用。
+    var nodes = [], edges = [], seen = {};
+    function node(type, key, name) {
+      if (key === undefined || key === null || key === "") return null;
+      var id = type + ":" + key;
+      if (!seen[id]) { seen[id] = true; nodes.push({ id: id, type: type, key: String(key), name: String(name || key) }); }
+      return id;
+    }
+    function edge(source, target, relation) { if (source && target) edges.push({ source: source, target: target, relation_type: relation }); }
+    if (!detail || !detail.task_id) return { nodes: nodes, edges: edges };
+    var taskNode = node("task", detail.task_id, detail.title);
+    var links = detail.links || {};
+    (links.depends_on || []).forEach(function (target) { edge(taskNode, node("task", target, target), "depends_on"); });
+    if (links.parent_task_id) edge(node("task", links.parent_task_id, links.parent_task_id), taskNode, "parent_of");
+    (links.produced_memory || []).forEach(function (target) { edge(taskNode, node("asset", target, target), "produced_memory"); });
+    var current = (detail.current_attempt || {}).attempt_id;
+    (detail.attempts || []).forEach(function (attempt) {
+      var attemptNode = node("attempt", attempt.attempt_id, attempt.attempt_id);
+      if (attempt.attempt_id === current) edge(taskNode, attemptNode, "current_attempt");
+      edge(attemptNode, node("agent", attempt.assignee, attempt.assignee), "assigned_to");
+      edge(attemptNode, node("agent", attempt.assigned_by, attempt.assigned_by), "assigned_by");
+    });
+    (detail.submissions || []).forEach(function (submission) {
+      edge(seen["attempt:" + submission.attempt_id] ? "attempt:" + submission.attempt_id : null,
+           node("submission", submission.submission_id, submission.summary || submission.submission_id), "has_submission");
+    });
+    (detail.reviews || []).forEach(function (review) {
+      var submissionNode = seen["submission:" + review.submission_id] ? "submission:" + review.submission_id : null;
+      if (!submissionNode) return;
+      var reviewNode = node("review", review.review_id, review.decision || review.review_id);
+      edge(submissionNode, reviewNode, "has_review");
+      edge(reviewNode, node("agent", review.reviewer, review.reviewer), "reviewed_by");
+    });
+    return { nodes: nodes, edges: edges, truncated: Boolean(detail.truncated) };
   }
-  function renderTaskLineage(bundle, record) {
+  function renderTaskLineage(detail, record) {
     var area = document.getElementById("taskLineageArea");
     destroyTaskLineage();
     if (!record) { area.innerHTML = '<div class="empty">选择任务后显示依赖与交付轨迹。</div>'; return; }
-    var lineage = taskLineageData(bundle);
+    var lineage = taskLineageData(detail);
     if (!lineage.nodes.length) { area.innerHTML = '<div class="empty">该任务尚无可视关系。</div>'; return; }
     if (typeof cytoscape !== "function") {
       area.innerHTML = taskRendererFailed
@@ -884,6 +919,13 @@
       return;
     }
     area.innerHTML = "";
+    if (lineage.truncated) {
+      var notice = document.createElement("div");
+      notice.className = "stale-note";
+      notice.id = "taskLineageTruncated";
+      notice.textContent = "仅展示最近记录";
+      area.parentNode.insertBefore(notice, area);
+    }
     var styles = getComputedStyle(document.documentElement);
     var elements = lineage.nodes.map(function (node) {
       return { data: { id: node.id, label: taskNodeLabel(node), type: node.type, key: node.key, color: TASK_COLORS[node.type] || "#6b7590", shape: TASK_SHAPES[node.type] || "round-rectangle" } };
@@ -959,7 +1001,7 @@
     document.getElementById("taskLineageArea").innerHTML = '<div class="empty">正在加载任务轨迹。</div>';
     document.getElementById("taskEvents").innerHTML = '<div class="empty">正在加载任务事件。</div>';
     Promise.all([
-      fetch(base + "/task-graph?task_id=" + encodeURIComponent(record.task_id) + "&max_nodes=200&max_edges=400", { headers: { "Authorization": "Bearer " + token } }),
+      fetch(base + "/tasks/" + encodeURIComponent(record.task_id), { headers: { "Authorization": "Bearer " + token } }),
       fetch(base + "/task-events?task_id=" + encodeURIComponent(record.task_id) + "&max_items=200", { headers: { "Authorization": "Bearer " + token } })
     ]).then(function (responses) {
       if (responses[0].status !== 200) throw new Error("任务轨迹请求失败（HTTP " + responses[0].status + "）。");
@@ -967,9 +1009,9 @@
       return Promise.all([responses[0].json(), responses[1].json()]);
     }).then(function (payload) {
       if (requestId !== taskDetailRequestId || selectedTaskId !== record.task_id) return;
-      window.__taskGraphCache = payload[0];
+      window.__taskGraphCache = payload[0].task || null;
       window.__taskHistoryCache = payload[1];
-      renderTaskLineage(payload[0], record);
+      renderTaskLineage(window.__taskGraphCache, record);
       renderTaskEvents(payload[1], record);
     }).catch(function (err) {
       if (requestId !== taskDetailRequestId || selectedTaskId !== record.task_id) return;
@@ -995,7 +1037,7 @@
     var search = document.getElementById("taskSearch").value.trim();
     var agent = document.getElementById("taskAgentFilter").value.trim();
     if (search) query += "&q=" + encodeURIComponent(search);
-    if (agent) query += "&agent=" + encodeURIComponent(agent);
+    if (agent) query += "&assignee=" + encodeURIComponent(agent);
     if (shouldAppend) query += "&cursor=" + encodeURIComponent(taskCatalogCursor);
     document.getElementById("taskFreshness").textContent = "加载中";
     fetch(base + "/tasks?" + query, { headers: { "Authorization": "Bearer " + token } }).then(function (response) {

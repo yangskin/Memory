@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKeyConstraint, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKeyConstraint, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -179,63 +179,37 @@ class BoardPost(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class GraphNode(Base):
-    __tablename__ = "graph_nodes"
-    __table_args__ = (
-        UniqueConstraint("project_id", "node_type", "node_key", name="uq_graph_nodes_project_type_key"),
-        UniqueConstraint("project_id", "id", name="uq_graph_nodes_project_id"),
-        Index("idx_graph_nodes_project_type", "project_id", "node_type"),
-    )
+class TokenDevice(Base):
+    """凭据到设备身份的不可变绑定；任务执行者身份只从这里推导。"""
 
-    id: Mapped[UUID] = mapped_column(primary_key=True)
+    __tablename__ = "token_devices"
+    __table_args__ = (Index("idx_token_devices_project_device", "project_id", "device_name"),)
+
+    token_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     project_id: Mapped[str] = mapped_column(String(256), nullable=False)
-    node_type: Mapped[str] = mapped_column(String(64), nullable=False)
-    node_key: Mapped[str] = mapped_column(String(1024), nullable=False)
-    name: Mapped[str] = mapped_column(String(1024), nullable=False)
-    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, nullable=False, server_default="{}")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-
-
-class GraphEdge(Base):
-    __tablename__ = "graph_edges"
-    __table_args__ = (
-        UniqueConstraint("project_id", "source_node_id", "target_node_id", "relation_type", name="uq_graph_edges_project_relation"),
-        ForeignKeyConstraint(["project_id", "source_node_id"], ["graph_nodes.project_id", "graph_nodes.id"], ondelete="CASCADE", name="fk_graph_edges_source_project_node"),
-        ForeignKeyConstraint(["project_id", "target_node_id"], ["graph_nodes.project_id", "graph_nodes.id"], ondelete="CASCADE", name="fk_graph_edges_target_project_node"),
-        Index("idx_graph_edges_project_source", "project_id", "source_node_id"),
-        Index("idx_graph_edges_project_target", "project_id", "target_node_id"),
-    )
-
-    id: Mapped[UUID] = mapped_column(primary_key=True)
-    project_id: Mapped[str] = mapped_column(String(256), nullable=False)
-    source_node_id: Mapped[UUID] = mapped_column(nullable=False)
-    target_node_id: Mapped[UUID] = mapped_column(nullable=False)
-    relation_type: Mapped[str] = mapped_column(String(64), nullable=False)
-    confidence: Mapped[float] = mapped_column(Float, nullable=False, server_default="1")
-    source_event_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, server_default="[]")
-    evidence_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, server_default="[]")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    device_name: Mapped[str] = mapped_column(String(96), nullable=False)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    bound_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class TaskEvent(Base):
     __tablename__ = "task_events"
     __table_args__ = (
         UniqueConstraint("project_id", "command_id", name="uq_task_events_project_command"),
-        UniqueConstraint("project_id", "source_event_id", name="uq_task_events_project_source_event"),
+        UniqueConstraint("project_id", "task_id", "task_seq", name="uq_task_events_project_task_seq"),
         Index("idx_task_events_project_task_seq", "project_id", "task_id", "task_event_seq"),
         Index("idx_task_events_project_time", "project_id", "occurred_at"),
     )
 
     task_event_seq: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     project_id: Mapped[str] = mapped_column(String(256), nullable=False)
-    source_event_id: Mapped[UUID] = mapped_column(nullable=False)
+    task_seq: Mapped[int] = mapped_column(Integer, nullable=False)
     command_id: Mapped[str] = mapped_column(String(256), nullable=False)
     task_id: Mapped[str] = mapped_column(String(256), nullable=False)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     actor_id: Mapped[str] = mapped_column(String(256), nullable=False)
-    expected_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    agent: Mapped[str | None] = mapped_column(String(64))
+    expected_version: Mapped[int | None] = mapped_column(Integer)
     expected_assignment_epoch: Mapped[int | None] = mapped_column(Integer)
     task_version: Mapped[int] = mapped_column(Integer, nullable=False)
     assignment_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -261,22 +235,41 @@ class Task(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     assignment_epoch: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     current_attempt_id: Mapped[str | None] = mapped_column(String(256))
+    last_task_seq: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_activity_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class TaskAgent(Base):
-    __tablename__ = "task_agents"
-    __table_args__ = (Index("idx_task_agents_project_status", "project_id", "status"),)
+class TaskCommand(Base):
+    """已接受任务命令的幂等存档；被拒绝的命令不写入，因此可修正后复用 command_id。"""
+
+    __tablename__ = "task_commands"
+    __table_args__ = (Index("idx_task_commands_project_task", "project_id", "task_id"),)
 
     project_id: Mapped[str] = mapped_column(String(256), primary_key=True)
-    agent_id: Mapped[str] = mapped_column(String(256), primary_key=True)
-    role: Mapped[str] = mapped_column(String(256), nullable=False, server_default="")
-    capabilities_json: Mapped[list[str]] = mapped_column("capabilities", JSONB, nullable=False, server_default="[]")
-    owner: Mapped[str] = mapped_column(String(256), nullable=False, server_default="")
-    status: Mapped[str] = mapped_column(String(64), nullable=False, server_default="available")
+    command_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    request_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    actor: Mapped[str] = mapped_column(String(256), nullable=False)
+    task_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    result_json: Mapped[dict[str, Any]] = mapped_column("result", JSONB, nullable=False, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class TaskLink(Base):
+    """创建时写入且不可修改的任务关系；不修改被引用任务。"""
+
+    __tablename__ = "task_links"
+    __table_args__ = (
+        ForeignKeyConstraint(["project_id", "task_id"], ["tasks.project_id", "tasks.task_id"], ondelete="CASCADE", name="fk_task_links_task"),
+        Index("idx_task_links_project_target", "project_id", "relation", "target"),
+    )
+
+    project_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    relation: Mapped[str] = mapped_column(String(32), primary_key=True)
+    target: Mapped[str] = mapped_column(String(1024), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class TaskAttempt(Base):

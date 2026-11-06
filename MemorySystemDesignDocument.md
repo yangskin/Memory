@@ -12,11 +12,10 @@
 
 ### 0.1 Graph Agent Task System（当前增量）
 
-`memory_task_sync` 独立于既有 Memory 知识图：本地 SQLite 保存 append-only Task Event、
-Task/Agent/Attempt/Submission/Review Projection 与 Graph Bundle；Hub 使用同构的规范化事件表和
-投影。每次命令以 `command_id + expected_version + expected_assignment_epoch` 防止重复与旧执行者
-迟到提交。共享 Hub 启用时，协调命令先由 Hub 同步裁决再落本地；Hub 离线时只允许 `report` /
-`submit` 留作待同步记录。Memory 的普通本地写入继续完全不等待远端。
+`memory_task_sync` 独立于既有 Memory 知识图，是 Hub 任务权威的无状态客户端：Hub 唯一保存
+append-only Task Event、Task/Attempt/Submission/Review 投影、命令幂等存档与任务关系，并从设备凭据
+推导执行者身份。客户端不保存任务状态，未配置 Hub 时返回 `task_hub_required`；Hub 暂不可达时只有
+`report` / `submit` 进入本地待发命令队列，恢复后用原 `command_id` 补发。Memory 的普通本地写入继续完全不等待远端。
 
 ## 1. 文档目标
 

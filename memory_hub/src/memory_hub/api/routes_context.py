@@ -48,10 +48,10 @@ def _fair_shared_events(events: list[MemoryEvent], limit: int) -> list[MemoryEve
 def _project_visible_content() -> object:
     """Restrict dashboard and brief inputs to events with a displayable body.
 
-    Empty project-shared checkpoints carry graph-projection metadata only. They
-    remain in the event log, but must not crowd out substantive shared memory.
-    Task-sync events are also graph-projection metadata, including historical
-    uploads that incorrectly carried a serialized event body.
+    Empty project-shared checkpoints carry metadata only. They remain in the
+    event log, but must not crowd out substantive shared memory. Retired
+    task_sync events are deleted by migration 0016 and rejected on ingest; the
+    filter stays as a defensive guard for restored backups.
     """
     return and_(
         MemoryEvent.scope.in_(_PROJECT_VISIBLE_SCOPES),

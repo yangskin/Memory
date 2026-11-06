@@ -33,13 +33,14 @@ def test_authentication_updates_last_used_at_at_most_every_few_minutes() -> None
 
     from memory_hub.api.dependencies import LAST_USED_RESOLUTION, require_principal
     from memory_hub.auth.tokens import create_token
-    from memory_hub.db.models import AccessToken
+    from memory_hub.db.models import AccessToken, TokenDevice
 
     original = AccessToken.__table__.c.scopes.type
     AccessToken.__table__.c.scopes.type = JSON()
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     try:
         AccessToken.__table__.create(engine)
+        TokenDevice.__table__.create(engine)
         factory = sessionmaker(engine, expire_on_commit=False)
         token_id, raw, hashed = create_token()
         with factory() as session:

@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
+from .memory_device import device_name_or
 from .memory_locks import file_lock
 
 _DASH_RE = re.compile(r"-+")
@@ -60,7 +61,7 @@ def load_runtime_identity(repo_root: Path, args: Mapping[str, object] | None = N
         except (OSError, json.JSONDecodeError):
             data = {}
         source_node_id = _bounded(data.get("source_node_id") or uuid.uuid4(), 256, "unknown-node")
-        source_node_name = _bounded(args.get("source_node_name") or socket.gethostname(), 256, "unknown-host")
+        source_node_name = _bounded(args.get("source_node_name") or device_name_or(socket.gethostname()), 256, "unknown-host")
         agent_id = _bounded(args.get("agent_id") or os.getenv("MEMORY_AGENT_ID") or data.get("agent_id"), 256, "unknown-agent")
         agent_instance_id = _bounded(args.get("agent_instance_id") or os.getenv("MEMORY_AGENT_INSTANCE_ID") or data.get("agent_instance_id") or uuid.uuid4(), 256, "unknown-agent-instance")
         workspace_id = _bounded(data.get("workspace_id") or "sha256:" + hashlib.sha256(str(repo_root).encode()).hexdigest(), 256, "unknown-workspace")

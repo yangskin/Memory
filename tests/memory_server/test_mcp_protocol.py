@@ -118,39 +118,31 @@ def test_mcp_call_dedicated_board_tools(repo: Path) -> None:
     assert any(item["post_id"] == posted["post"]["post_id"] for item in queried["items"])
 
 
-def test_mcp_call_memory_task_sync(repo: Path) -> None:
+def test_mcp_call_memory_task_sync_requires_a_hub(repo: Path) -> None:
     config = load_config(repo)
     server = create_server(config)
     created = _run(_call_tool(server, "memory_task_sync", {
         "action": "create",
         "command_id": "mcp-task-create",
-        "expected_version": 0,
         "task_id": "mcp-task",
-        "actor_id": "agent:pytest",
         "title": "MCP task sync",
     }))
-    bundle = _run(_call_tool(server, "memory_task_sync", {
-        "action": "sync",
-        "task_id": "mcp-task",
-    }))
+    listed = _run(_call_tool(server, "memory_task_sync", {"action": "sync"}))
 
-    assert created["ok"] is True, created
-    assert bundle["ok"] is True, bundle
-    assert bundle["bundle"]["nodes"][0]["id"] == "task:mcp-task"
+    assert created["ok"] is False and created["error"] == "task_hub_required", created
+    assert listed["error"] == "task_hub_required", listed
+    assert not (repo / ".ai-memory" / "task-graph.db").exists()
 
 
-def test_mcp_call_memory_task_sync_returns_an_empty_bundle_for_an_unknown_task(repo: Path) -> None:
-    config = load_config(repo)
-    server = create_server(config)
+def test_mcp_task_sync_schema_has_no_self_reported_actor(repo: Path) -> None:
+    from servers.memory_server.server_tools import _build_tools
 
-    bundle = _run(_call_tool(server, "memory_task_sync", {
-        "action": "sync",
-        "task_id": "unknown-task",
-    }))
-
-    assert bundle["ok"] is True, bundle
-    assert bundle["bundle"]["nodes"] == []
-    assert bundle["bundle"]["edges"] == []
+    tool = next(item for item in _build_tools(load_config(repo)) if item.name == "memory_task_sync")
+    properties = tool.inputSchema["properties"]
+    assert "actor_id" not in properties
+    assert "identity" in properties["agent_id"]["description"]
+    assert {"task", "outbox", "outbox_dismiss"} <= set(properties["action"]["enum"])
+    assert tool.inputSchema["additionalProperties"] is False
 
 
 def test_mcp_call_memory_read_task_context(repo: Path) -> None:

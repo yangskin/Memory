@@ -85,11 +85,16 @@ def test_shared_page_serves_dark_paginated_task_queue_and_selected_lineage_witho
     assert 'id="taskEvents"' in page_response.text
     assert "function fetchTaskWorkspace(append)" in page_response.text
     assert "function renderTaskWorkspace(catalog)" in page_response.text
-    assert "function renderTaskLineage(bundle, record)" in page_response.text
+    assert "function renderTaskLineage(detail, record)" in page_response.text
+    assert "function taskLineageData(detail)" in page_response.text
     assert "function selectTask(taskId)" in page_response.text
     assert 'data-task-id="' in page_response.text
     assert '"/tasks?" + query' in page_response.text
-    assert '"/task-graph?task_id="' in page_response.text
+    assert '"/tasks/" + encodeURIComponent(record.task_id)' in page_response.text
+    assert '"&assignee="' in page_response.text
+    assert "/task-graph" not in page_response.text
+    assert '"&agent="' not in page_response.text
+    assert "仅展示最近记录" in page_response.text
     assert '"/task-events?task_id="' in page_response.text
     assert "TASK_SHAPES" in page_response.text
     assert "color-scheme: dark" in page_response.text

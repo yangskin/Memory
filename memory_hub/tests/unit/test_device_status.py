@@ -12,7 +12,7 @@ from memory_hub.api import routes_device_status
 from memory_hub.api.routes_device_status import MAX_DEVICES_PER_CREDENTIAL, STALE_RETENTION, purge_stale_device_status, router
 from memory_hub.auth.rate_limit import TokenRateLimiter
 from memory_hub.auth.tokens import create_token
-from memory_hub.db.models import AccessToken, DeviceStatus
+from memory_hub.db.models import AccessToken, DeviceStatus, TokenDevice
 
 PROJECT = "example-project"
 URL = f"/v1/projects/{PROJECT}/device-status"
@@ -25,6 +25,7 @@ def service():
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     try:
         AccessToken.__table__.create(engine)
+        TokenDevice.__table__.create(engine)
         DeviceStatus.__table__.create(engine)
         app = FastAPI()
         factory = sessionmaker(engine, expire_on_commit=False)

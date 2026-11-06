@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from memory_hub.auth.permissions import Principal
 from memory_hub.auth.tokens import parse_token, verify_secret
+from memory_hub.db.models import TokenDevice
 from memory_hub.db.repositories import active_token
 
 # last_used_at 只用于判断凭据是否仍在使用，精度到分钟级即可；避免每个读请求都额外写库。
@@ -40,7 +41,10 @@ def require_principal(required_scope: str) -> Callable:
                 raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid authentication")
             if required_scope not in token.scopes:
                 raise HTTPException(status.HTTP_403_FORBIDDEN, "insufficient scope")
-            principal = Principal(token.token_id, token.user_id, token.project_id, frozenset(token.scopes))
+            binding = session.get(TokenDevice, token.token_id)
+            device_name = (binding.device_name if binding is not None and binding.project_id == token.project_id
+                           and "identity:delegate" not in token.scopes else None)
+            principal = Principal(token.token_id, token.user_id, token.project_id, frozenset(token.scopes), device_name)
             now = datetime.now(UTC)
             last_used = token.last_used_at
             if last_used is not None and last_used.tzinfo is None:

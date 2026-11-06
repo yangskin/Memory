@@ -57,6 +57,12 @@ def request_data(device="TEST-PC"):
             "token_secret_hash": hashed, "poll_secret_hash": hashlib.sha256(secrets.token_bytes(32)).hexdigest()}, raw
 
 
+def _enroll(client, invite, device):
+    payload, token = request_data(device)
+    assert client.post("/v1/projects/project/device-enrollments/auto", json=payload, headers=invite).status_code == 200
+    return token
+
+
 def test_open_enrollment_projects_are_explicitly_configured(monkeypatch):
     monkeypatch.delenv("MEMORY_HUB_OPEN_ENROLLMENT_PROJECTS", raising=False)
     assert load_settings().open_enrollment_projects == ()
@@ -146,26 +152,21 @@ def test_new_device_board_task_lifecycle_and_project_brief(service):
     assert client.post(base + "/board/query", headers=headers, json={}).json()["items"][0]["post_id"] == item["post_id"]
     assert client.post(base + "/board/reply", headers=headers, json={"reply_to": item["post_id"], "content": "Verified"}).status_code == 200
     assert client.post(base + "/board/resolve", headers=headers, json={"post_id": item["post_id"]}).status_code == 200
-    # The very same independent device token can execute the full Task Graph lifecycle.
-    commands = [
-        ("TaskCreated", {"title": "Test", "objective": "Verify enrollment", "acceptance": "done", "priority": "normal", "depends_on": [], "produced_memory": []}, 0, None),
-        ("TaskAssigned", {"attempt_id": "attempt", "assignee": "agent", "assigned_by": "agent", "epoch": 1}, 1, None),
-        ("TaskClaimed", {"attempt_id": "attempt"}, 1, 1),
-        ("TaskSubmitted", {"attempt_id": "attempt", "submission_id": "submission", "summary": "tested", "evidence": ["pytest"]}, 1, 1),
-        ("TaskReviewed", {"review_id": "review", "submission_id": "submission", "decision": "approved", "summary": "verified"}, 1, None),
-    ]
-    for version, (kind, data, epoch, expected_epoch) in enumerate(commands):
-        event = {"version": "1.0", "command_id": uuid4().hex, "event_type": kind, "task_id": "task",
-                 "actor_id": "reviewer" if kind == "TaskReviewed" else "agent", "expected_version": version, "task_version": version + 1,
-                 "assignment_epoch": epoch, "expected_assignment_epoch": expected_epoch,
-                 "payload": data, "occurred_at": datetime.now(UTC).isoformat()}
-        envelope = {"schema_version": "1.0", "event_id": str(uuid4()), "agent_id": event["actor_id"], "agent_instance_id": "test",
-                    "task_id": "task", "operation": "task_sync", "scope": "project_shared", "content_markdown": "",
-                    "metadata": {"task_event": event}, "occurred_at": datetime.now(UTC).isoformat(), "content_hash": "sha256:" + "0" * 64}
-        response = client.post(base + "/events/batch", headers=headers, json={"events": [envelope]})
-        assert response.status_code == 200 and len(response.json()["accepted"]) == 1, response.text
-    graph = client.get(base + "/task-graph?task_id=task", headers=headers).json()
-    assert next(node for node in graph["nodes"] if node["type"] == "task")["metadata"]["state"] == "done"
+    # The very same independent device token is already bound to its device and can run the task lifecycle.
+    assert info["device_name"] == "TEST-PC"
+    reviewer = {"Authorization": "Bearer " + _enroll(client, invite, "REVIEW-PC")}
+
+    def command(headers, action, **body):
+        response = client.post(base + "/task-commands", headers=headers,
+                               json={"action": action, "command_id": uuid4().hex, **body})
+        assert response.status_code == 200, response.text
+        return response.json()
+    command(headers, "create", task_id="task", title="Test", objective="Verify enrollment", acceptance="done")
+    command(headers, "assign", task_id="task", expected_version=1, assignee="TEST-PC")
+    command(headers, "claim", task_id="task", expected_version=2, expected_assignment_epoch=1)
+    command(headers, "submit", task_id="task", expected_version=3, expected_assignment_epoch=1, summary="tested", evidence=["pytest"])
+    done = command(reviewer, "review", task_id="task", expected_version=4, decision="approved", summary="verified")
+    assert done["task"]["state"] == "done" and done["task"]["reviews"][0]["reviewer"] == "REVIEW-PC"
     assert len(client.get(base + "/task-events?task_id=task", headers=headers).json()["events"]) == 5
     # Seed a derived public brief and a different user's private brief.
     with app.state.session_factory() as session:
@@ -293,11 +294,15 @@ def test_background_registration_then_actual_mcp_tools(service, tmp_path, monkey
         assert queried["ok"] and queried["board_sync"]["remote"], queried
         assert any(item["post_id"] == posted["post"]["post_id"] for item in queried["items"])
         created = await call("memory_task_sync", {"action": "create", "command_id": "mcp-new-create",
-            "expected_version": 0, "task_id": "mcp-new", "actor_id": "agent:mcp", "title": "MCP new device"})
-        assert created["ok"], created
-        graph = await call("memory_task_sync", {"action": "sync", "task_id": "mcp-new"})
-        assert graph["ok"] and graph["source"] == "remote" and graph["authoritative"], graph
-        assert any(node["type"] == "task" for node in graph["bundle"]["nodes"]), graph
+            "expected_version": 0, "task_id": "mcp-new", "agent_id": "agent:mcp", "title": "MCP new device"})
+        assert created["ok"] and created["status"] == "accepted" and created["authoritative"], created
+        detail = await call("memory_task_sync", {"action": "task", "task_id": "mcp-new"})
+        assert detail["ok"] and detail["task"]["task_id"] == "mcp-new" and detail["task"]["state"] == "open", detail
+        events = detail["task"]["recent_events"]
+        # 执行者来自注册时绑定的计算机名，agent_id 只作展示标签。
+        assert events[0]["actor_id"] == created["actor"] and events[0]["agent"] == "agent-mcp", events
+        mine = await call("memory_task_sync", {"action": "sync"})
+        assert mine["ok"] and mine["device_name"] == created["actor"], mine
         brief = await call("memory_read", {"operation": "shared_context", "include": ["project_brief"], "force_refresh": True})
         assert brief["shared_context"]["source"] == "remote", brief
         assert brief["shared_context"]["project_brief"]["markdown"] == "Shared project brief", brief

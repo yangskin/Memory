@@ -12,6 +12,8 @@ class Principal:
     user_id: str
     project_id: str
     scopes: frozenset[str]
+    # 凭据绑定的设备名；任务执行者身份只从这里推导，未绑定为 None。
+    device_name: str | None = None
 
 
 def allows(principal: Principal, scope: str) -> bool:

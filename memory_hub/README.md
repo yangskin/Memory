@@ -107,26 +107,26 @@ Hub 提供轻量协作看板接口，用于跨 Agent/成员同步「待处理事
 
 ## Task Graph
 
-Task Graph 是唯一的图投影；它使用独立的 append-only `task_events` 与
-`tasks`、`task_agents`、`task_attempts`、`task_submissions`、`task_reviews` Projection 表，
-并将 Task/Agent/Attempt/Submission/Review 作为有类型的 `graph_nodes` / `graph_edges` 投影。
-`0010_task_graph` Alembic 迁移创建这些表。规范化 Task Event 同时保留
-`expected_version` / `expected_assignment_epoch` 与实际 `task_version` /
-`assignment_epoch`，因此同一 `command_id` 的内容、版本或 epoch 变形重放会被拒绝。
+Hub 是任务状态唯一的计算者。存储为 append-only `task_events`（任务内连续 `task_seq`）与
+`tasks`、`task_attempts`、`task_submissions`、`task_reviews` 关系投影，外加命令幂等存档
+`task_commands`、创建时写入的任务关系 `task_links` 和凭据设备绑定 `token_devices`。
+迁移 `0016_hub_task_authority` 删除了 Graph 节点/边、`task_agents` 与 `task_sync` 记忆事件，不可降级。
 
-本地 MCP 的 `memory_task_sync` 是唯一写入入口。它以 `task_sync` 外层 Memory Event 包装
-内层 Task Event，Hub 在写入 `memory_events`、Task Event 和 Projection 的同一事务中验证
-并应用。内层 `actor_id` 必须匹配外层 Agent ID；这是事件封装一致性校验，不替代 Token 级的
-Agent 身份认证。生命周期命令为 `create`、`assign`、
+写入只走 `POST /task-commands`：执行者身份由凭据绑定的设备名（Windows 计算机名）推导，
+`channel=dispatch` 构造 `<设备名>-dispatch`，请求携带 `actor_id` 或派生字段一律 422；
+共享凭据（`identity:delegate`）不能绑定设备。生命周期命令为 `create`、`assign`、
 `claim`、`decline`、`report`、`block`、`resume`、`submit`、`review`、`reassign`、`cancel`；
-每个命令都需要 `command_id` 与 `expected_version`，执行者动作还需要
-`expected_assignment_epoch`。
+除 `create`（可省略或传 0）与 `report`（只需 epoch）外都需要 `expected_version`，执行者动作还需要
+`expected_assignment_epoch`。行为规格见 `openspec/changes/rebuild-hub-task-authority/specs/hub-task-authority/spec.md`。
 
 只读端点均需要 `context:read`：
 
-- `GET /v1/projects/{project_id}/tasks`：返回紧凑、游标分页的任务目录。支持 `state`（默认 `working`）、`q`、`agent`、`cursor` 与 `limit`；响应包含全局 `state_counts`、进行中 `agent_loads` 和 `next_cursor`，不受 Graph Bundle 的节点上限影响。
-- `GET /v1/projects/{project_id}/task-graph`：返回 `{roots,nodes,edges,cursor}` Graph Bundle；`task_id` 可缩小到单任务，`agent_id` 仅返回当前 Attempt 分配给该 Agent 的任务。
-- `GET /v1/projects/{project_id}/task-events`：读取 append-only Timeline，可用 `task_id` 和 `cursor` 分页；每条事件返回预期与实际 version/epoch。
+- `GET /v1/projects/{project_id}/tasks`：紧凑、游标分页的任务目录。支持 `state`（默认 `working`，可逗号分隔或 `all`）、`q`（通配符按字面匹配）、`assignee`（当前 Attempt 执行者精确匹配）、`order=updated|created`（`created` 为不可变排序，供设备全量扫描）、`cursor` 与 `limit`（≤100）；响应包含 `state_counts`、`agent_loads` 与 `next_cursor`（`null` 表示结束）。旧 `agent` 参数返回 422。
+- `GET /v1/projects/{project_id}/tasks/{task_id}`：单任务详情，含 `links`、`attempts`、`submissions`、`reviews`、`recent_events`，各最多 50 条并返回 `*_total` 与 `truncated`。
+- `GET /v1/projects/{project_id}/task-events`：读取 append-only Timeline，可用 `task_id` 和 `cursor` 分页；每条事件返回 `task_seq`、执行者、`agent` 标签与预期/实际 version/epoch。
+- `POST /v1/projects/{project_id}/task-commands`（`events:write` 且凭据已绑定设备）：Hub 唯一任务状态机，见 `openspec/changes/rebuild-hub-task-authority/specs/hub-task-authority/spec.md`。
+- `POST /v1/projects/{project_id}/device-binding`：迁移前签发的凭据由客户端自动一次性绑定本机设备名；同名幂等，换名 409。
+- `GET /v1/projects/{project_id}/task-graph` 已退役，返回 410 `task_graph_retired`。
 
 启用且可访问 Hub 的共享模式下，本地 MCP 先同步提交 Task Graph 命令到
 `POST /v1/projects/{project_id}/events/batch`；Hub 接受后才写本地 SQLite，避免本地 Agent

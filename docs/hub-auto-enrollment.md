@@ -23,6 +23,7 @@
 - 已撤销、过期或拒绝的业务凭据不会被自动替换以绕过撤销。损坏或归属不一致的申请状态报错，需要管理员诊断。撤销接入凭据会阻止新的申请，不会连带撤销此前签发的独立设备 Token；后者通过既有 `token revoke` 单独撤销。
 - `hub_connection.status=ready` 表示新设备已完成上述接入探测；`configured` 仅表示有既有凭据，不代表本轮联网探测通过。错误只返回固定原因码，不输出秘密或远端错误正文。
 - Token、地址、项目或读写开关改变时，旧的 `ready` 立即失效。留言工具首先确认本地入队，需远端查询确认同步完成；任务按远端权威结果判断。
+- 注册签发的 Token 在同一事务内绑定注册时的设备名；任务执行者身份只从这一绑定推导，客户端不能自报。设备名统一取 Windows 计算机名（`GetComputerNameW`，与 HubTaskRunner 同源，原样使用）。迁移前签发、尚未绑定的 Token 在 Hub 声明 `task_commands` 后，自动以计算机名调用 `/device-binding` 完成一次性绑定（同名幂等，换名 409），全程无人工步骤；绑定名与计算机名不一致时状态标为 `device_identity_mismatch`，任务操作停止，重新注册本机即可恢复。Hub 尚未声明 `task_commands` 时接入仍为 ready（`task_commands=false`），记忆、留言与简报照常工作。规格见 `openspec/changes/rebuild-hub-task-authority/specs/hub-device-identity/spec.md`。
 
 ## 项目重要记忆与客户端使用
 

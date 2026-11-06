@@ -1,5 +1,5 @@
 """SQLite真实路由验证设备身份不可由同用户的另一凭据伪造。"""
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from uuid import uuid4
 import importlib.util
 from pathlib import Path
@@ -9,25 +9,24 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from memory_hub.api.routes_board import auth_id
 from memory_hub.auth.tokens import create_token
-from memory_hub.db.models import AccessToken, DeviceEnrollment, BoardPost
+from memory_hub.db.models import AccessToken, BoardPost, TokenDevice
 from test_board_pagination import service, PROJECT
 
 
 def enrolled(factory, device):
+    """设备身份只来自凭据绑定（计算机名）。"""
     tid,raw,hashed=create_token()
     with factory() as session:
         session.add(AccessToken(token_id=tid,token_secret_hash=hashed,token_prefix="test",
             user_id="alice",project_id=PROJECT,scopes=["events:write","context:read"]))
-        session.add(DeviceEnrollment(enrollment_id=uuid4().hex,project_id=PROJECT,device_name=device,
-            token_id=tid,token_secret_hash=hashed,poll_secret_hash="0"*64,status="approved",
-            created_at=datetime.now(UTC),expires_at=datetime.now(UTC)+timedelta(days=1)))
+        session.add(TokenDevice(token_id=tid,project_id=PROJECT,device_name=device,source="enrollment",
+            bound_at=datetime.now(UTC)))
         session.commit()
     return tid,{"Authorization":"Bearer "+raw}
 
 
 def test_same_user_devices_have_server_authenticated_distinct_authors(service):
     client,factory,admin=service
-    DeviceEnrollment.__table__.create(factory.kw["bind"])
     a,ha=enrolled(factory,"PC-A");b,hb=enrolled(factory,"PC-B")
     url=f"/v1/projects/{PROJECT}"
     identity=client.get(url+"/device-identities?device_name=PC-B",headers=ha).json()
@@ -49,7 +48,6 @@ def test_same_user_devices_have_server_authenticated_distinct_authors(service):
 
 def test_device_identity_rejects_revoked_cross_project_and_preserves_conflicts(service):
     client,factory,headers=service
-    DeviceEnrollment.__table__.create(factory.kw["bind"])
     a,_=enrolled(factory,"PC-A");b,_=enrolled(factory,"PC-A")
     url=f"/v1/projects/{PROJECT}/device-identities"
     assert len(client.get(url+"?device_name=PC-A",headers=headers).json()["identities"])==2
@@ -60,6 +58,28 @@ def test_device_identity_rejects_revoked_cross_project_and_preserves_conflicts(s
     assert client.get("/v1/projects/other/device-identities",headers=headers).status_code==403
     assert client.get(url+"?device_name=/invalid",headers=headers).status_code==422
     assert client.get(url).status_code==401
+
+
+def test_device_identity_ignores_enrollment_names_without_binding(service):
+    """注册记录里的主机名不能代替计算机名绑定。"""
+    from memory_hub.db.models import DeviceEnrollment
+    from datetime import timedelta
+    client,factory,headers=service
+    DeviceEnrollment.__table__.create(factory.kw["bind"])
+    tid,raw,hashed=create_token()
+    with factory() as session:
+        session.add(AccessToken(token_id=tid,token_secret_hash=hashed,token_prefix="test",
+            user_id="alice",project_id=PROJECT,scopes=["events:write","context:read"]))
+        session.add(DeviceEnrollment(enrollment_id=uuid4().hex,project_id=PROJECT,device_name="pc-a-long-hostname",
+            token_id=tid,token_secret_hash=hashed,poll_secret_hash="0"*64,status="approved",
+            created_at=datetime.now(UTC),expires_at=datetime.now(UTC)+timedelta(days=1)))
+        session.commit()
+    url=f"/v1/projects/{PROJECT}/device-identities"
+    assert client.get(url+"?device_name=pc-a-long-hostname",headers=headers).json()["identities"]==[]
+    with factory() as session:
+        session.add(TokenDevice(token_id=tid,project_id=PROJECT,device_name="PC-A",source="binding",bound_at=datetime.now(UTC)))
+        session.commit()
+    assert client.get(url+"?device_name=PC-A",headers=headers).json()["identities"][0]["device_name"]=="PC-A"
 
 
 def test_migration_preserves_legacy_board_rows_without_inventing_identity():

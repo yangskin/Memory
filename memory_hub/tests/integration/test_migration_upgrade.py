@@ -51,17 +51,22 @@ def test_fresh_postgresql_database_upgrades_to_head(monkeypatch) -> None:
                 "WHERE table_schema = 'public' AND table_name LIKE 'task_%'"
             )))
             projection_state = connection.scalar(text("SELECT to_regclass('public.graph_projection_states')"))
+            graph_nodes = connection.scalar(text("SELECT to_regclass('public.graph_nodes')"))
+            token_devices = connection.scalar(text("SELECT to_regclass('public.token_devices')"))
 
-        assert revision == "0015_device_status"
+        assert revision == "0016_hub_task_authority"
         assert task_tables == {
-            "task_agents",
             "task_attempts",
+            "task_commands",
             "task_events",
+            "task_links",
             "task_reviews",
             "task_submissions",
             "tasks",
         }
         assert projection_state is None
+        assert graph_nodes is None
+        assert token_devices is not None
     finally:
         if test_engine is not None:
             test_engine.dispose()

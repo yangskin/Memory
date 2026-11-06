@@ -237,8 +237,8 @@ function bootDashboard({ token = 'test-token', failFirstFeed = false, deviceStat
           expires_at: new Date(Date.now() + 300000).toISOString(), content: JSON.stringify(health()) }] };
       } else if (url.includes('/tasks?')) {
         payload = { items: [{ task_id: 'task-1', title: 'Example task', state: 'active' }], total: 1 };
-      } else if (url.includes('/task-graph?')) {
-        payload = { nodes: [{ id: 'task:task-1', type: 'task', key: 'task-1' }], edges: [] };
+      } else if (url.includes('/tasks/task-1')) {
+        payload = { ok: true, task: { task_id: 'task-1', title: 'Example task', links: {}, attempts: [], submissions: [], reviews: [] } };
       } else if (url.includes('/task-events?')) {
         payload = { events: [{ task_id: 'task-1', event_type: 'created', seq: 1 }] };
       } else {

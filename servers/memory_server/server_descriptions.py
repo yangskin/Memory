@@ -54,11 +54,15 @@ _BASE_DESCRIPTIONS: dict[str, str] = {
         "and remote synchronization is best-effort."
     ),
     "memory_task_sync": (
-        "Dedicated Graph Agent task interface. Read a Graph Bundle or create, assign, claim, decline, report, "
-        "block, resume, submit, review, reassign, and cancel tasks through an append-only local event store. "
-        "Mutations require command_id and expected_version; executor actions also require expected_assignment_epoch. "
-        "With an active shared Hub, commands are accepted by the Hub before local commit; while that Hub is offline, "
-        "only report and submit may be recorded locally."
+        "Hub task interface; the Hub is the only task state machine. sync lists this device's working tasks, "
+        "task returns one task detail, history returns the event timeline. create, assign, reassign, claim, decline, "
+        "report, block, resume, submit, review and cancel are sent to the Hub, which derives the actor from this "
+        "device credential (channel=dispatch acts as <device>-dispatch) and computes versions and ids. Mutations "
+        "require a stable command_id; all except create and report require expected_version; executor actions require "
+        "expected_assignment_epoch. report does not change the task version. Without a Hub the tool returns "
+        "task_hub_required; when the Hub is unreachable only report and submit are queued (status=queued, "
+        "authoritative=false) and resent with the same command_id. Rejected queued commands appear in outbox_failures "
+        "until dismissed with outbox_dismiss."
     ),
     "memory_context": (
         "Internal/CLI context operations. Supports deterministic compile, "

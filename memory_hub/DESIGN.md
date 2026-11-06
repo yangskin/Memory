@@ -61,23 +61,19 @@ Brief 是可重建的派生视图，不是事件真源。Worker 失败时保留�
 
 ### 3.1 Task Graph
 
-Task Graph 是唯一的执行图投影。每个 `task_sync` 外层事件包含经过严格校验的内层 Task Event；
-Hub 从 Token 绑定项目与权限，并要求内外 `task_id`、Agent ID 一致。该检查只保证事件封装
-一致性，不能替代 Token 级 Agent 身份认证。
-一次成功 ingest 在同一数据库事务中写入 `memory_events`、append-only `task_events`，校验
-`command_id`、expected version 与 assignment epoch，更新 Task/Attempt/Submission/Review
-Projection，并刷新 Graph Bundle 节点与边。`TaskEvent` 同时记录预期和实际 version/epoch，
-因此同一 command 的变形重放不会被当作成功重复。
+Hub 是任务状态唯一的计算者。`POST /v1/projects/{project_id}/task-commands` 接收客户端意图，
+执行者身份由凭据绑定的设备名（`token_devices`）推导，`channel=dispatch` 构造 `<设备名>-dispatch`；
+请求携带 `actor_id` 或派生字段一律 422。每条命令在一个事务内完成：查 `task_commands` 幂等存档 →
+`SELECT ... FOR UPDATE` 锁任务行 → 按转换表校验并更新 Task/Attempt/Submission/Review → 递增
+`task_seq` 写 `task_events`（`(project_id, task_id, task_seq)` 唯一）→ 写命令存档。`report` 不改版本；
+依赖、父任务与产出记忆写入 `task_links`，不修改被引用任务。Graph 节点/边存储已删除（迁移 0016）。
 
-Task Graph 端点为 `GET /v1/projects/{project_id}/task-graph` 与
-`GET /v1/projects/{project_id}/task-events`，均受 `context:read` 和项目范围校验。Graph Bundle
-固定返回 `roots`、`nodes`、`edges` 与 `cursor`；`agent_id` 仅匹配当前 Attempt 的 assignee。
-`/shared` 的任务工作区通过这两个端点渲染状态队列、选中任务的局部轨迹、Agent 负载、详情和
-Timeline。
-
-在 Hub 共享模式，协调命令同步调用已有的 batch event endpoint，避免异步 Outbox 把过期的
-claim/review/reassign 伪装为有效；Hub 不可用时只有 `report` / `submit` 可本地追加并在恢复后
-同步。普通 Memory 写入仍保持异步本地优先，不受此规则影响。
+读取端点均受 `context:read` 和项目范围校验：`/tasks`（目录，`assignee` 精确匹配、`order=created`
+稳定游标）、`/tasks/{task_id}`（详情，各类记录最近 50 条并标 `truncated`，响应 ≤1 MiB）与
+`/task-events`（Timeline，含 `task_seq`、`agent`）。`/task-graph` 返回 410；`/events/batch` 中的
+`task_sync` 事件逐条拒绝为 `task_sync_retired`。`/shared` 页面由任务详情在浏览器内组装关系图。
+行为规格见 `openspec/changes/rebuild-hub-task-authority/specs/hub-task-authority/spec.md`。
+普通 Memory 写入仍保持异步本地优先，不受此规则影响。
 
 ### 3.2 响应与 Token 预算
 

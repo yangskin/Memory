@@ -64,7 +64,7 @@ from .memory_task_context import (
     mark_task_checkpoint,
     recover_task_context_for_write,
 )
-from .memory_task_sync import enqueue_task_sync_event, task_sync
+from .memory_task_sync import task_sync
 from .memory_task_brief import build_task_brief
 from .memory_team_settlement import maybe_auto_settle_team_record
 from .memory_events import get_current_user
@@ -2234,23 +2234,20 @@ def _migration_hint_for(name: str) -> str:
 
 
 def _dispatch_memory_task_sync(config: MemoryConfig, args: dict[str, Any]) -> dict[str, Any]:
-    """Bind an optional task context to a local Task Graph command."""
-
-    if config.shared_memory.enabled and not config.shared_memory.active:
-        return error_result("hub_not_ready", "Hub enrollment or connection configuration is incomplete; retry after hub_connection is ready.")
+    """Forward a task operation to the Hub; the Hub derives the actor from this device credential."""
 
     task_args = dict(args)
-    context_token = _none_if_blank(task_args.get("context_token"))
+    context_token = _none_if_blank(task_args.pop("context_token", None))
+    alias = _none_if_blank(task_args.pop("agent_id", None))
+    if alias and not task_args.get("agent"):
+        task_args["agent"] = alias
     if context_token:
         context = get_task_context(config, context_token)
         if not context.get("ok"):
             return context
-        if not task_args.get("actor_id") and context.get("agent_id"):
-            task_args["actor_id"] = context["agent_id"]
-    result = task_sync(config, task_args)
-    if str(task_args.get("action") or "sync") not in {"sync", "history"}:
-        return enqueue_task_sync_event(config, result)
-    return result
+        if not task_args.get("agent") and context.get("agent_id"):
+            task_args["agent"] = context["agent_id"]
+    return task_sync(config, task_args)
 
 
 def _dispatch_tool(config: MemoryConfig, name: str, args: dict[str, Any]) -> dict[str, Any]:

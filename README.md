@@ -265,52 +265,44 @@ HTTP 429 仍作为限流返回，不能用即时重试绕过；验收应留出�
 
 #### 2.3.2 Task Graph 协作与查询
 
-启用 Hub 后，跨 Agent 协作只通过专用 `memory_task_sync` 读取和推进 Task Graph：
+启用 Hub 后，跨 Agent 协作只通过专用 `memory_task_sync` 读取和推进任务，Hub 是唯一权威：
 
-`sync` / `history` 在共享模式下分别读取 Hub 的 `task-graph` / `task-events`，
-返回 `source="remote"` 与 `authoritative=true`。连接、权限或响应格式失败会明确报错，
-不会以本地空库或旧状态代替远端领取状态；禁用共享模式时仍使用本地任务库。
-定向读取以正式任务目录补齐 Graph 占位节点的版本与当前 Attempt。读取不修改任务生命周期。
-跨机器首次执行命令时，若本地派生投影缺失或落后，仅回放该任务已被 Hub 接受的 Timeline；
-不重新向 Hub 发送创建或分配事件，实际新命令仍由 Hub 裁决。
-`sync` 返回 `{roots,nodes,edges,cursor}`，生命周期命令使用同一图中的 Task、Attempt、
-Submission 与 Review 记录。它是执行协调的派生投影，不是新的记忆真源，也不会改变本地离线
-读写、Brief、Board 或 `shared_context` 的既有语义。详细接口和部署侧说明见
-[`memory_hub/README.md`](memory_hub/README.md)。
+- `sync` 按本设备名精确扫描未结束任务（返回 `device_name` 与 `tasks`），`task` 读取单任务详情，
+  `history` 读取 Timeline；读不完整返回 `hub_scan_incomplete`，不会以空结果代替。
+- 一台设备只有一个任务身份：Windows 计算机名。新凭据注册即绑定；旧凭据在 Hub 声明
+  `task_commands` 后以计算机名自动绑定。绑定名与本机计算机名不一致时任务操作返回
+  `device_identity_mismatch`（电脑改名后重新注册本机凭据），记忆与留言不受影响。
+- Hub 尚未升级（未声明 `task_commands`）时，记忆、留言、简报照常同步，只有任务操作返回
+  `hub_version_unsupported`；旧任务事件此时按原协议上传，不转换、不补发。
+- 本地不保存任务状态，也不再有本地任务库。详细接口和部署侧说明见
+  [`memory_hub/README.md`](memory_hub/README.md)。
 
-任务执行不通过 `memory_write` 的自由 metadata 表达。使用专用 `memory_task_sync` 读取
-Graph Bundle，或写入 `create`、`assign`、`claim`、`decline`、`report`、`block`、`resume`、
-`submit`、`review`、`reassign`、`cancel`。每个写入都必须携带 `command_id` 与
-`expected_version`；执行者动作额外携带 `expected_assignment_epoch`：
+任务执行不通过 `memory_write` 的自由 metadata 表达。使用专用 `memory_task_sync`：`sync` 列出本设备在办任务
+（按执行者精确匹配、自动翻页；读不完整返回 `hub_scan_incomplete`），`task` 读取单任务详情，`history`
+读取 Timeline；写入 `create`、`assign`、`claim`、`decline`、`report`、`block`、`resume`、`submit`、
+`review`、`reassign`、`cancel`。Hub 是任务状态唯一的计算者：执行者身份由 Hub 从本设备凭据推导
+（`channel=dispatch` 表示 `<设备名>-dispatch`），请求不得携带 `actor_id`；版本、epoch、attempt/submission/review
+ID 与时间均由 Hub 生成。每个写入都必须携带稳定的 `command_id`；除 `create`、`report` 外须带
+`expected_version`，执行者动作额外携带 `expected_assignment_epoch`：
 
 ```json
 {
   "action": "claim",
-  "command_id": "claim-task-42-agent-a",
+  "command_id": "claim-task-42-pc-b",
   "task_id": "task-42",
-  "actor_id": "agent:a",
   "expected_version": 3,
   "expected_assignment_epoch": 1
 }
 ```
 
-本地命令原子写入 `.ai-memory/task-graph.db` 的 append-only `task_events` 与规范化
-Task/Attempt/Submission/Review 投影，并返回 `{roots,nodes,edges,cursor}`。`agent_id` 读取
-筛选的含义是“当前 Attempt 的 assignee”；写入回执始终返回被影响任务的完整子图，不受该筛选
-影响。
-
-未配置 Hub 时，Task Graph 是完全本地的执行图。配置并启用 Hub 后，所有在线 Task Graph
-命令会先经 Hub 的同一事务验证 `command_id`、version、assignment epoch 和内外事件的 Agent ID
-一致性；Hub 接受或拒绝后，本地 SQLite 才提交，已接受的命令不会再写入 Outbox。提交进入
-`review` 后，审核者必须不同于该 Submission 对应 Attempt 的执行者；违反时本地和 Hub 都返回
-`reviewer_conflict`，任务保持在 `review`。对于运输层错误、`408` 和 `5xx`，权威调用会在原
-`task_command_timeout_seconds` 总预算内用相同事件 ID 最多立即重试一次；恢复结果会带
-`shared_sync.authority_attempts` 与 `shared_sync.recovered_after_retry`，持续失败会带
-`authority_attempts`，可据此监控 Hub 可用性。Hub 不可用时，只有
-`report` 与 `submit` 可作为离线记录写入本地并等待异步同步；`create`、`assign`、`claim`、
-`decline`、`block`、`resume`、`review`、`reassign`、`cancel` 返回
-`task_authority_unavailable`。这条同步路径只适用于 `memory_task_sync`，不会让普通
-`memory_read` / `memory_write` 等本地 Memory 写入等待网络。
+同一 `command_id` 重试返回首次结果；内容不同返回 `command_id_conflict`；被拒绝的命令不占用 ID。
+`report` 只追加进展，不改变任务版本。审核者必须不同于提交执行者，否则返回 `reviewer_conflict`。
+未配置 Hub 时所有任务操作返回 `task_hub_required`，本地不再保存任务状态（旧 `.ai-memory/task-graph.db`
+在升级后首次运行时删除）。Hub 暂时不可达（网络错误、`408`、`429`、`5xx`）时只有 `report` 与 `submit`
+写入 `.ai-memory/task-command-outbox.db` 并返回 `status="queued"`、`authoritative=false`，恢复后用原
+`command_id` 自动补发；补发被拒的命令以 `outbox_failures` 出现在每次工具响应中，直到用
+`outbox_dismiss` 确认。行为规格见 `openspec/changes/rebuild-hub-task-authority/specs/hub-task-clients/spec.md`。这条路径只适用于
+`memory_task_sync`，不会让普通 `memory_read` / `memory_write` 等本地 Memory 写入等待网络。
 
 #### 2.3.3 响应预算与大型项目
 
@@ -372,7 +364,7 @@ python scripts/check_public_tree.py
 | `memory_write` | 写入 raw record、observation、checkpoint |
 | `memory_board_read` | 查询未解决或历史留言，可按任务、作者、类型、状态和 thread 筛选 |
 | `memory_board_write` | 发布留言、回复 thread、关闭已确认事项；本地优先，远端同步不阻塞 |
-| `memory_task_sync` | 读取 Task Graph Bundle 与 Timeline；以 command/version/epoch 保护任务、Attempt、Submission、Review 生命周期；共享 Hub 启用时由 Hub 同步裁决编排命令 |
+| `memory_task_sync` | Hub 任务客户端：本设备任务列表、单任务详情与 Timeline；命令由 Hub 唯一裁决（身份由设备凭据推导）；Hub 不可达时仅 `report`/`submit` 排队补发 |
 
 `memory_read(operation="task_context")` 是会话入口，返回 `context_token`、`task_id`、`task_run_id`、`active_context`、`current_task` 与 `task_brief`。`current_task` 来自 `.ai-context/current-task/{user}/{context_token}.md`，不是全局单文件。`memory_write` 只写结构化记忆，不做文件维护。guard、health、backup、compact、rebuild、snapshot、lineage、conflict、LLM enhance 等管理能力走 CLI。
 
@@ -395,14 +387,14 @@ python scripts/check_public_tree.py
 1. **开始前取上下文**：调用 `memory_read(operation="task_context")`，保存 `context_token`，读取随附的 `task_brief` 和 `open_board_items`。
 2. **检查协作留言**：把未解决留言作为建议性上下文；仅在需要避免重复、澄清依赖或同步 blocker、open question、handoff、cross-agent risk 时查询或写入 Board，不能等待留言板或回复才继续本地工作。
 3. **执行中按需读取**：需要项目背景、历史决策、验证结果时，用同一个 `context_token` 调 `retrieve_context`、`important_memories`、`latest_memories` 或 `search_records`。
-4. **执行任务图**：需要协作执行时先用 `memory_task_sync(action="sync")` 读取 roots，再用带版本令牌的专用命令推进生命周期。
+4. **执行任务**：需要协作执行时先用 `memory_task_sync(action="sync")` 读取本设备任务、`action="task"` 读取详情，再用带版本令牌的专用命令推进生命周期。
 5. **结束后写结果**：用 `memory_write(operation="record")` 写一条结构化总结；任务节点再写 `checkpoint`。
 6. **管理动作走 CLI**：不要通过普通 MCP 写文件或维护派生文档。
 
 以下是本 README 唯一一份可复制到 `AGENTS.md`、`.github/copilot-instructions.md` 或 `.cursorrules` 的推荐提示词；Memory、Project Board 和 Task Graph 规则必须作为一个整体使用，不要拆分维护：
 
 ```markdown
-Before any development task, call `memory_read(operation="task_context", user_goal=<current request>, agent_id=<agent name>, active_files=<relevant files>)`, keep the returned `context_token`, reuse it for every task-scoped memory read or write, and treat any returned `open_board_items` as advisory coordination context. When a remote Memory Hub is configured and active, use the dedicated `memory_board_read` and `memory_board_write` tools for advisory cross-agent coordination, not task-state transitions: query `memory_board_read(filter="unresolved", task_id=<task>)` only when it helps avoid duplicate work or clarify a dependency; create or update an item only when a blocker, open question, handoff, or cross-agent risk would help others align; include the outcome, affected area, validation state, and remaining risk; post with `memory_board_write(action="post", post_type=<note|question|request|warning|handoff|proposal>, content=<message>, task_id=<task>)`, reply on an existing thread when useful, and resolve it after the outcome is locally observed or validated; do not post routine progress, every Task Graph transition, or duplicate verified Memory records. Board availability, remote delivery, and replies must never gate local work: if the service is unavailable or nobody replies, continue with the safest local path, record assumptions, and never wait for remote confirmation solely to advance task state. Board identity and project membership come from the configured Hub token; never put identity data, credentials, tokens, database connection strings, or private memory content in Board messages. Board messages are non-authoritative, best-effort coordination items; persist verified decisions and conclusions separately with `memory_write(operation="record", ...)`. For work that needs shared ownership, assignment, review, or a visible handoff, use `memory_task_sync` as the only task-lifecycle interface: start with `memory_task_sync(action="sync", context_token=<context token>, agent_id=<agent name>)`, inspect the returned Graph Bundle and Timeline, create a task only when coordination needs one, and advance it only through `create`, `assign`, `claim`, `decline`, `report`, `block`, `resume`, `submit`, `review`, `reassign`, or `cancel`; never encode lifecycle state in free-form `memory_write` metadata or Board posts. For every Task Graph mutation, use a new stable `command_id` and the latest returned `version` as `expected_version`; when required, also use the latest `assignment_epoch` as `expected_assignment_epoch`; use `context_token` whenever available so the server derives actor identity; refresh with `sync` after a conflict and never reuse a command id with different content. With an active shared Hub, treat the Hub result as the coordination decision; if Hub authority is unavailable, only `report` and `submit` may be retained locally for later synchronization, and never substitute a local lifecycle transition or Board post for a rejected transition. During the task, read memory only when project background, prior decisions, root causes, or validation results are needed. Before finishing, write one structured summary with `memory_write(operation="record", context_token=...)` covering outcome, changed files, validation, and remaining risk, then send `memory_write(operation="checkpoint", task_phase="task_done", context_token=...)` without a body. Choose `record_kind` by meaning: `decision` for architecture or technical decisions, `handoff` or `note` for implementation handoff, `validation_result` for test or verification results, `incident` for bug/root-cause notes, and `procedure` for reusable workflow. Prefer the default personal scope unless the caller explicitly needs a shared raw record, because high-signal personal decisions, handoffs, and procedures can be auto-settled into derived `project_shared` summaries. Tags are optional, so omit `tags` when unsure instead of inventing labels; when tags are useful, use only `.ai-memory/config.json` `tag_schema.allowed_tags` (default full set: `archive_candidate`, `asset_pipeline`, `build`, `handoff_ready`, `high_value`, `material`, `mcp`, `needs_validation`, `skill_possible`, `texture`, `ui`, `validation`, `workflow`). Common safe choices are implementation handoff `record_kind="handoff", tags=["handoff_ready", "high_value"]`, decision `record_kind="decision", tags=["high_value"]`, validation `record_kind="validation_result", tags=["validation"]`, workflow or procedure `record_kind="procedure", tags=["workflow", "high_value"]`, build or tooling `tags=["build"]`, and MCP or Memory work `tags=["mcp", "high_value"]`. Put business-domain words, asset names, module names, and feature names in `system_area`, typed metadata fields, or the record body instead of `tags`. If an LLM is configured and the tool schema exposes it, `llm_normalize_tags=True` may be used as an opt-in safety net for accidental non-vocabulary tags, but do not depend on it for normal writes. Never store secrets, credentials, tokens, or private user data; never edit `activeContext/{user}.md`, `teamContext.md`, `progress.md`, `techContext.md`, or `systemPatterns.md` directly; use the CLI for administrative work.
+Before any development task, call `memory_read(operation="task_context", user_goal=<current request>, agent_id=<agent name>, active_files=<relevant files>)`, keep the returned `context_token`, reuse it for every task-scoped memory read or write, and treat any returned `open_board_items` as advisory coordination context. When a remote Memory Hub is configured and active, use the dedicated `memory_board_read` and `memory_board_write` tools for advisory cross-agent coordination, not task-state transitions: query `memory_board_read(filter="unresolved", task_id=<task>)` only when it helps avoid duplicate work or clarify a dependency; create or update an item only when a blocker, open question, handoff, or cross-agent risk would help others align; include the outcome, affected area, validation state, and remaining risk; post with `memory_board_write(action="post", post_type=<note|question|request|warning|handoff|proposal>, content=<message>, task_id=<task>)`, reply on an existing thread when useful, and resolve it after the outcome is locally observed or validated; do not post routine progress, every Task Graph transition, or duplicate verified Memory records. Board availability, remote delivery, and replies must never gate local work: if the service is unavailable or nobody replies, continue with the safest local path, record assumptions, and never wait for remote confirmation solely to advance task state. Board identity and project membership come from the configured Hub token; never put identity data, credentials, tokens, database connection strings, or private memory content in Board messages. Board messages are non-authoritative, best-effort coordination items; persist verified decisions and conclusions separately with `memory_write(operation="record", ...)`. For work that needs shared ownership, assignment, review, or a visible handoff, use `memory_task_sync` as the only task-lifecycle interface: start with `memory_task_sync(action="sync", context_token=<context token>, agent_id=<agent name>)`, inspect the returned task list of this device (use `action="task"` for one task's detail and `action="history"` for its Timeline; the Hub derives the actor from this device's credential, so never pass `actor_id`; `agent_id` is only a display label), create a task only when coordination needs one, and advance it only through `create`, `assign`, `claim`, `decline`, `report`, `block`, `resume`, `submit`, `review`, `reassign`, or `cancel`; never encode lifecycle state in free-form `memory_write` metadata or Board posts. For every Task Graph mutation, use a new stable `command_id` and the latest returned `version` as `expected_version` (`create` may omit it or pass `0`; `report` needs only the epoch); when required, also use the latest `assignment_epoch` as `expected_assignment_epoch`; one device has exactly one task identity (its Windows computer name), so assign work to the `device_name` that `sync` returns and use `channel="dispatch"` for dispatching and reviewing on the same device; use `context_token` whenever available; without an enabled Hub every task action returns `task_hub_required`; refresh with `sync` or `action="task"` after a conflict and never reuse a command id with different content. With an active shared Hub, treat the Hub result as the coordination decision; if Hub authority is unavailable, only `report` and `submit` may be retained locally for later synchronization, and never substitute a local lifecycle transition or Board post for a rejected transition. During the task, read memory only when project background, prior decisions, root causes, or validation results are needed. Before finishing, write one structured summary with `memory_write(operation="record", context_token=...)` covering outcome, changed files, validation, and remaining risk, then send `memory_write(operation="checkpoint", task_phase="task_done", context_token=...)` without a body. Choose `record_kind` by meaning: `decision` for architecture or technical decisions, `handoff` or `note` for implementation handoff, `validation_result` for test or verification results, `incident` for bug/root-cause notes, and `procedure` for reusable workflow. Prefer the default personal scope unless the caller explicitly needs a shared raw record, because high-signal personal decisions, handoffs, and procedures can be auto-settled into derived `project_shared` summaries. Tags are optional, so omit `tags` when unsure instead of inventing labels; when tags are useful, use only `.ai-memory/config.json` `tag_schema.allowed_tags` (default full set: `archive_candidate`, `asset_pipeline`, `build`, `handoff_ready`, `high_value`, `material`, `mcp`, `needs_validation`, `skill_possible`, `texture`, `ui`, `validation`, `workflow`). Common safe choices are implementation handoff `record_kind="handoff", tags=["handoff_ready", "high_value"]`, decision `record_kind="decision", tags=["high_value"]`, validation `record_kind="validation_result", tags=["validation"]`, workflow or procedure `record_kind="procedure", tags=["workflow", "high_value"]`, build or tooling `tags=["build"]`, and MCP or Memory work `tags=["mcp", "high_value"]`. Put business-domain words, asset names, module names, and feature names in `system_area`, typed metadata fields, or the record body instead of `tags`. If an LLM is configured and the tool schema exposes it, `llm_normalize_tags=True` may be used as an opt-in safety net for accidental non-vocabulary tags, but do not depend on it for normal writes. Never store secrets, credentials, tokens, or private user data; never edit `activeContext/{user}.md`, `teamContext.md`, `progress.md`, `techContext.md`, or `systemPatterns.md` directly; use the CLI for administrative work.
 ```
 
 检索默认使用 `ranking_version="v2"`：先区分业务领域记录与 Memory MCP/Task Brief 自评等元记录，再按强查询词的绝对命中数与覆盖率划分 relevance band，并在同一角色与 band 内参考相关性和 importance。领域 Task Brief 只用任务目标检索经验，不拼接活跃文件路径；先排除 band 0/1，再只保留距离本次最佳 query-match 不超过 0.10 的自适应窗口。仅当完全没有强证据时，最多降级装配 8 条 band 1 记录并显式标记 `weak_relevance_fallback_used`，不会为了填满大上下文而混入只命中模块名或三四个泛词的旧记忆。业务查询优先业务事实，记忆系统查询只使用记忆系统自身的工程经验。预算打包前合并 `auto_team_settlement` 跨 scope 镜像、精确重复与显式 supersede 链；代表记录继承组内最佳查询相关性，并用 `collapsed_best_record_id` / `collapsed_record_ids` 保留追溯。`facet_mode="hard"` 保持旧 API 的严格过滤语义；Task Brief 等内部推断使用 `facet_mode="boost"`，facet 缺失不会误删精确查询命中。发生 v2 内部异常时自动回退 v1；调用方也可显式指定 `ranking_version="v1"`。

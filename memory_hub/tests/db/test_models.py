@@ -1,16 +1,17 @@
 from memory_hub.db.models import (
     Base,
     BoardPost,
-    GraphEdge,
-    GraphNode,
     BriefTokenUsageDaily,
     DeviceStatus,
     MemoryEvent,
     Task,
     TaskAttempt,
+    TaskCommand,
     TaskEvent,
+    TaskLink,
     TaskReview,
     TaskSubmission,
+    TokenDevice,
 )
 
 
@@ -26,14 +27,14 @@ def test_required_tables_and_event_idempotency_constraint_are_declared() -> None
         "brief_token_usage_daily",
         "context_usage_daily",
         "device_status",
-        "graph_nodes",
-        "graph_edges",
+        "token_devices",
         "task_events",
         "tasks",
-        "task_agents",
         "task_attempts",
         "task_submissions",
         "task_reviews",
+        "task_commands",
+        "task_links",
     }
     unique_constraints = {constraint.name for constraint in MemoryEvent.__table__.constraints}
     indexes = {index.name for index in MemoryEvent.__table__.indexes}
@@ -81,11 +82,11 @@ def test_device_status_is_one_row_per_project_channel_credential_and_device() ->
         assert name in migration
 
 
-def test_graph_constraints_and_indexes_are_declared() -> None:
-    assert "uq_graph_nodes_project_type_key" in {item.name for item in GraphNode.__table__.constraints}
-    assert "uq_graph_edges_project_relation" in {item.name for item in GraphEdge.__table__.constraints}
-    assert {item.name for item in GraphNode.__table__.indexes} == {"idx_graph_nodes_project_type"}
-    assert {item.name for item in GraphEdge.__table__.indexes} == {"idx_graph_edges_project_source", "idx_graph_edges_project_target"}
+def test_task_authority_tables_have_identity_and_ordering_constraints() -> None:
+    assert TokenDevice.__table__.primary_key.columns.keys() == ["token_id"]
+    assert TaskCommand.__table__.primary_key.columns.keys() == ["project_id", "command_id"]
+    assert TaskLink.__table__.primary_key.columns.keys() == ["project_id", "task_id", "relation", "target"]
+    assert "fk_task_links_task" in {item.name for item in TaskLink.__table__.constraints}
 
 
 def test_task_projection_tables_have_project_scoped_identity_and_history_constraints() -> None:
@@ -95,11 +96,15 @@ def test_task_projection_tables_have_project_scoped_identity_and_history_constra
     assert TaskReview.__table__.primary_key.columns.keys() == ["project_id", "review_id"]
     assert {item.name for item in TaskEvent.__table__.constraints} >= {
         "uq_task_events_project_command",
-        "uq_task_events_project_source_event",
+        "uq_task_events_project_task_seq",
     }
+    assert "source_event_id" not in TaskEvent.__table__.columns
     assert {column.name for column in TaskEvent.__table__.columns} >= {
+        "task_seq",
+        "agent",
         "expected_version",
         "expected_assignment_epoch",
         "task_version",
         "assignment_epoch",
     }
+    assert {column.name for column in Task.__table__.columns} >= {"last_task_seq", "last_activity_at"}
