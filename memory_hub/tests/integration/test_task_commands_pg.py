@@ -76,7 +76,9 @@ def test_concurrent_commands_on_one_task_serialize() -> None:
         thread.start()
     for thread in threads:
         thread.join(timeout=30)
-    assert sorted(outcomes)[0] in {"assignment_epoch_conflict", "version_conflict"} and outcomes.count("ok") == 1
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(outcomes) == 2 and outcomes.count("ok") == 1
+    assert set(outcomes) - {"ok"} <= {"assignment_epoch_conflict", "version_conflict"}
     with app.state.session_factory() as session:
         seqs = list(session.scalars(text("SELECT task_seq FROM task_events WHERE project_id = :p AND task_id = 't' ORDER BY task_seq"),
                                     {"p": project_id}))

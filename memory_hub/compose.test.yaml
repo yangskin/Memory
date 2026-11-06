@@ -1,0 +1,28 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: hub_test
+      POSTGRES_USER: hub_test
+      POSTGRES_PASSWORD: disposable-test-only
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hub_test -d hub_test"]
+      interval: 1s
+      timeout: 5s
+      retries: 30
+  tests:
+    build:
+      context: ..
+      dockerfile: memory_hub/Dockerfile.test
+    environment:
+      MEMORY_HUB_DATABASE_URL: postgresql+psycopg://hub_test:disposable-test-only@postgres/hub_test
+      MEMORY_HUB_ENV: test
+      LLM_PROVIDER: fake
+    depends_on:
+      postgres:
+        condition: service_healthy
+networks:
+  default:
+    internal: true

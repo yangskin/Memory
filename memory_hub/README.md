@@ -19,6 +19,23 @@ uv run memory-hub-worker
 
 默认 Brief Provider 为 `fake`，不会调用外部 LLM。
 
+### 完整测试（隔离数据库）
+
+完整测试需要 PostgreSQL 16（测试用户可建库、删库）、Node.js 18+ 和 SQLite
+3.35+。**绝不能使用生产数据库 URL**：集成测试会创建、删除数据库并演练迁移及降级。
+推荐使用独立测试 Compose；它安装 Hub dev 依赖及本地 MCP 依赖，使用内存中的一次性
+PostgreSQL，不读取生产配置、不发布端口，也不加入生产网络：
+
+```bash
+docker compose -p memory-hub-tests -f compose.test.yaml up --build --abort-on-container-exit --exit-code-from tests
+docker compose -p memory-hub-tests -f compose.test.yaml down
+```
+
+无论测试成功或失败，都执行第二条命令清理临时容器；不要添加数据卷删除选项。
+验收要求全部通过且零跳过，包括 PostgreSQL 并发、迁移与 Node.js 页面测试。
+命令契约测试使用仓库内固定预期，覆盖 32 步生命周期与幂等重放，不依赖仓库外
+HubTaskRunner 的测试替身，也不宣称验证该外部替身的一致性。
+
 真实 LLM Brief 默认采用成本控制：用户与项目 brief 分别在最后一个相关事件后
 120 秒、300 秒再生成；单次请求最多约 6,000 输入 token、800 输出 token；同一
 项目所有 brief 共享每日 100,000 token 的持久化额度。所有值均可通过
