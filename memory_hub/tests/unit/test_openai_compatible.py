@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from memory_hub.llm.base import ProjectBriefRequest
-from memory_hub.llm.openai_compatible import OpenAICompatibleBriefProvider
+from memory_hub.llm.openai_compatible import BriefOutputLimitError, OpenAICompatibleBriefProvider
 
 
 class _Response:
@@ -118,3 +120,25 @@ def test_provider_caps_completion_tokens(monkeypatch) -> None:
 
     assert client.payload is not None
     assert client.payload["max_tokens"] == 321
+
+
+@pytest.mark.parametrize("content", ["", '{"summary":', '{"summary": "incomplete generation"}'])
+def test_provider_reports_output_truncation_without_parsing_or_logging_content(monkeypatch, caplog, content) -> None:
+    import memory_hub.llm.openai_compatible as provider_module
+
+    class TruncatedResponse(_Response):
+        def json(self):
+            return {"choices": [{"finish_reason": "length", "message": {
+                "content": content, "reasoning_content": "private reasoning must not be logged",
+            }}]}
+
+    class TruncatedClient(_Client):
+        def post(self, url, **kwargs):
+            return TruncatedResponse(None)
+
+    monkeypatch.setattr(provider_module.httpx, "Client", lambda **kwargs: TruncatedClient(None))
+    provider = OpenAICompatibleBriefProvider("https://provider.example.com/v1", "secret", "test-model")
+    with pytest.raises(BriefOutputLimitError, match="BRIEF_OUTPUT_TOKEN_BUDGET"):
+        provider.generate_project_brief(ProjectBriefRequest(project_id="project", events=[]))
+    assert "max_output_tokens=800" in caplog.text
+    assert "private reasoning" not in caplog.text and "incomplete generation" not in caplog.text

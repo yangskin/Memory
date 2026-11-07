@@ -268,6 +268,7 @@ def run_once(
                 job.status = "completed"
                 job.lease_until = None
                 job.last_error = None
+                job.attempts = 0
                 job.last_checked_at = datetime.now(UTC)
                 job.updated_at = datetime.now(UTC)
                 session.commit()
@@ -292,6 +293,8 @@ def run_once(
                         live_job.not_before = _next_utc_day()
                         live_job.lease_until = None
                         live_job.last_error = "daily_token_budget_exceeded"
+                        # No provider call occurred, so this is not a failed attempt.
+                        live_job.attempts = max(0, live_job.attempts - 1)
                         live_job.updated_at = datetime.now(UTC)
                         session.commit()
                     continue

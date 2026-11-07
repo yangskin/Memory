@@ -289,14 +289,15 @@ def test_worker_pauses_after_maximum_consecutive_failures() -> None:
         assert session.get(BriefJob, f"user_recent:{project_id}:failure-user").status == "failed"
 
 
-def test_worker_defers_external_generation_after_daily_token_budget_is_exhausted() -> None:
+@pytest.mark.parametrize("previous_attempts", [0, 4])
+def test_worker_defers_external_generation_after_daily_token_budget_is_exhausted(previous_attempts) -> None:
     factory = create_session_factory(load_settings().database_url or "")
     project_id = f"worker-budget-{uuid4().hex}"
     with factory() as session:
         event = MemoryEvent(event_id=uuid4(), project_id=project_id, user_id="budget-user", agent_id="pytest", agent_instance_id="pytest", operation="record", scope="personal", content_markdown="budgeted event", metadata_json={}, occurred_at=datetime.now(UTC), content_hash="sha256:" + "c" * 64)
         session.add(event)
         session.flush()
-        session.add(BriefJob(job_key=f"user_recent:{project_id}:budget-user", project_id=project_id, brief_type="user_recent", subject_user_id="budget-user", requested_through_seq=event.server_seq, not_before=datetime.now(UTC) - timedelta(seconds=1), status="pending"))
+        session.add(BriefJob(job_key=f"user_recent:{project_id}:budget-user", project_id=project_id, brief_type="user_recent", subject_user_id="budget-user", requested_through_seq=event.server_seq, not_before=datetime.now(UTC) - timedelta(seconds=1), status="pending", attempts=previous_attempts))
         session.commit()
 
         class UnexpectedProvider(FakeBriefProvider):
@@ -320,9 +321,20 @@ def test_worker_defers_external_generation_after_daily_token_budget_is_exhausted
         assert job is not None
         assert job.status == "pending"
         assert job.last_error == "daily_token_budget_exceeded"
+        assert job.attempts == previous_attempts
         assert job.not_before >= datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
         assert usage is not None
         assert usage.request_count == 0
+
+        job.not_before = datetime.now(UTC) - timedelta(seconds=1)
+        session.commit()
+        run_once(
+            session, FakeBriefProvider(), worker_id="budget-recovery-worker",
+            model_name="external", daily_token_budget=100000,
+        )
+        session.refresh(job)
+        assert job.status == "completed" and job.attempts == 0
+        assert job.last_error is None
 
 
 def test_worker_rebases_old_brief_from_raw_events() -> None:
@@ -367,3 +379,4 @@ def test_worker_skips_rebase_when_recent_window_input_is_unchanged() -> None:
         assert run_once(session, UnexpectedProvider(), worker_id="unchanged-worker", rebase_interval_seconds=1, max_jobs=1000) >= 1
         assert session.get(BriefHead, (project_id, "project_recent", "")).current_brief_id == brief_id
         assert session.query(BriefSnapshot).filter_by(project_id=project_id).count() == 1
+        assert session.get(BriefJob, f"project_recent:{project_id}:-").attempts == 0

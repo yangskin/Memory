@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 
 from .base import ProjectBriefRequest, ProjectBriefResult, UserBriefRequest, UserBriefResult
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class BriefOutputLimitError(ValueError):
+    """The provider exhausted its completion budget before finishing JSON."""
 
 
 class OpenAICompatibleBriefProvider:
@@ -57,7 +64,11 @@ class OpenAICompatibleBriefProvider:
         with httpx.Client(timeout=self._timeout) as client:
             response = client.post(self._endpoint, headers={"Authorization": f"Bearer {self._api_key}"}, json=payload)
             response.raise_for_status()
-        raw = json.loads(response.json()["choices"][0]["message"]["content"])
+        choice = response.json()["choices"][0]
+        if choice.get("finish_reason") == "length":
+            _LOGGER.warning("brief provider exhausted max_output_tokens=%s before completing JSON", self._max_output_tokens)
+            raise BriefOutputLimitError("brief output limit reached; increase BRIEF_OUTPUT_TOKEN_BUDGET for this model")
+        raw = json.loads(choice["message"]["content"])
         return self._normalize(kind, raw, source_ids, sections)
 
     @staticmethod

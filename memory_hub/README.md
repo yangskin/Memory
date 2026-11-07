@@ -41,6 +41,10 @@ HubTaskRunner 的测试替身，也不宣称验证该外部替身的一致性。
 项目所有 brief 共享每日 100,000 token 的持久化额度。所有值均可通过
 `BRIEF_*` 环境变量调整，见 [`.env.example`](.env.example)。额度按调用前的
 保守估算预留，因此失败或超时请求仍会计入当日额度，避免重试绕过成本上限。
+每日额度不足且尚未调用 Provider 的等待不消耗失败重试次数。
+`BRIEF_OUTPUT_TOKEN_BUDGET` 也包含推理模型的 reasoning tokens；800 tokens
+可能在正文输出前就耗尽。此类模型可按实际输出需要提高到 8192，并相应规划每日预算；
+Provider 返回 `finish_reason=length` 时明确报告输出截断，不把空正文当作成功简报。
 
 ## 生产部署
 
