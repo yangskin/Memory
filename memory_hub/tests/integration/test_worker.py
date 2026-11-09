@@ -5,9 +5,12 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.schema import CreateSchema, DropSchema
 
 from memory_hub.config import load_settings
-from memory_hub.db.models import BriefHead, BriefJob, BriefSnapshot, BriefTokenUsageDaily, MemoryEvent
+from memory_hub.db.models import Base, BriefHead, BriefJob, BriefSnapshot, BriefTokenUsageDaily, MemoryEvent
 from memory_hub.db.repositories import mark_brief_jobs_dirty
 from memory_hub.db.session import create_session_factory
 from memory_hub.llm.fake import FakeBriefProvider
@@ -15,6 +18,174 @@ from memory_hub.worker.runner import run_once
 
 
 pytestmark = pytest.mark.skipif(not os.getenv("MEMORY_HUB_DATABASE_URL"), reason="requires PostgreSQL")
+
+
+@pytest.fixture
+def worker_queue_factory():
+    engine = create_engine(load_settings().database_url or "")
+    schema = f"worker_queue_{uuid4().hex}"
+    with engine.begin() as connection:
+        connection.execute(CreateSchema(schema))
+    isolated_engine = engine.execution_options(schema_translate_map={None: schema})
+    try:
+        Base.metadata.create_all(isolated_engine)
+        yield sessionmaker(bind=isolated_engine, autoflush=False, expire_on_commit=False)
+    finally:
+        with engine.begin() as connection:
+            connection.execute(DropSchema(schema, cascade=True))
+        engine.dispose()
+
+
+@pytest.mark.parametrize("max_jobs", [0, 2, 10])
+@pytest.mark.parametrize("fail_first", [False, True])
+def test_worker_claims_jobs_only_when_ready_to_generate(monkeypatch, worker_queue_factory, max_jobs, fail_first) -> None:
+    from memory_hub.worker import runner
+
+    factory = worker_queue_factory
+    project_id = f"worker-just-in-time-{uuid4().hex}"
+    now = datetime.now(UTC)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now if tz is not None else now.replace(tzinfo=None)
+
+    monkeypatch.setattr(runner, "datetime", Clock)
+    subjects = ["first-user", "second-user", None]
+    job_keys = [
+        f"user_recent:{project_id}:first-user",
+        f"user_recent:{project_id}:second-user",
+        f"project_recent:{project_id}:-",
+    ]
+    with factory() as session:
+        event = MemoryEvent(
+            event_id=uuid4(), project_id=project_id, user_id="first-user",
+            operation="record", scope="project_shared", content_markdown="shared evidence",
+            occurred_at=now, content_hash="sha256:" + "1" * 64,
+        )
+        session.add(event)
+        session.flush()
+        for index, (job_key, subject) in enumerate(zip(job_keys, subjects)):
+            session.add(BriefJob(
+                job_key=job_key, project_id=project_id,
+                brief_type="user_recent" if subject else "project_recent",
+                subject_user_id=subject, requested_through_seq=event.server_seq,
+                not_before=now - timedelta(days=1, seconds=3 - index), status="pending",
+            ))
+        session.commit()
+
+    observations = []
+
+    class SlowProvider(FakeBriefProvider):
+        def observe(self):
+            nonlocal now
+            with factory() as observer:
+                observations.append((now, [
+                    (job.status, job.attempts, job.lease_until)
+                    for job in (observer.get(BriefJob, key) for key in job_keys)
+                ]))
+            # Each call fits 90 seconds, but a batch of three takes 150 seconds.
+            now += timedelta(seconds=50)
+            if fail_first and len(observations) == 1:
+                raise TimeoutError("simulated provider timeout")
+
+        def generate_user_brief(self, request):
+            self.observe()
+            return super().generate_user_brief(request)
+
+        def generate_project_brief(self, request):
+            self.observe()
+            return super().generate_project_brief(request)
+
+    expected_count = min(max_jobs, len(job_keys))
+    with factory() as session:
+        processed = run_once(
+            session, SlowProvider(), worker_id="just-in-time-worker",
+            max_jobs=max_jobs, lease_seconds=90,
+        )
+        assert processed == expected_count
+        assert len(observations) == expected_count
+        for index, (started_at, jobs) in enumerate(observations):
+            assert jobs[index] == ("running", 1, started_at + timedelta(seconds=90))
+            for waiting in jobs[index + 1:]:
+                assert waiting == ("pending", 0, None)
+            assert sum(status == "running" for status, _, _ in jobs) == 1
+        for index, key in enumerate(job_keys):
+            job = session.get(BriefJob, key)
+            if index >= expected_count:
+                assert job.status == "pending" and job.attempts == 0
+            elif fail_first and index == 0:
+                assert job.status == "pending" and job.attempts == 1
+                assert job.last_error == "TimeoutError"
+            else:
+                assert job.status == "completed" and job.attempts == 0
+            assert job.lease_until is None
+
+
+def test_worker_leaves_waiting_jobs_available_to_another_worker(worker_queue_factory) -> None:
+    factory = worker_queue_factory
+    project_id = f"worker-overlap-{uuid4().hex}"
+    user_key = f"user_recent:{project_id}:worker-user"
+    project_key = f"project_recent:{project_id}:-"
+    with factory() as session:
+        event = MemoryEvent(
+            event_id=uuid4(), project_id=project_id, user_id="worker-user",
+            operation="record", scope="project_shared", content_markdown="shared evidence",
+            occurred_at=datetime.now(UTC), content_hash="sha256:" + "2" * 64,
+        )
+        session.add(event)
+        session.flush()
+        mark_brief_jobs_dirty(
+            session, project_id, "worker-user", event.server_seq,
+            user_debounce_seconds=0, project_debounce_seconds=0,
+        )
+        session.commit()
+
+    observations = []
+
+    class OverlappingProvider(FakeBriefProvider):
+        def generate_user_brief(self, request):
+            with factory() as other:
+                count = run_once(other, worker_id="second-worker", max_jobs=1)
+                observations.append((
+                    count, other.get(BriefJob, user_key).status,
+                    other.get(BriefJob, project_key).status,
+                ))
+            return super().generate_user_brief(request)
+
+    with factory() as session:
+        assert run_once(session, OverlappingProvider(), worker_id="first-worker", max_jobs=2) == 1
+        assert observations == [(1, "running", "completed")]
+        for key, worker in ((user_key, "first-worker"), (project_key, "second-worker")):
+            job = session.get(BriefJob, key)
+            assert job.status == "completed" and job.worker_id == worker
+            assert job.attempts == 0 and job.lease_until is None
+        assert session.query(BriefSnapshot).count() == 2
+
+
+def test_worker_still_reclaims_expired_jobs_and_respects_debounce(worker_queue_factory) -> None:
+    factory = worker_queue_factory
+    now = datetime.now(UTC)
+    cases = [
+        ("due", "pending", now - timedelta(seconds=1), None, "completed"),
+        ("delayed", "pending", now + timedelta(hours=1), None, "pending"),
+        ("expired", "running", now - timedelta(seconds=1), now - timedelta(seconds=1), "completed"),
+        ("active", "running", now - timedelta(seconds=1), now + timedelta(hours=1), "running"),
+    ]
+    with factory() as session:
+        for name, status, not_before, lease_until, _ in cases:
+            session.add(BriefJob(
+                job_key=name, project_id=name, brief_type="project_recent",
+                requested_through_seq=0, status=status, not_before=not_before,
+                lease_until=lease_until, worker_id="previous-worker",
+            ))
+        session.commit()
+        assert run_once(session, worker_id="recovery-worker") == 2
+        for name, _, _, lease_until, expected in cases:
+            job = session.get(BriefJob, name)
+            assert job.status == expected
+            assert job.lease_until == (None if expected == "completed" else lease_until)
+            assert job.worker_id == ("recovery-worker" if expected == "completed" else "previous-worker")
 
 
 def test_worker_creates_project_brief_snapshot_and_head() -> None:

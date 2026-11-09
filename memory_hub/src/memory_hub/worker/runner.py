@@ -133,12 +133,20 @@ def _next_utc_day() -> datetime:
     return tomorrow.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
-def _claim_jobs(session: Session, *, max_jobs: int, worker_id: str, lease_seconds: int) -> list[BriefJob]:
+def _claim_jobs(
+    session: Session,
+    *,
+    max_jobs: int,
+    worker_id: str,
+    lease_seconds: int,
+    exclude_job_keys: set[str],
+) -> list[BriefJob]:
     now = datetime.now(UTC)
     query = (
         select(BriefJob)
         .where(
             BriefJob.brief_type.in_(("user_recent", "project_recent")),
+            BriefJob.job_key.not_in(exclude_job_keys),
             BriefJob.not_before <= now,
             or_(
                 BriefJob.status == "pending",
@@ -234,9 +242,18 @@ def run_once(
 ) -> int:
     provider = provider or FakeBriefProvider()
     _schedule_rebases(session, rebase_interval_seconds)
-    jobs = _claim_jobs(session, max_jobs=max_jobs, worker_id=worker_id, lease_seconds=lease_seconds)
-    for job in jobs:
+    processed_keys: set[str] = set()
+    for _ in range(max_jobs):
+        # Waiting jobs must not spend their processing deadline behind an LLM call.
+        jobs = _claim_jobs(
+            session, max_jobs=1, worker_id=worker_id,
+            lease_seconds=lease_seconds, exclude_job_keys=processed_keys,
+        )
+        if not jobs:
+            break
+        job = jobs[0]
         job_key = job.job_key
+        processed_keys.add(job_key)
         claimed_through_seq = job.requested_through_seq
         brief_type = job.brief_type
         project_id = job.project_id
@@ -341,4 +358,4 @@ def run_once(
             if live_job is not None:
                 _retry(live_job, exc, max_attempts=max_attempts)
                 session.commit()
-    return len(jobs)
+    return len(processed_keys)
